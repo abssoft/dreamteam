@@ -71,16 +71,13 @@ The Dispatcher remains the root workflow authority. A DreamTeam professional is 
 
 ## 5. Initial Role Catalog
 
-The first release extracts the distinct professional responsibilities already present in the two source workflows:
+The first release extracts only the professional responsibilities already implemented in the current Plane workflow. Macro-only roles are deferred and are not copied in this phase:
 
 | Skill | Responsibility | May change repository files |
 | --- | --- | --- |
-| `product-manager` | User problem, value, constraints, acceptance outcomes, scope | No |
-| `solution-architect` | Technical design, data flow, interfaces, risks, verification strategy | No, unless the packet explicitly requests design artifacts in the repository |
-| `product-technologist` | Explicit composite of Product Manager and Solution Architect responsibilities when a project deliberately requires one atomic PRD owner | No |
+| `product-technologist` | Atomic product plus technical specification from the current Plane PRD stage | No |
 | `software-developer` | Implement the bounded assignment and verify it | Yes |
 | `code-reviewer` | Independently review the supplied diff, refute weak findings, and return a verdict or required fixes | No by default; only trivial fixes when explicitly permitted |
-| `bug-validator` | Reproduce and classify a reported defect before implementation | No by default |
 | `technical-writer` | Produce or update a bounded documentation artifact from verified implementation facts | Only documentation files when explicitly permitted |
 
 Roles are capabilities, not a mandatory sequence. A project can use any subset and can invoke a role more than once.
@@ -319,7 +316,7 @@ Migration is incremental and behavior-preserving:
 6. Repeat for the second wrapper.
 7. Delete a local prompt only after its external replacement is verified on both supported runtimes.
 
-The first wrapper migration should use `software-developer` or `code-reviewer`, because their shared responsibilities are already closest across the two projects. Product-stage migration follows only after project-specific output composition is explicit.
+The first wrapper migration should use `software-developer` or `code-reviewer`, because their shared responsibilities are already closest across the two projects. Product-stage migration follows only after the Plane PRD output composition is preserved exactly.
 
 ## 15. Failure Handling
 
@@ -342,7 +339,7 @@ The first wrapper migration should use `software-developer` or `code-reviewer`, 
 - Mutable Git and tracker writes remain exclusively project-Dispatcher responsibilities.
 - Each role has recorded RED and GREEN eval evidence before release.
 - Contract, manifest, packaging, secret-scan, and runtime smoke checks pass.
-- Plane and YouTrack fixture Dispatchers consume the same role result without changing DreamTeam.
+- Plane and YouTrack fixture Dispatchers consume the same four role results without changing DreamTeam.
 - README contains installation, wrapper-integration, compatibility, and contribution instructions.
 - Public release occurs only after the content provenance and security audit passes.
 
