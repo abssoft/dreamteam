@@ -11,6 +11,8 @@ It provides four professional roles extracted from the current Plane workflow:
 
 The project wrapper owns the Dispatcher, tracker MCP, stages, statuses, Git/worktree lifecycle, and user-facing reports. DreamTeam roles receive a bounded assignment and return a neutral Result v1. They do not write tracker artifacts or perform mutable Git lifecycle operations.
 
+See [docs/architecture.md](docs/architecture.md) for the wrapper/plugin boundary and installation behavior.
+
 ## Development
 
 Requirements: Node.js 20.10+.
