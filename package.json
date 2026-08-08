@@ -1,0 +1,13 @@
+{
+  "name": "dream-team",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Tracker-neutral professional skills for project-owned SDLC workflows",
+  "engines": {
+    "node": ">=20.10"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
