@@ -1,0 +1,4 @@
+interface:
+  display_name: "Software Developer"
+  short_description: "Implement bounded repository changes safely"
+  default_prompt: "Use $software-developer to implement the assigned change."

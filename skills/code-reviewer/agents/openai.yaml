@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Reviewer"
+  short_description: "Review scoped changes with evidence"
+  default_prompt: "Use $code-reviewer to review the scoped change."

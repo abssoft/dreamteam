@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dream-team.invalid/contracts/result-v1.schema.json",
+  "title": "DreamTeam Result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "assignment_id", "role", "status", "summary", "deliverables", "changed_paths", "verification", "findings", "required_fixes", "blocker"],
+  "properties": {
+    "contract_version": {"const": 1},
+    "assignment_id": {"type": "string", "minLength": 1},
+    "role": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+    "status": {"enum": ["done", "blocked", "needs_human", "failed"]},
+    "summary": {"type": "string"},
+    "deliverables": {"type": "array"},
+    "changed_paths": {"type": "array", "items": {"type": "string"}},
+    "verification": {"type": "array"},
+    "findings": {"type": "array"},
+    "required_fixes": {"type": "array"},
+    "blocker": {"type": "string"}
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "contract_version": 1,
+  "assignment_id": "TASK-13:development:1",
+  "role": "software-developer",
+  "objective": "Implement the bounded assignment",
+  "scope": {
+    "included": ["the approved change"],
+    "excluded": ["unrelated cleanup"]
+  },
+  "repository": {
+    "workspace_path": "/workspace/project",
+    "head_sha": "abc123",
+    "base_sha": "def456",
+    "base_branch": "TASK-8",
+    "task_branch": "TASK-13",
+    "rules": [],
+    "navigation_seeds": []
+  },
+  "permissions": {
+    "source_changes": true,
+    "documentation_changes": false,
+    "tracker_reads": false,
+    "tracker_writes": false,
+    "mutable_git": false,
+    "subagents": "bounded"
+  },
+  "verification": {
+    "required": ["npm test"],
+    "optional": []
+  },
+  "return_contract": "result-v1"
+}

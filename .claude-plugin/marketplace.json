@@ -1,0 +1,13 @@
+{
+  "name": "dream-team",
+  "description": "DreamTeam professional skills",
+  "owner": {"name": "DreamTeam"},
+  "plugins": [
+    {
+      "name": "dream-team",
+      "source": "./",
+      "version": "1.0.0",
+      "description": "Tracker-neutral professional skills for project-owned SDLC workflows."
+    }
+  ]
+}

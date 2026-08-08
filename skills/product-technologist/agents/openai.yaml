@@ -1,0 +1,4 @@
+interface:
+  display_name: "Product Technologist"
+  short_description: "Shape product and technical decisions"
+  default_prompt: "Use $product-technologist for an atomic product and technical assignment."
