@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Treat `/Users/macmini/Documents/PlaneWorkflow/plugins/stroyberry/skills/stroyberry-workflow/prompts/` as the primary source of professional instructions.
+- Treat `<project-wrapper-role-prompts>/` as the primary source of professional instructions.
 - Do not invent replacement behavior where an equivalent Plane prompt section already exists.
 - Remove only Plane MCP names, Plane reports, project keys, branch policy, Dispatcher routing, and tracker mutations from public role skills.
 - DreamTeam roles never write tracker artifacts and never perform mutable Git lifecycle operations.
@@ -234,9 +234,9 @@ Run: `npm test`
 
 Run: `git diff --check`
 
-Run: `uv run --with pyyaml python /Users/macmini/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills`
+Run: `uv run --with pyyaml python <skill-creator>/scripts/quick_validate.py skills`
 
-Run: `claude plugin validate /Users/macmini/Documents/DreamTeam`
+Run: `claude plugin validate <dreamteam-repository>`
 
 - [ ] **Step 3: Verify both manifests and marketplaces from clean paths**
 
@@ -266,7 +266,7 @@ Run: `npm test`
 
 Run: `git diff --check`
 
-Run: `claude plugin validate /Users/macmini/Documents/DreamTeam`
+Run: `claude plugin validate <dreamteam-repository>`
 
 - [ ] **Step 3: Inspect the final diff and installed file list**
 

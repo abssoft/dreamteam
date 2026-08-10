@@ -131,7 +131,7 @@ Expected: all source-inventory tests PASS.
 Run:
 
 ```bash
-UV_CACHE_DIR=/tmp/dreamteam-uv-cache uv run --with pyyaml python /Users/macmini/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/product-technologist
+UV_CACHE_DIR=<writable-uv-cache> uv run --with pyyaml python <skill-creator>/scripts/quick_validate.py skills/product-technologist
 ```
 
 Expected: skill validation succeeds with no frontmatter or structure error.

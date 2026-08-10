@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -24,12 +25,26 @@ const allowedRepositoryLocations = [
   'git@github.com:abssoft/dreamteam.git',
   'https://github.com/abssoft/dreamteam.git',
 ];
+const nonPublicTrackedPath = /(?:^|\/)(?:\.git|node_modules|vendor|dist|build|coverage)(?:\/|$)/;
+const generatedLockfiles = new Set(['package-lock.json']);
+const publicContractFiles = execFileSync(
+  'git',
+  ['ls-files', '-z', '--', '*.md', '*.json', '*.yaml', '*.yml'],
+  { cwd: root, encoding: 'utf8' },
+)
+  .split('\0')
+  .filter(Boolean)
+  .filter((relative) => !nonPublicTrackedPath.test(relative) && !generatedLockfiles.has(relative));
 const coordinatePatterns = [
   ['legacy coordinate field', /["'`]?(?:workspace_path|head_sha|base_sha|base_branch|task_branch)["'`]?\s*[:=]/gi],
+  ['absolute POSIX path', /(?:^|[\s"'`(=:\[])\/(?:Users|home|tmp|var|opt|usr|etc|Volumes|private|root|srv|mnt)(?:\/[^\s"'`)\],}]+)+/gm],
+  ['Windows drive path', /(?:^|[\s"'`(=:\[])[A-Za-z]:(?:[\\/]|[A-Za-z0-9._-])[^\s"'`)\],}]*/gm],
+  ['Windows UNC path', /\\\\[A-Za-z0-9._$ -]+\\[A-Za-z0-9._$ -]+(?:\\[^\s"'`)\],}]*)?/g],
+  ['parent traversal', /(?:^|[\s"'`(=:\[])\.\.[\\/][^\s"'`)\],}]*/gm],
   ['raw revision', /\b(?:[A-Fa-f0-9]{64}|[A-Fa-f0-9]{40})\b/g],
   ['branch field', /["'`]?(?:branch|base_branch|task_branch)["'`]?\s*[:=]\s*["'`]?[A-Za-z0-9._/-]+/gi],
   ['branch ref', /\brefs\/heads\/[A-Za-z0-9._/-]+\b/g],
-  ['tracker token', /\b[A-Za-z][A-Za-z0-9]*-\d+\b(?!\.\d)/g],
+  ['tracker token', /(?<![A-Za-z0-9_-])[A-Za-z][A-Za-z0-9]*-\d+(?![A-Za-z0-9_]|\\?\.\d)/g],
 ];
 const structuredValuePattern = /(?:^|[\s{,])["'`]?([A-Za-z_][A-Za-z0-9_.-]*)["'`]?\s*[:=]\s*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|`([^`\r\n]*)`|([^\s,}\]\r\n]+))/gm;
 const repositoryKeyPattern = /(?:^|_)(?:repo|repository|location|origin|source)(?:_|$)/i;
@@ -83,22 +98,12 @@ test('public role instructions do not leak tracker or private project vocabulary
   }
 });
 
-test('public contract documentation contains no serialized repository coordinates', () => {
-  const publicContractFiles = [
-    'README.md',
-    'docs/architecture.md',
-    'docs/superpowers/specs/2026-08-08-dream-team-plugin-design.md',
-    'contracts/examples/assignment.json',
-    'contracts/examples/result.json',
-    'skills/product-technologist/references/assignment.md',
-    'skills/software-developer/references/assignment.md',
-    'skills/code-reviewer/references/review.md',
-    'skills/technical-writer/references/documentation.md',
-  ];
-  for (const relative of publicContractFiles) {
+test('all tracked public contract, documentation, skill, and manifest sources contain no coordinates', () => {
+  const violations = publicContractFiles.flatMap((relative) => {
     const findings = findSerializedCoordinates(fs.readFileSync(path.join(root, relative), 'utf8'));
-    assert.deepEqual(findings, [], `${relative}: ${findings.join(', ')}`);
-  }
+    return findings.map((finding) => `${relative}: ${finding}`);
+  });
+  assert.deepEqual(violations, []);
 });
 
 test('public coordinate detector rejects generic leaked literals', () => {
@@ -146,6 +151,8 @@ test('public coordinate detector allows approved locations and documentation syn
     ['ordinary web documentation link', '[API documentation](https://openai.com/docs)'],
     ['ordinary GitHub documentation link', '[Repository guide](https://github.com/abssoft/dreamteam/blob/main/README.md)'],
     ['SPDX license identifier', 'Licensed under Apache-2.0.'],
+    ['schema regex range', 'pattern: "^[a-z0-9-]+$"'],
+    ['escaped model version', String.raw`assert.doesNotMatch(text, /gpt-5\.6-sol/);`],
     ['application route prose', 'Open /settings/profile to edit the account.'],
     ['root-relative Markdown link', '[API reference](/api/reference)'],
     ['relative repository path', '`src/example.js` and `docs/architecture.md`'],
