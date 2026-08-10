@@ -20,27 +20,41 @@ const roles = [
 ];
 
 const forbidden = /Plane|YouTrack|plane_report|youtrack_report|macrodom|PLANE_|YOUTRACK_|\b(?:SB|DEV)-\d+\b/i;
-const allowedRepositoryLocation = 'git@github.com:abssoft/dreamteam.git';
+const allowedRepositoryLocations = [
+  'git@github.com:abssoft/dreamteam.git',
+  'https://github.com/abssoft/dreamteam.git',
+];
 const coordinatePatterns = [
   ['legacy coordinate field', /["'`]?(?:workspace_path|head_sha|base_sha|base_branch|task_branch)["'`]?\s*[:=]/gi],
-  ['structured POSIX path', /["'`]?(?:workspace|workspace_root|cwd|repository_path|root_path|path)["'`]?\s*[:=]\s*["'`]?\/(?!\/)[^\s"'`)\],}]+/gi],
-  ['POSIX system path', /(?:^|[\s"'`(=:\[])\/(?:Users|home|workspace|tmp|var|opt|usr|etc|bin|sbin|Volumes|Library|Applications|private|root|srv|mnt)(?:\/[^\s"'`)\],}]+)+/gm],
-  ['Windows drive path', /(?:^|[\s"'`(=:\[])[A-Za-z]:(?:[\\/]|[A-Za-z0-9._-])[^\s"'`)\],}]*/gm],
-  ['Windows UNC path', /\\\\[A-Za-z0-9._$ -]+\\[A-Za-z0-9._$ -]+(?:\\[^\s"'`)\],}]*)?/g],
-  ['parent traversal', /(?:^|[\s"'`(=:\[])\.\.[\\/][^\s"'`)\],}]*/gm],
-  ['repository URL', /["'`]?(?:repository(?:_url|_location)?|repo_url)["'`]?\s*[:=]\s*["'`]?(?:(?:https?|ssh|file):\/\/|git@)[^\s"'`)\],}]+/gi],
   ['raw revision', /\b(?:[A-Fa-f0-9]{64}|[A-Fa-f0-9]{40})\b/g],
   ['branch field', /["'`]?(?:branch|base_branch|task_branch)["'`]?\s*[:=]\s*["'`]?[A-Za-z0-9._/-]+/gi],
   ['branch ref', /\brefs\/heads\/[A-Za-z0-9._/-]+\b/g],
-  ['tracker assignment', /["'`]?assignment_id["'`]?\s*[:=]\s*["'`]?[A-Za-z][A-Za-z0-9]+-\d+(?=[:"'`\s])/gi],
+  ['tracker token', /\b[A-Za-z][A-Za-z0-9]*-\d+\b(?!\.\d)/g],
 ];
+const structuredValuePattern = /(?:^|[\s{,])["'`]?([A-Za-z_][A-Za-z0-9_.-]*)["'`]?\s*[:=]\s*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|`([^`\r\n]*)`|([^\s,}\]\r\n]+))/gm;
+const repositoryKeyPattern = /(?:^|_)(?:repo|repository|location|origin|source)(?:_|$)/i;
+const repositoryUrlPattern = /^(?:git@|(?:git|https?|ssh|file):\/\/)/i;
+const locationPattern = /^(?:\/(?!\/)|[A-Za-z]:(?:[\\/]|[A-Za-z0-9._-])|\\\\|\.\.[\\/])/;
 
 const findSerializedCoordinates = (source) => {
-  const inspected = source.replaceAll(allowedRepositoryLocation, '<allowed-repository-location>');
+  const inspected = allowedRepositoryLocations.reduce(
+    (current, location) => current.replaceAll(location, '<allowed-repository-location>'),
+    source,
+  );
   const findings = [];
   for (const [kind, pattern] of coordinatePatterns) {
     for (const match of inspected.matchAll(pattern)) {
       findings.push(`${kind}: ${match[0].trim()}`);
+    }
+  }
+  for (const match of inspected.matchAll(structuredValuePattern)) {
+    const [, key, doubleQuoted, singleQuoted, backtickQuoted, unquoted] = match;
+    const value = doubleQuoted ?? singleQuoted ?? backtickQuoted ?? unquoted;
+    if (locationPattern.test(value)) {
+      findings.push(`structured location: ${key}: ${value}`);
+    }
+    if (repositoryKeyPattern.test(key) && repositoryUrlPattern.test(value)) {
+      findings.push(`repository URL: ${key}: ${value}`);
     }
   }
   return findings;
@@ -92,30 +106,44 @@ test('public coordinate detector rejects generic leaked literals', () => {
     ['POSIX user path', 'workspace: "/Users/alice/work/repo"'],
     ['POSIX home path', 'workspace: "/home/alice/work/repo"'],
     ['generic structured POSIX path', 'workspace: "/projects/acme/repo"'],
+    ['arbitrary-key unquoted POSIX path', 'artifact: /projects/acme/repo'],
     ['Windows path', String.raw`workspace: "C:\work\repo"`],
     ['Windows slash path', 'workspace: "C:/work/repo"'],
     ['Windows drive-relative path', 'workspace: "C:work\\repo"'],
     ['UNC path', String.raw`workspace: "\\server\share\repo"`],
     ['parent traversal', 'path: "../outside/repo"'],
     ['repository URL', 'repository_url: "https://github.com/acme/private-repo.git"'],
+    ['repository https', 'repository: "https://github.com/acme/private-repo.git"'],
+    ['repository git URL', 'repository=git://example.com/private-repo.git'],
+    ['location http URL', 'location=http://example.com/private-repo.git'],
+    ['origin ssh', 'origin: "ssh://git@example.com/private-repo.git"'],
+    ['source https', 'source: "https://github.com/acme/private-repo.git"'],
+    ['source file URL', 'source=file:///private/private-repo.git'],
     ['raw 40-hex revision', 'revision: "0123456789abcdef0123456789abcdef01234567"'],
     ['raw 64-hex revision', 'revision: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"'],
     ['branch field', 'branch: "feature/example"'],
     ['branch ref', 'revision: "refs/heads/main"'],
     ['tracker assignment', 'assignment_id: "DEV-204:development:1"'],
+    ['assignment_id A-1', 'assignment_id: "A-1"'],
+    ['issue_id PROJ-1', 'issue_id: "PROJ-1"'],
+    ['prose PROJ-1', 'Complete PROJ-1 before release.'],
+    ['origin POSIX path', 'origin: "/projects/acme/repo"'],
   ];
 
-  for (const [label, source] of leaks) {
-    assert.notEqual(findSerializedCoordinates(source).length, 0, label);
-  }
+  const missed = leaks
+    .filter(([, source]) => findSerializedCoordinates(source).length === 0)
+    .map(([label]) => label);
+  assert.deepEqual(missed, []);
 });
 
 test('public coordinate detector allows approved locations and documentation syntax', () => {
   const safeSources = [
-    ['approved repository', `Install ${allowedRepositoryLocation} from floating main.`],
+    ['approved SSH install URI', `repository: "${allowedRepositoryLocations[0]}"`],
+    ['canonical HTTPS install URI', `repository: "${allowedRepositoryLocations[1]}"`],
     ['relative documentation link', '[Architecture](docs/architecture.md)'],
     ['ordinary web documentation link', '[API documentation](https://openai.com/docs)'],
     ['ordinary GitHub documentation link', '[Repository guide](https://github.com/abssoft/dreamteam/blob/main/README.md)'],
+    ['SPDX license identifier', 'Licensed under Apache-2.0.'],
     ['application route prose', 'Open /settings/profile to edit the account.'],
     ['root-relative Markdown link', '[API reference](/api/reference)'],
     ['relative repository path', '`src/example.js` and `docs/architecture.md`'],
