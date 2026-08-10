@@ -28,5 +28,15 @@
     "required": ["npm test"],
     "optional": []
   },
-  "return_contract": "result-v1"
+  "return_contract": "result-v1",
+  "inputs": {
+    "accepted_decisions": ["Keep the change bounded to the approved behavior."],
+    "source_materials": [{
+      "kind": "text",
+      "name": "approved specification",
+      "content": "Implement the approved bounded change.",
+      "provenance": "project wrapper"
+    }],
+    "output": {"language": "ru", "density": "terse"}
+  }
 }

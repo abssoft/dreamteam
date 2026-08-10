@@ -11,7 +11,18 @@
     "role": {"type": "string", "pattern": "^[a-z0-9-]+$"},
     "status": {"enum": ["done", "blocked", "needs_human", "failed"]},
     "summary": {"type": "string"},
-    "deliverables": {"type": "array"},
+    "deliverables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "content"],
+        "properties": {
+          "kind": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+          "content": {}
+        }
+      }
+    },
     "changed_paths": {"type": "array", "items": {"type": "string"}},
     "verification": {"type": "array"},
     "findings": {"type": "array"},

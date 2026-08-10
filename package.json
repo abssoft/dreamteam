@@ -9,5 +9,8 @@
   },
   "scripts": {
     "test": "node --test"
+  },
+  "devDependencies": {
+    "ajv": "8.17.1"
   }
 }

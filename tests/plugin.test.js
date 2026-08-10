@@ -2,10 +2,19 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import Ajv2020 from 'ajv/dist/2020.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 const readJson = (relative) => JSON.parse(fs.readFileSync(path.join(root, relative), 'utf8'));
 const readText = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
+const ajv = new Ajv2020({ allErrors: true, strict: true });
+const assignmentSchema = readJson('contracts/assignment-v1.schema.json');
+const resultSchema = readJson('contracts/result-v1.schema.json');
+const validateAssignment = ajv.compile(assignmentSchema);
+const validateResult = ajv.compile(resultSchema);
+const assertValid = (validate, value, label) => {
+  assert.equal(validate(value), true, `${label}: ${ajv.errorsText(validate.errors)}`);
+};
 
 test('plugin metadata is synchronized across package, manifests, and marketplaces', () => {
   const packageJson = readJson('package.json');
@@ -26,19 +35,24 @@ test('plugin metadata is synchronized across package, manifests, and marketplace
   assert.equal(packageJson.version, '1.0.1');
 });
 
-test('assignment fixture contains the stable dispatcher-to-professional boundary', () => {
-  const assignment = readJson('contracts/examples/assignment.json');
-  for (const key of ['contract_version', 'assignment_id', 'role', 'objective', 'scope', 'repository', 'permissions', 'verification', 'return_contract']) {
-    assert.ok(Object.hasOwn(assignment, key), key);
-  }
+test('assignment fixture validates accepted neutral inputs', () => {
+  const value = readJson('contracts/examples/assignment.json');
+  assertValid(validateAssignment, value, 'assignment fixture');
+  assert.deepEqual(Object.keys(value.inputs), [
+    'accepted_decisions',
+    'source_materials',
+    'output',
+  ]);
+  assert.equal(value.inputs.output.language, 'ru');
 });
 
-test('result fixture is tracker-neutral and terminal', () => {
-  const result = readJson('contracts/examples/result.json');
-  assert.ok(['done', 'blocked', 'needs_human', 'failed'].includes(result.status));
-  assert.equal(Object.hasOwn(result, 'next_stage'), false);
-  assert.equal(Object.hasOwn(result, 'plane_report'), false);
-  assert.equal(Object.hasOwn(result, 'youtrack_report'), false);
+test('result fixture validates one tagged neutral deliverable', () => {
+  const value = readJson('contracts/examples/result.json');
+  assertValid(validateResult, value, 'result fixture');
+  assert.equal(value.deliverables[0].kind, 'implementation_summary');
+  for (const key of ['next_stage', 'changed_sections', 'split_recommendation', 'plane_report']) {
+    assert.equal(Object.hasOwn(value, key), false, key);
+  }
 });
 
 test('roles inherit the wrapper current model and never select a model family', () => {

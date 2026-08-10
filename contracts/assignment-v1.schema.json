@@ -22,6 +22,40 @@
     "repository": {"type": "object"},
     "permissions": {"type": "object"},
     "verification": {"type": "object"},
-    "return_contract": {"const": "result-v1"}
+    "return_contract": {"const": "result-v1"},
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accepted_decisions", "source_materials", "output"],
+      "properties": {
+        "accepted_decisions": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "source_materials": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "content", "provenance"],
+            "properties": {
+              "kind": {"enum": ["text", "repository_evidence", "attachment_reference"]},
+              "name": {"type": "string"},
+              "content": {"type": "string"},
+              "provenance": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        "output": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["language", "density"],
+          "properties": {
+            "language": {"type": "string", "minLength": 1},
+            "density": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    }
   }
 }
