@@ -32,7 +32,7 @@ test('plugin metadata is synchronized across package, manifests, and marketplace
   assert.equal(claudeMarketplace.plugins[0].name, packageJson.name);
   assert.equal(codexMarketplace.plugins[0].version, packageJson.version);
   assert.equal(claudeMarketplace.plugins[0].version, packageJson.version);
-  assert.equal(packageJson.version, '1.0.1');
+  assert.equal(packageJson.version, '1.1.0');
 });
 
 test('assignment fixture validates accepted neutral inputs', () => {
@@ -55,23 +55,24 @@ test('result fixture validates one tagged neutral deliverable', () => {
   }
 });
 
-test('roles inherit the wrapper current model and never select a model family', () => {
-  const roles = {
-    product: readText('skills/product-technologist/SKILL.md'),
-    developer: readText('skills/software-developer/SKILL.md'),
-    reviewer: readText('skills/code-reviewer/SKILL.md'),
-    writer: readText('skills/technical-writer/SKILL.md'),
-  };
+const roleDeliverables = {
+  'product-technologist': 'product_technical_spec',
+  'software-developer': 'implementation_summary',
+  'code-reviewer': 'review_report',
+  'technical-writer': 'documentation_proposal',
+};
 
-  for (const [name, text] of Object.entries(roles)) {
-    assert.match(text, /current (?:wrapper|Dispatcher) model/i, `${name}: current model inheritance missing`);
-    assert.doesNotMatch(text, /gpt-5\.6-(?:sol|terra)|model allowlist/i, `${name}: fixed model selection leaked into role`);
+test('each role returns its neutral tagged Result v1 deliverable', () => {
+  for (const [role, kind] of Object.entries(roleDeliverables)) {
+    const skill = readText(`skills/${role}/SKILL.md`);
+    const handoff = skill.match(/```json\s*([\s\S]*?)\s*```/);
+    assert.ok(handoff, `${role}: Result v1 example missing`);
+    const result = JSON.parse(handoff[1]);
+    assertValid(validateResult, result, role);
+    assert.equal(result.role, role);
+    assert.equal(result.deliverables[0].kind, kind);
+    for (const field of ['next_stage', 'changed_sections', 'split_recommendation', 'plane_report']) {
+      assert.equal(Object.hasOwn(result, field), false, `${role}: ${field}`);
+    }
   }
-
-  assert.match(roles.product, /`high` reasoning/i);
-  assert.match(roles.developer, /initial[^\n]*`xhigh`[^\n]*(?:review retry|required_fixes)[^\n]*`max`/i);
-  assert.match(roles.reviewer, /`max` reasoning/i);
-  assert.match(roles.writer, /reasoning[^\n]*supplied by (?:the )?wrapper/i);
-  assert.match(roles.developer, /leaf[^\n]*inherit[^\n]*model and reasoning/i);
-  assert.match(roles.reviewer, /leaf[^\n]*inherit[^\n]*model and reasoning/i);
 });

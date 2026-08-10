@@ -1,6 +1,6 @@
 # DreamTeam repository rules
 
-- The current Plane workflow prompts are the source of truth for role behavior.
+- DreamTeam role skills and the public Assignment v1 / Result v1 contracts are the source of truth for professional behavior.
 - Keep Dispatcher, tracker, status, branch, and delivery rules in project wrappers.
 - DreamTeam roles must remain tracker-neutral and must not perform mutable Git lifecycle operations.
 - Any behavior change requires a failing test or failing skill evaluation before implementation.

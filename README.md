@@ -2,7 +2,7 @@
 
 DreamTeam is a public, cross-runtime skills-only plugin for Codex and Claude Code.
 
-It provides four professional roles extracted from the current Plane workflow:
+It provides four authoritative professional roles:
 
 - `product-technologist`
 - `software-developer`
@@ -24,11 +24,11 @@ npm test
 claude plugin validate .
 ```
 
-Each role is created and verified independently. Role instructions are derived from the Plane source prompts; project-specific tracker and Dispatcher rules stay in the wrappers.
+Each role is created and verified independently. DreamTeam role skills and the public Assignment v1 / Result v1 contracts define professional behavior; project-specific tracker and Dispatcher rules stay in wrappers.
 
 ## Installation
 
-Add this repository as a marketplace, then install `dream-team`. Use a stable release tag when a public GitHub repository is configured. A wrapper must stop after installing a missing dependency and require a new session before retrying.
+Add `git@github.com:abssoft/dreamteam.git` from floating `main` as a marketplace, then install or update `dream-team`. Stop immediately after installation or update and start a new session before invoking a role; the current session cannot discover newly installed or refreshed skill instructions safely.
 
 ## License
 
