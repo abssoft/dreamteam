@@ -49,3 +49,34 @@ test('public role instructions do not leak tracker or private project vocabulary
     assert.equal(forbidden.test(skill), false, role.id);
   }
 });
+
+test('product-technologist scales specification density after internal impact pre-analysis', () => {
+  const skill = fs.readFileSync(path.join(root, 'skills/product-technologist/SKILL.md'), 'utf8');
+  const preAnalysis = skill.indexOf('## Impact Pre-analysis');
+  const requiredWork = skill.indexOf('## Required Work');
+
+  assert.ok(preAnalysis > -1, 'impact pre-analysis is missing');
+  assert.ok(requiredWork > -1, 'required work is missing');
+  assert.ok(preAnalysis < requiredWork, 'impact pre-analysis must precede drafting');
+
+  for (const dimension of ['Code impact', 'Interface impact', 'Business-process and data impact']) {
+    assert.match(skill, new RegExp(dimension, 'i'), dimension);
+  }
+  for (const level of ['small', 'medium', 'large']) {
+    assert.match(skill, new RegExp(`\\b${level}\\b`, 'i'), level);
+  }
+
+  assert.match(skill, /wording length[^\n]*(?:weak|not)/i);
+  assert.match(skill, /raw file count[^\n]*(?:weak|not)/i);
+  assert.match(skill, /schema|migration/i);
+  assert.match(skill, /security|permission/i);
+  assert.match(skill, /public[^\n]*(?:API|contract)|integration/i);
+  assert.match(skill, /material ambiguity[^\n]*`needs_human`/i);
+  assert.match(skill, /classification[^\n]*internal/i);
+  assert.match(skill, /(?:not|never)[^\n]*(?:heading|field|summary label|finding)/i);
+  assert.match(skill, /all four[^\n]*required[^\n]*sections/i);
+  assert.match(skill, /small output[^\n]*material behavior/i);
+  assert.match(skill, /do not separately enumerate[^\n]*audience[^\n]*value[^\n]*scenarios/i);
+  assert.match(skill, /every point[^\n]*(?:decision|boundary)[^\n]*(?:implementation|verification)/i);
+  assert.match(skill, /(?:do not|not)[^\n]*repeat[^\n]*across sections/i);
+});

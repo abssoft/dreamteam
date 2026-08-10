@@ -31,17 +31,40 @@ Use only the supplied assignment, accepted decisions, repository context, attach
 
 If a required input is missing, return `needs_human` before any mutation.
 
+## Impact Pre-analysis
+
+Before drafting any deliverable section, assess verified assignment and repository evidence across three dimensions:
+
+- **Code impact:** locality, affected modules or layers, shared runtime paths, and changed contracts.
+- **Interface impact:** user-visible states, internal interfaces, public APIs, integrations, compatibility, and affected roles.
+- **Business-process and data impact:** process steps, permissions, persistence, schema or migration work, destructive behavior, auditability, and operational risk.
+
+Classify the assignment as `small`, `medium`, or `large`. Wording length and raw file count are weak signals; behavioral reach and risk decide the level.
+
+- **Small:** expected behavior is explicit and bounded, with no material data, security, permission, integration, public-contract, or multi-step process change.
+- **Medium:** one meaningful flow or coherent deliverable crosses related components or contracts and has material edge cases or compatibility boundaries.
+- **Large:** behavior is cross-cutting or affects multiple roles or process stages, integrations or public contracts, schema or migration, security or permissions, destructive data effects, operational recovery, substantial compatibility risk, or likely independent children.
+
+Any large-impact signal raises the level even when the expected diff is short. When evidence is mixed, choose the higher justified level. Material ambiguity returns `needs_human`; do not expand speculative prose to hide an unresolved decision.
+
+The classification is internal working state. Do not emit it as a heading, field, summary label, or finding in the deliverable.
+
 ## Required Work
 
 1. Read the assignment and relevant repository context. Work on exactly one assignment.
 2. Preserve every accepted decision, scope boundary, acceptance criterion, exclusion, technical constraint, and ordering. Augment only with facts discovered in supplied evidence or the repository.
-3. Define the product decision: problem, audience, scenarios, value, boundaries, and unresolved choices.
-4. Define the technical specification: exact behavior, sequence, UX mechanics, standard components, internal analogues, affected contracts, risks, and verification strategy.
+3. Define the product decision: material product behavior and boundaries; include problem, audience, scenarios, value, or unresolved choices only when they add a decision or constraint.
+4. Define the technical specification: exact behavior and sequence; include UX mechanics, standard components, internal analogues, affected contracts, risks, or verification strategy only when relevant to implementation.
 5. Define implementation scope as paths, entry points, and affected contracts only. Do not broaden scope because more files exist.
 6. Produce one verifiable QA checklist containing success metrics and acceptance criteria.
-7. Recommend a split only when the assignment is large enough for 2–7 independently deliverable direct children. Every child must have a unique name and a non-empty ordered plain-text scope list. Otherwise return no split recommendation.
-8. If recommending a split, include an implementation plan whose task count, order, names, and scope lists exactly match the recommendation.
-9. Validate the whole deliverable before returning it. Do not write partial artifacts.
+7. Keep all four required specification sections present at every adaptive level. Scale their content density to the internal classification:
+   - Small output: state only material behavior and boundaries, exact changed and deliberately unchanged behavior, minimal verified Scope, and the smallest observable regression-proof QA set. Do not separately enumerate audience, value, scenarios, components, or analogues when they add no decision or implementation constraint.
+   - Medium output: cover the main actor or caller flow, states, boundaries, affected contracts, compatibility behavior, and meaningful edge cases.
+   - Large output: cover affected roles and flows, interfaces and integrations, data and migration behavior, permissions, failure and recovery, operational risk, compatibility, boundaries, and useful decomposition.
+8. Ensure every point changes a decision or boundary or imposes an implementation or verification obligation. Do not repeat the same fact across sections. Requested output density may change phrasing or add useful detail; it cannot remove material obligations or force boilerplate.
+9. Consider a split for a large assignment, but recommend one only when 2–7 independently deliverable direct children are justified. Every child must have a unique name and a non-empty ordered plain-text scope list. Otherwise return no split recommendation.
+10. If recommending a split, include an implementation plan whose task count, order, names, and scope lists exactly match the recommendation.
+11. Validate the whole deliverable before returning it. Do not write partial artifacts.
 
 ## Visual References
 
