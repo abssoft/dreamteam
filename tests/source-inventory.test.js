@@ -37,23 +37,23 @@ const repositoryUrlPattern = /^(?:git@|(?:git|https?|ssh|file):\/\/)/i;
 const locationPattern = /^(?:\/(?!\/)|[A-Za-z]:(?:[\\/]|[A-Za-z0-9._-])|\\\\|\.\.[\\/])/;
 
 const findSerializedCoordinates = (source) => {
-  const inspected = allowedRepositoryLocations.reduce(
-    (current, location) => current.replaceAll(location, '<allowed-repository-location>'),
-    source,
-  );
   const findings = [];
   for (const [kind, pattern] of coordinatePatterns) {
-    for (const match of inspected.matchAll(pattern)) {
+    for (const match of source.matchAll(pattern)) {
       findings.push(`${kind}: ${match[0].trim()}`);
     }
   }
-  for (const match of inspected.matchAll(structuredValuePattern)) {
+  for (const match of source.matchAll(structuredValuePattern)) {
     const [, key, doubleQuoted, singleQuoted, backtickQuoted, unquoted] = match;
     const value = doubleQuoted ?? singleQuoted ?? backtickQuoted ?? unquoted;
     if (locationPattern.test(value)) {
       findings.push(`structured location: ${key}: ${value}`);
     }
-    if (repositoryKeyPattern.test(key) && repositoryUrlPattern.test(value)) {
+    if (
+      repositoryKeyPattern.test(key)
+      && repositoryUrlPattern.test(value)
+      && !allowedRepositoryLocations.includes(value)
+    ) {
       findings.push(`repository URL: ${key}: ${value}`);
     }
   }
@@ -114,6 +114,8 @@ test('public coordinate detector rejects generic leaked literals', () => {
     ['parent traversal', 'path: "../outside/repo"'],
     ['repository URL', 'repository_url: "https://github.com/acme/private-repo.git"'],
     ['repository https', 'repository: "https://github.com/acme/private-repo.git"'],
+    ['canonical-prefix malicious HTTPS', 'repository: "https://github.com/abssoft/dreamteam.git.evil/private.git"'],
+    ['canonical-prefix malicious SSH', 'repository: "git@github.com:abssoft/dreamteam.git.evil/private.git"'],
     ['repository git URL', 'repository=git://example.com/private-repo.git'],
     ['location http URL', 'location=http://example.com/private-repo.git'],
     ['origin ssh', 'origin: "ssh://git@example.com/private-repo.git"'],
