@@ -7,7 +7,7 @@
   "required": ["contract_version", "assignment_id", "role", "status", "summary", "deliverables", "changed_paths", "verification", "findings", "required_fixes", "blocker"],
   "properties": {
     "contract_version": {"const": 1},
-    "assignment_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._~:-]{0,127}$"},
+    "assignment_id": {"type": "string", "minLength": 1},
     "role": {"type": "string", "pattern": "^[a-z0-9-]+$"},
     "status": {"enum": ["done", "blocked", "needs_human", "failed"]},
     "summary": {"type": "string"},
@@ -23,14 +23,7 @@
         }
       }
     },
-    "changed_paths": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1,
-        "pattern": "^(?!/)(?![A-Za-z]:[\\\\/])(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\b[A-Z][A-Z0-9]+-[0-9]+\\b)[^\\\\]+$"
-      }
-    },
+    "changed_paths": {"type": "array", "items": {"type": "string"}},
     "verification": {"type": "array"},
     "findings": {"type": "array"},
     "required_fixes": {"type": "array"},

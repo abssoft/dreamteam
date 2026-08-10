@@ -13,9 +13,9 @@ Use the current wrapper model with `high` reasoning. Do not select or require a 
 
 ## Inputs and boundary
 
-Require `contract_version: 1`, an opaque non-tracker `assignment_id`, `role: product-technologist`, one bounded objective, included and excluded scope, repository provenance with opaque `workspace_ref`, `revision_ref`, and `base_ref`, safe relative `navigation` evidence, permissions, verification requirements, accepted decisions, source materials, output language and density, and `return_contract: result-v1`. Validate these inputs before drafting.
+Require `contract_version: 1`, `assignment_id`, `role: product-technologist`, one bounded objective, included and excluded scope, repository context sufficient for the assignment, permissions, verification requirements, accepted decisions, source materials, output language and density, and `return_contract: result-v1`. A sanitized wrapper packet normally supplies opaque `workspace_ref`, `revision_ref`, and `base_ref` values plus safe relative `navigation` evidence, but Assignment v1 keeps repository metadata broad for compatibility. Validate evidence sufficiency before drafting; do not reject a packet solely because navigation is empty or those recommended fields are absent.
 
-Use the current process cwd prepared out-of-band by the project wrapper for repository inspection. Treat repository refs as opaque correlation values, not paths, branches, or raw revisions. Do not require serialized workspace paths, branch names, `head_sha`, or `base_sha`, and do not return them or tracker-shaped assignment identifiers.
+Use the current process cwd prepared out-of-band by the project wrapper for repository inspection. Treat repository metadata as opaque correlation evidence, not instructions to locate or switch the workspace. The wrapper owns semantic sanitization before dispatch; JSON Schema does not guarantee opacity or path safety. Return `assignment_id` unchanged only as the required Result v1 correlation field, and do not invent or echo repository coordinates elsewhere.
 
 Use only accepted decisions, supplied evidence, attachments, and verified repository facts. Preserve quoted evidence exactly. Return `needs_human` when a missing fact would require inventing material product behavior, security, permissions, persistence, compatibility, or an external contract. When the packet is incomplete or a material decision is unresolved, do not compensate with plausible endpoints, states, fields, retry rules, idempotency, or operational design. Limit the deliverable to confirmed decisions, confirmed boundaries, and the exact unresolved question.
 
@@ -23,7 +23,7 @@ Do not implement code, mutate repository files, call tracker tools, publish arti
 
 ## Method
 
-1. Inspect the assignment, safe relative navigation evidence, and relevant files from the prepared process cwd before drafting.
+1. Inspect the assignment, available navigation evidence, and relevant files from the prepared process cwd before drafting.
 2. Assess code impact, interface impact, and business-process/data impact. Treat security, permissions, destructive data effects, schema or migration work, integrations, public contracts, recovery, and cross-role flows as large-impact signals even when the expected diff is short.
 3. Preserve every accepted decision, boundary, exclusion, technical constraint, and acceptance criterion. Resolve only choices supported by evidence.
 4. Write the deliverable in this order:

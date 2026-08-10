@@ -52,39 +52,7 @@ test('assignment fixture validates accepted neutral inputs', () => {
   assert.equal(value.inputs.output.language, 'ru');
 });
 
-test('assignment repository provenance rejects serialized workspace and VCS coordinates', () => {
-  const value = readJson('contracts/examples/assignment.json');
-  const forbidden = ['workspace_path', 'branch', 'base_branch', 'task_branch', 'head_sha', 'base_sha'];
-  const repositorySchema = assignmentSchema.properties.repository;
-
-  assert.equal(repositorySchema.additionalProperties, false);
-  assert.ok(repositorySchema.properties);
-  assert.ok(repositorySchema.required);
-
-  for (const key of forbidden) {
-    assert.equal(Object.hasOwn(repositorySchema.properties, key), false, key);
-    assert.equal(repositorySchema.required.includes(key), false, key);
-  }
-
-  for (const pathValue of ['/absolute/path.js', '../outside.js', 'src/../../outside.js', 'C:\\outside.js', 'refs/heads/DEV-204']) {
-    const candidate = structuredClone(value);
-    candidate.repository.navigation[0].path = pathValue;
-    assert.equal(validateAssignment(candidate), false, pathValue);
-  }
-
-  for (const [key, replacement] of [
-    ['workspace_path', '/workspace/project'],
-    ['branch', 'feature/task'],
-    ['head_sha', 'abc123'],
-    ['base_sha', 'def456'],
-  ]) {
-    const candidate = structuredClone(value);
-    candidate.repository[key] = replacement;
-    assert.equal(validateAssignment(candidate), false, key);
-  }
-});
-
-test('public contract examples use opaque non-tracker identifiers', () => {
+test('public contract examples use sanitized opaque identifiers', () => {
   const assignment = readJson('contracts/examples/assignment.json');
   const result = readJson('contracts/examples/result.json');
   const trackerKey = /\b[A-Z][A-Z0-9]+-\d+\b/;
@@ -97,20 +65,26 @@ test('public contract examples use opaque non-tracker identifiers', () => {
     assert.notEqual(assignment.repository[ref], '', ref);
     assert.doesNotMatch(assignment.repository[ref], trackerKey, ref);
   }
+});
 
-  const trackerAssignment = structuredClone(assignment);
-  trackerAssignment.assignment_id = 'DEV-204:development:1';
-  assert.equal(validateAssignment(trackerAssignment), false);
+test('version 1 keeps broad neutral repository and path compatibility', () => {
+  const assignment = readJson('contracts/examples/assignment.json');
+  assignment.assignment_id = 'Legacy Assignment 1';
+  assignment.repository = {
+    workspace_path: '/workspace/project',
+    head_sha: 'abc123',
+    base_sha: 'def456',
+    base_branch: 'main',
+    task_branch: 'feature/example',
+    rules: [],
+    navigation: [],
+  };
+  assertValid(validateAssignment, assignment, 'pre-fix assignment');
 
-  const trackerResult = structuredClone(result);
-  trackerResult.assignment_id = 'DEV-204:development:1';
-  assert.equal(validateResult(trackerResult), false);
-
-  for (const changedPath of ['/workspace/src/example.js', '../src/example.js', 'refs/heads/DEV-204']) {
-    const coordinateResult = structuredClone(result);
-    coordinateResult.changed_paths = [changedPath];
-    assert.equal(validateResult(coordinateResult), false, changedPath);
-  }
+  const result = readJson('contracts/examples/result.json');
+  result.assignment_id = assignment.assignment_id;
+  result.changed_paths = ['/workspace/project/src/example.js'];
+  assertValid(validateResult, result, 'pre-fix result');
 });
 
 test('result fixture validates one tagged neutral deliverable', () => {

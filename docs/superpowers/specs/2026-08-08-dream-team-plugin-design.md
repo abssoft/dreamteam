@@ -144,7 +144,7 @@ Shared concepts are expressed by contract files and focused references, not copi
 
 ### Assignment v1
 
-The Dispatcher supplies a complete assignment. Required conceptual fields are:
+The Dispatcher supplies a complete assignment. The sanitized public example is:
 
 ```yaml
 contract_version: 1
@@ -181,9 +181,9 @@ project_artifacts: []
 return_contract: result-v1
 ```
 
-The contract carries project facts but not tracker credentials, hidden reasoning, raw chat history, unrelated source content, or repository coordinates. Fields with tracker-specific meaning are normalized by the Dispatcher before dispatch.
+The contract carries project facts but not tracker credentials, hidden reasoning, raw chat history, unrelated source content, or repository coordinates. The Dispatcher owns semantic sanitization before dispatch.
 
-The repository refs are opaque correlation values, not paths, branch names, or raw revisions. Navigation evidence uses safe relative paths. The Dispatcher prepares the professional's process cwd out-of-band before launch; the professional neither requires nor returns that coordinate.
+The repository refs in the example are opaque correlation values, not paths, branch names, or raw revisions. Navigation evidence uses safe relative paths. The Dispatcher prepares the professional's process cwd out-of-band before launch; the professional neither locates nor switches the workspace from repository metadata. Assignment v1 keeps repository metadata structurally broad for compatibility, so JSON Schema does not guarantee semantic opacity or path safety. Empty navigation is valid at the schema layer; each professional decides whether the available evidence is sufficient for the assignment.
 
 ### Result v1
 

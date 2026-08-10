@@ -27,6 +27,6 @@ verification:
 return_contract: result-v1
 ```
 
-The wrapper prepares the process cwd out-of-band. Opaque repository refs correlate the assignment with wrapper state; they are not paths, branch names, or raw revisions.
+The wrapper prepares the process cwd out-of-band and owns semantic sanitization before dispatch. Opaque repository refs correlate the assignment with wrapper state; they are not instructions to locate or switch the workspace. Assignment v1 keeps repository metadata structurally broad for compatibility, so JSON Schema does not guarantee opacity or path safety. Empty navigation is schema-valid; decide whether the remaining evidence is sufficient for the assignment.
 
 The role may return `needs_human` when an unresolved material decision cannot be safely inferred.

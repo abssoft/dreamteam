@@ -7,7 +7,7 @@
   "required": ["contract_version", "assignment_id", "role", "objective", "scope", "repository", "permissions", "verification", "return_contract"],
   "properties": {
     "contract_version": {"const": 1},
-    "assignment_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._~:-]{0,127}$"},
+    "assignment_id": {"type": "string", "minLength": 1},
     "role": {"type": "string", "pattern": "^[a-z0-9-]+$"},
     "objective": {"type": "string", "minLength": 1},
     "scope": {
@@ -19,33 +19,7 @@
         "excluded": {"type": "array", "items": {"type": "string"}}
       }
     },
-    "repository": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["workspace_ref", "revision_ref", "base_ref", "navigation"],
-      "properties": {
-        "workspace_ref": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._~:-]{0,127}$"},
-        "revision_ref": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._~:-]{0,127}$"},
-        "base_ref": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._~:-]{0,127}$"},
-        "navigation": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["path", "purpose", "evidence"],
-            "properties": {
-              "path": {
-                "type": "string",
-                "minLength": 1,
-                "pattern": "^(?!/)(?![A-Za-z]:[\\\\/])(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\b[A-Z][A-Z0-9]+-[0-9]+\\b)[^\\\\]+$"
-              },
-              "purpose": {"type": "string", "minLength": 1},
-              "evidence": {"type": "string", "minLength": 1}
-            }
-          }
-        }
-      }
-    },
+    "repository": {"type": "object"},
     "permissions": {"type": "object"},
     "verification": {"type": "object"},
     "return_contract": {"const": "result-v1"},
