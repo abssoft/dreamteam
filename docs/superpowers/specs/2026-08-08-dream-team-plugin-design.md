@@ -329,7 +329,7 @@ The first wrapper migration should use `software-developer` or `code-reviewer`, 
 
 ## 16. Acceptance Criteria
 
-- `/Users/macmini/Documents/DreamTeam` is an independent Git repository.
+- DreamTeam is an independent Git repository.
 - Codex and Claude Code manifests and marketplaces validate.
 - Plugin installation exposes all declared role skills.
 - No Dispatcher or tracker integration exists in DreamTeam.
