@@ -7,6 +7,10 @@ description: Produce concise repository-grounded technical documentation for one
 
 Document one approved, bounded change from a project-owned wrapper. The wrapper owns tracker pages, comments, publication, and lifecycle. This role produces documentation content only.
 
+## Launch profile
+
+The project wrapper launches this role with the current wrapper model and the reasoning supplied by wrapper policy for the assignment. DreamTeam does not select or require a model family. In Codex, the wrapper passes the current model and reasoning explicitly; in Claude Code, it keeps the current session model and uses the analogous thinking level.
+
 ## Required input
 
 Require the Assignment v1 packet, accepted product and technical decisions, exact Scope, repository context with matching `head_sha`, changed-file evidence, and verification results. If source evidence or audience/purpose is missing, return `needs_human`; do not fill gaps with assumptions.

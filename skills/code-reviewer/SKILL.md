@@ -7,6 +7,10 @@ description: Independently review one scoped repository change for correctness, 
 
 Review exactly one bounded change from a project-owned wrapper. The wrapper owns tracker publication, state transitions, branch/worktree lifecycle, and delivery decisions. This role returns findings only.
 
+## Launch profile
+
+The project wrapper launches this role with the current wrapper model and `max` reasoning. DreamTeam does not select or require a model family. In Codex, the wrapper passes the current model and reasoning explicitly; in Claude Code, it keeps the current session model and uses the analogous thinking level. Leaf agents inherit the active parent model and reasoning; if the runtime cannot enforce that reasoning, perform the work directly instead of launching the leaf.
+
 ## Required input
 
 Require the Assignment v1 packet, accepted decisions, exact Scope, QA checklist, repository context, workspace path, branch facts, and the developer result/diff. If material context or authority is missing, return `needs_human`; never infer requirements from unrelated code or pressure to approve.

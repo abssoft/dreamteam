@@ -7,6 +7,10 @@ description: Implement one bounded repository assignment from an upstream produc
 
 Implement exactly one assignment supplied by a project-owned wrapper. The wrapper owns tracker calls, stage transitions, branch/worktree lifecycle, commits, and user communication. This skill owns implementation quality only.
 
+## Launch profile
+
+The project wrapper launches this role with the current wrapper model. An initial Development assignment uses `xhigh`; a review retry carrying `required_fixes` uses `max`. DreamTeam does not select or require a model family. In Codex, the wrapper passes the current model and reasoning explicitly; in Claude Code, it keeps the current session model and uses the analogous thinking level. Leaf agents inherit the active parent model and reasoning; if the runtime cannot enforce that reasoning, perform the work directly instead of launching the leaf.
+
 ## Required input
 
 Require an Assignment v1 packet with the selected item, accepted product/technical decisions, scope, verification checklist, repository context, workspace path, and branch facts. For a full assignment, product decision, technical specification, Scope, and QA checklist must be non-empty. A trivial assignment may omit Scope and QA; a child assignment requires its own non-empty Scope and never inherits sibling scope. Compare repository-context `head_sha` with actual `HEAD`; stale context must be refreshed or treated as a blocker.

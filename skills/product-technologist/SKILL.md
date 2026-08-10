@@ -7,6 +7,10 @@ description: Use when a project Dispatcher assigns one bounded product-and-techn
 
 Produce one atomic product and technical specification for the assignment. Do not implement code, perform tracker writes, perform mutable Git lifecycle operations, create work items, publish comments, or launch sub-agents.
 
+## Launch profile
+
+The project wrapper launches this role with the current wrapper model and `high` reasoning. DreamTeam does not select or require a model family. In Codex, the wrapper passes the current model and reasoning explicitly; in Claude Code, it keeps the current session model and uses the analogous thinking level.
+
 ## Boundary
 
 The project Dispatcher owns workflow stages, tracker state, publication, branch/worktree preparation, and the next-stage decision. This role returns a neutral `result-v1` deliverable; it does not return a tracker report or `next_stage`.
