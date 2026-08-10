@@ -4,6 +4,7 @@
   "plugins": [
     {
       "name": "dream-team",
+      "version": "1.0.1",
       "source": {"source": "url", "url": "./"},
       "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
       "category": "Developer Tools"

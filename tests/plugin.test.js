@@ -21,6 +21,9 @@ test('plugin metadata is synchronized across package, manifests, and marketplace
   assert.equal(claude.version, packageJson.version);
   assert.equal(codexMarketplace.plugins[0].name, packageJson.name);
   assert.equal(claudeMarketplace.plugins[0].name, packageJson.name);
+  assert.equal(codexMarketplace.plugins[0].version, packageJson.version);
+  assert.equal(claudeMarketplace.plugins[0].version, packageJson.version);
+  assert.equal(packageJson.version, '1.0.1');
 });
 
 test('assignment fixture contains the stable dispatcher-to-professional boundary', () => {
