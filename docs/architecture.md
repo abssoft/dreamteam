@@ -23,3 +23,5 @@ DreamTeam role skills and the public Assignment v1 / Result v1 contracts are the
 ## Contract boundary
 
 `contracts/assignment-v1.schema.json` is the wrapper-to-role input contract. `contracts/result-v1.schema.json` is the role-to-wrapper terminal contract. The wrapper remains responsible for validating and translating both contracts, including tracker-specific error handling and publication semantics.
+
+Assignment repository provenance is sanitized: `workspace_ref`, `revision_ref`, and `base_ref` are opaque correlation values, and navigation evidence uses safe relative paths. The wrapper prepares the actual process cwd out-of-band before launching a repository-using role. DreamTeam does not require or return absolute workspaces, branches, raw revisions, or tracker-keyed assignment identifiers.

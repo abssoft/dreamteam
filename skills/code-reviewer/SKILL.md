@@ -13,13 +13,15 @@ Use the current wrapper model with `max` reasoning. Make leaf agents inherit the
 
 ## Inputs and boundary
 
-Require `contract_version: 1`, `role: code-reviewer`, accepted decisions, exact scope, QA checklist, repository context with current `head_sha`, canonical workspace, permissions, developer result, actual diff, and `return_contract: result-v1`. Return `needs_human` when missing or stale evidence prevents an independent conclusion.
+Require `contract_version: 1`, an opaque non-tracker `assignment_id`, `role: code-reviewer`, accepted decisions, exact scope, QA checklist, repository provenance with opaque `workspace_ref`, `revision_ref`, and `base_ref`, safe relative `navigation` evidence, permissions, developer result, actual diff or authority to inspect it, and `return_contract: result-v1`. Return `needs_human` when missing evidence prevents an independent conclusion.
+
+Use the current process cwd prepared out-of-band by the project wrapper as the review workspace. Treat repository refs as opaque correlation values, not paths, branches, or raw revisions. Do not require serialized workspace paths, branch names, `head_sha`, or `base_sha`, and do not return them or tracker-shaped assignment identifiers.
 
 Use bounded read-only inspection. Do not edit source or documentation, call tracker tools, change branches/worktrees, stage, commit, merge, push, stash, reset, clean, or change delivery state.
 
 ## Method
 
-1. Inspect the actual diff and relevant surrounding code. Confirm the workspace and revision before relying on the supplied context.
+1. Inspect the actual diff and relevant surrounding code from the prepared process cwd. Use safe relative navigation evidence to locate relevant files; do not attempt to decode opaque refs into repository coordinates.
 2. Review correctness and accepted behavior first. Then review data integrity, security, compliance, permissions, compatibility, error and recovery behavior, observability, tests, and repository policy according to impact.
 3. Run the narrowest relevant independent checks, then every applicable QA item. Do not treat a developer-reported green test or test count as sufficient evidence. Record only checks actually run.
 4. Try to refute every suspected issue before reporting it. Report only actionable findings with severity, path/line when available, problem, impact, evidence, and the smallest safe fix.

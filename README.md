@@ -11,6 +11,8 @@ It provides four authoritative professional roles:
 
 The project wrapper owns the Dispatcher, tracker MCP, stages, statuses, Git/worktree lifecycle, and user-facing reports. DreamTeam roles receive a bounded assignment and return a neutral Result v1. They do not write tracker artifacts or perform mutable Git lifecycle operations.
 
+Assignment v1 carries only opaque `workspace_ref`, `revision_ref`, and `base_ref` provenance plus safe relative navigation evidence. The wrapper launches repository-using roles in the prepared process cwd out-of-band; roles never require or return an absolute workspace, branch, raw revision, or tracker-keyed assignment identifier.
+
 The wrapper also owns launch profiles. Every role runs on the wrapper/Dispatcher's current model; DreamTeam never pins a model family. The wrapper varies only reasoning: Product Technologist uses `high`, initial Software Developer uses `xhigh`, review-retry Software Developer and Code Reviewer use `max`, and Technical Writer uses the level selected by wrapper policy.
 
 See [docs/architecture.md](docs/architecture.md) for the wrapper/plugin boundary and installation behavior.
