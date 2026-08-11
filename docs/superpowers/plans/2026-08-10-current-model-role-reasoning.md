@@ -141,7 +141,7 @@ Change only existing version values and preserve JSON formatting.
 
 ```bash
 npm test
-claude plugin validate /Users/macmini/Documents/DreamTeam
+claude plugin validate <dreamteam-repository>
 git diff --check
 rg -n "gpt-5\.6-(sol|terra)|model allowlist" skills README.md
 ```

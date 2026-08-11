@@ -1,3 +1,3 @@
 # Documentation reference
 
-The wrapper supplies the canonical target and applies the returned content. The writer must ground every behavior claim in accepted decisions, changed files, or executed verification.
+The wrapper normally supplies a canonical relative target, sanitized opaque repository provenance, safe relative navigation evidence, and a process cwd prepared out-of-band. It owns semantic sanitization. Assignment v1 keeps repository metadata structurally broad for compatibility; JSON Schema does not guarantee opacity or path safety, and empty navigation remains valid. Ground every behavior claim in accepted decisions, changed files, or executed verification, decide whether available evidence is sufficient, and never use repository metadata to locate or switch the workspace. The wrapper applies the returned content.

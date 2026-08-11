@@ -1,6 +1,6 @@
 {
   "contract_version": 1,
-  "assignment_id": "TASK-13:development:1",
+  "assignment_id": "assignment-7f3b2c",
   "role": "software-developer",
   "objective": "Implement the bounded assignment",
   "scope": {
@@ -8,19 +8,19 @@
     "excluded": ["unrelated cleanup"]
   },
   "repository": {
-    "workspace_path": "/workspace/project",
-    "head_sha": "abc123",
-    "base_sha": "def456",
-    "base_branch": "TASK-8",
-    "task_branch": "TASK-13",
-    "rules": [],
-    "navigation_seeds": []
+    "workspace_ref": "workspace-a7f2",
+    "revision_ref": "revision-b91c",
+    "base_ref": "revision-a83d",
+    "navigation": [{
+      "path": "src/example.js",
+      "purpose": "bounded implementation entry point",
+      "evidence": "The approved specification identifies this relative path."
+    }]
   },
   "permissions": {
+    "repository_read": true,
     "source_changes": true,
     "documentation_changes": false,
-    "tracker_reads": false,
-    "tracker_writes": false,
     "mutable_git": false,
     "subagents": "bounded"
   },
@@ -28,5 +28,15 @@
     "required": ["npm test"],
     "optional": []
   },
-  "return_contract": "result-v1"
+  "return_contract": "result-v1",
+  "inputs": {
+    "accepted_decisions": ["Keep the change bounded to the approved behavior."],
+    "source_materials": [{
+      "kind": "text",
+      "name": "approved specification",
+      "content": "Implement the approved bounded change.",
+      "provenance": "project wrapper"
+    }],
+    "output": {"language": "ru", "density": "terse"}
+  }
 }

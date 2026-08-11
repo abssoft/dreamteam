@@ -1,10 +1,16 @@
 {
   "contract_version": 1,
-  "assignment_id": "TASK-13:development:1",
+  "assignment_id": "assignment-7f3b2c",
   "role": "software-developer",
   "status": "done",
   "summary": "Implemented the bounded assignment",
-  "deliverables": [],
+  "deliverables": [{
+    "kind": "implementation_summary",
+    "content": {
+      "behavior": "Implemented the bounded assignment.",
+      "verification_summary": "npm test passed."
+    }
+  }],
   "changed_paths": ["src/example.js"],
   "verification": [
     {

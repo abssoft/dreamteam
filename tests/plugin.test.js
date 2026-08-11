@@ -2,10 +2,19 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import Ajv2020 from 'ajv/dist/2020.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 const readJson = (relative) => JSON.parse(fs.readFileSync(path.join(root, relative), 'utf8'));
 const readText = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
+const ajv = new Ajv2020({ allErrors: true, strict: true });
+const assignmentSchema = readJson('contracts/assignment-v1.schema.json');
+const resultSchema = readJson('contracts/result-v1.schema.json');
+const validateAssignment = ajv.compile(assignmentSchema);
+const validateResult = ajv.compile(resultSchema);
+const assertValid = (validate, value, label) => {
+  assert.equal(validate(value), true, `${label}: ${ajv.errorsText(validate.errors)}`);
+};
 
 test('plugin metadata is synchronized across package, manifests, and marketplaces', () => {
   const packageJson = readJson('package.json');
@@ -23,41 +32,88 @@ test('plugin metadata is synchronized across package, manifests, and marketplace
   assert.equal(claudeMarketplace.plugins[0].name, packageJson.name);
   assert.equal(codexMarketplace.plugins[0].version, packageJson.version);
   assert.equal(claudeMarketplace.plugins[0].version, packageJson.version);
-  assert.equal(packageJson.version, '1.0.1');
+  assert.equal(packageJson.version, '1.1.0');
 });
 
-test('assignment fixture contains the stable dispatcher-to-professional boundary', () => {
+test('assignment fixture validates accepted neutral inputs', () => {
+  const value = readJson('contracts/examples/assignment.json');
+  assertValid(validateAssignment, value, 'assignment fixture');
+  assert.deepEqual(Object.keys(value.repository), [
+    'workspace_ref',
+    'revision_ref',
+    'base_ref',
+    'navigation',
+  ]);
+  assert.deepEqual(Object.keys(value.inputs), [
+    'accepted_decisions',
+    'source_materials',
+    'output',
+  ]);
+  assert.equal(value.inputs.output.language, 'ru');
+});
+
+test('public contract examples use sanitized opaque identifiers', () => {
   const assignment = readJson('contracts/examples/assignment.json');
-  for (const key of ['contract_version', 'assignment_id', 'role', 'objective', 'scope', 'repository', 'permissions', 'verification', 'return_contract']) {
-    assert.ok(Object.hasOwn(assignment, key), key);
-  }
-});
-
-test('result fixture is tracker-neutral and terminal', () => {
   const result = readJson('contracts/examples/result.json');
-  assert.ok(['done', 'blocked', 'needs_human', 'failed'].includes(result.status));
-  assert.equal(Object.hasOwn(result, 'next_stage'), false);
-  assert.equal(Object.hasOwn(result, 'plane_report'), false);
-  assert.equal(Object.hasOwn(result, 'youtrack_report'), false);
+  const trackerKey = /\b[A-Z][A-Z0-9]+-\d+\b/;
+
+  assert.doesNotMatch(assignment.assignment_id, trackerKey);
+  assert.doesNotMatch(result.assignment_id, trackerKey);
+  assert.equal(result.assignment_id, assignment.assignment_id);
+  for (const ref of ['workspace_ref', 'revision_ref', 'base_ref']) {
+    assert.equal(typeof assignment.repository[ref], 'string', ref);
+    assert.notEqual(assignment.repository[ref], '', ref);
+    assert.doesNotMatch(assignment.repository[ref], trackerKey, ref);
+  }
 });
 
-test('roles inherit the wrapper current model and never select a model family', () => {
-  const roles = {
-    product: readText('skills/product-technologist/SKILL.md'),
-    developer: readText('skills/software-developer/SKILL.md'),
-    reviewer: readText('skills/code-reviewer/SKILL.md'),
-    writer: readText('skills/technical-writer/SKILL.md'),
+test('version 1 keeps broad neutral repository and path compatibility', () => {
+  const assignment = readJson('contracts/examples/assignment.json');
+  assignment.assignment_id = 'Legacy Assignment 1';
+  assignment.repository = {
+    workspace_path: '/workspace/project',
+    head_sha: 'abc123',
+    base_sha: 'def456',
+    base_branch: 'main',
+    task_branch: 'feature/example',
+    rules: [],
+    navigation: [],
   };
+  assertValid(validateAssignment, assignment, 'pre-fix assignment');
 
-  for (const [name, text] of Object.entries(roles)) {
-    assert.match(text, /current (?:wrapper|Dispatcher) model/i, `${name}: current model inheritance missing`);
-    assert.doesNotMatch(text, /gpt-5\.6-(?:sol|terra)|model allowlist/i, `${name}: fixed model selection leaked into role`);
+  const result = readJson('contracts/examples/result.json');
+  result.assignment_id = assignment.assignment_id;
+  result.changed_paths = ['/workspace/project/src/example.js'];
+  assertValid(validateResult, result, 'pre-fix result');
+});
+
+test('result fixture validates one tagged neutral deliverable', () => {
+  const value = readJson('contracts/examples/result.json');
+  assertValid(validateResult, value, 'result fixture');
+  assert.equal(value.deliverables[0].kind, 'implementation_summary');
+  for (const key of ['next_stage', 'changed_sections', 'split_recommendation', 'plane_report']) {
+    assert.equal(Object.hasOwn(value, key), false, key);
   }
+});
 
-  assert.match(roles.product, /`high` reasoning/i);
-  assert.match(roles.developer, /initial[^\n]*`xhigh`[^\n]*(?:review retry|required_fixes)[^\n]*`max`/i);
-  assert.match(roles.reviewer, /`max` reasoning/i);
-  assert.match(roles.writer, /reasoning[^\n]*supplied by (?:the )?wrapper/i);
-  assert.match(roles.developer, /leaf[^\n]*inherit[^\n]*model and reasoning/i);
-  assert.match(roles.reviewer, /leaf[^\n]*inherit[^\n]*model and reasoning/i);
+const roleDeliverables = {
+  'product-technologist': 'product_technical_spec',
+  'software-developer': 'implementation_summary',
+  'code-reviewer': 'review_report',
+  'technical-writer': 'documentation_proposal',
+};
+
+test('each role returns its neutral tagged Result v1 deliverable', () => {
+  for (const [role, kind] of Object.entries(roleDeliverables)) {
+    const skill = readText(`skills/${role}/SKILL.md`);
+    const handoff = skill.match(/```json\s*([\s\S]*?)\s*```/);
+    assert.ok(handoff, `${role}: Result v1 example missing`);
+    const result = JSON.parse(handoff[1]);
+    assertValid(validateResult, result, role);
+    assert.equal(result.role, role);
+    assert.equal(result.deliverables[0].kind, kind);
+    for (const field of ['next_stage', 'changed_sections', 'split_recommendation', 'plane_report']) {
+      assert.equal(Object.hasOwn(result, field), false, `${role}: ${field}`);
+    }
+  }
 });

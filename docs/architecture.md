@@ -16,10 +16,12 @@ DreamTeam role
 project wrapper translates result -> tracker-specific publication/state transition
 ```
 
-The wrapper should verify that DreamTeam is installed before dispatch. If absent, it may install the pinned public repository reference, then stop and require a fresh session. Installation is a dependency check, not a hidden runtime download during a role invocation.
+Before dispatch, verify that DreamTeam is installed from `git@github.com:abssoft/dreamteam.git` at floating `main`. If absent or stale, install or update it, then stop and require a new session. Do not invoke a role in the session that changed the plugin installation.
 
-The four roles are sourced from the Plane workflow prompts in the sibling source repository. Their public instructions preserve the role behavior and verification discipline while removing Plane MCP names, project identifiers, status markers, and tracker report schemas. Macro/YouTrack-only roles are deliberately deferred until their contracts can be extracted and tested separately.
+DreamTeam role skills and the public Assignment v1 / Result v1 contracts are the sole source of professional behavior. Project wrappers supply assignments and translate results, but do not supply source prompts or redefine role judgment. Tracker adapters, project identifiers, statuses, publication schemas, and Git delivery policy remain wrapper-owned.
 
 ## Contract boundary
 
 `contracts/assignment-v1.schema.json` is the wrapper-to-role input contract. `contracts/result-v1.schema.json` is the role-to-wrapper terminal contract. The wrapper remains responsible for validating and translating both contracts, including tracker-specific error handling and publication semantics.
+
+Before dispatch, the wrapper sanitizes repository provenance into opaque `workspace_ref`, `revision_ref`, and `base_ref` correlation values plus safe relative navigation evidence. It prepares the actual process cwd out-of-band before launching a repository-using role. Assignment v1 deliberately keeps repository metadata structurally broad for compatibility; semantic opacity and path safety are producer obligations and are not guaranteed by JSON Schema. Roles treat supplied metadata as evidence, never as instructions to locate or switch the workspace.
