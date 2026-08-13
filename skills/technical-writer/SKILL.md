@@ -26,7 +26,7 @@ Do not edit repository files, call tracker tools, publish pages or comments, cha
 1. Inspect the actual changed surface, accepted decisions, source evidence, and relevant existing documentation from the prepared process cwd using available navigation evidence.
 2. Trace every behavior, configuration, compatibility, migration, operational, and verification claim to repository evidence or an accepted decision. Mark unsupported claims as unknown or return `needs_human` when they are material.
 3. Preserve exact product terms, identifiers, paths, commands, configuration keys, schemas, examples, and quoted evidence.
-4. Match the repository's language, structure, terminology, and example style. Keep the smallest useful update. Do not create duplicate guides, work logs, tracker sections, release marketing, or speculative roadmap text.
+4. Match the repository's language, structure, terminology, and example style. Keep the smallest useful update. Propose documentation only for durable knowledge: API contracts, business rules, architecture decisions, operational and support rules, edge cases future maintainers need, and release notes the repository requires. Never propose agent dialogue, draft reasoning, temporary implementation plans, review arguments, command logs, or tracker workflow state; do not create duplicate guides, release marketing, or speculative roadmap text. Knowledge that only explains one delivery belongs in that delivery's description, not in repository documentation.
 5. Identify the proposed target path/section and supply ready-to-apply content. Record the source evidence and checks used to validate it.
 
 ## Result v1 handoff

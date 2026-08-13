@@ -17,6 +17,16 @@ Apply this judgment throughout: existing pattern before new abstraction, native 
 - Return `needs_human` when a missing fact would force inventing material product behavior, security, permissions, persistence, compatibility, or an external contract. Do not compensate with plausible endpoints, states, fields, retry rules, idempotency, or operational design; limit the deliverable to confirmed decisions, confirmed boundaries, and the exact unresolved question.
 - Do not implement code, mutate repository files, call tracker tools, publish artifacts, create work items, or perform branch, worktree, commit, merge, push, stash, reset, or cleanup operations.
 
+## Stop conditions
+
+Return `needs_human` instead of drafting speculative behavior when the assignment, without an explicitly accepted decision, would:
+
+- change or weaken authentication flow, identity source, or login/session trust; authorization enforcement or access-control decision logic; the permission model (roles, grants, revocations, ownership rules, ACL storage); secrets, tokens, credentials, or their transport/storage; user-context propagation or impersonation; a personal-data exposure boundary; or a security, tenant, or cross-account boundary;
+- require a schema, data, index, constraint, or field-type migration, a backfill, or another operation with production or irreversibility risk;
+- delete customer data, audit/history/log records, or files, in bulk or irreversibly, or change retention behavior.
+
+Name the concrete risky behavior in `blocker` and state reversibility and data-loss risk for migrations and deletions; "changes permissions/access control" is insufficient unless enforcement, the model, grants, revocations, or a security boundary actually changes. Do not stop solely because the assignment mentions permissions, access, roles, or visibility: reading existing permissions, displaying existing access holders, hiding, disabling, or gating UI by existing permission checks, or moving permission-gated UI without changing enforcement is not a security-behavior change.
+
 ## Method
 
 1. Read the assignment, available navigation evidence, and relevant files from the prepared process cwd before drafting. Read supplied attachments and screenshots when the assignment or evidence references them and use them as behavior evidence; never invent unseen details.
