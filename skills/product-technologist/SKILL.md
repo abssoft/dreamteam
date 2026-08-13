@@ -18,7 +18,11 @@ Produce one atomic product and technical specification from an Assignment v1 pac
 ## Method
 
 1. Read the assignment, available navigation evidence, and relevant files from the prepared process cwd before drafting.
-2. Assess impact on code, interfaces, and business processes/data. Security, permissions, destructive data effects, schema or migration work, integrations, public contracts, recovery, and cross-role flows are large-impact signals even when the expected diff is short.
+2. Classify the assignment internally as `small`, `medium`, or `large` from verified impact on code, interfaces, and business processes/data. Wording length and raw file count are weak signals; behavioral reach and risk decide the level:
+   - `small` — expected behavior is explicit and bounded, with no material data, security, permission, integration, public-contract, or multi-step process change;
+   - `medium` — one meaningful flow or coherent deliverable crosses related components or contracts and has material edge cases or compatibility boundaries;
+   - `large` — behavior is cross-cutting: multiple roles or process stages, integrations or public contracts, schema or migration work, security or permissions, destructive data effects, recovery, substantial compatibility risk, or likely independent children.
+   Any large-impact signal raises the level even when the expected diff is short. Mixed evidence selects the higher justified level; material ambiguity returns `needs_human`, never speculative prose.
 3. Preserve every accepted decision, boundary, exclusion, technical constraint, and acceptance criterion. Resolve only choices supported by evidence.
 4. Write the deliverable sections in this order:
    - `Продуктовое решение` — material behavior, actors, boundaries, accepted decisions;
@@ -26,8 +30,12 @@ Produce one atomic product and technical specification from an Assignment v1 pac
    - `Scope` — relevant paths, entry points, interfaces, included work, deliberately unchanged behavior;
    - `QA check-list` — observable success and regression checks;
    - `План реализации` — only when a justified split exists.
-5. Match depth to size: keep small work compact, medium work complete for the main flow and edge cases, large work complete for affected roles, data, permissions, integrations, migration, recovery, operations, and compatibility. Never emit the size classification itself.
-6. Recommend a split only for 2–7 independently deliverable direct children, each with a unique name and ordered non-empty scope; any implementation plan must match those children exactly. Otherwise return `recommended: false` inside the deliverable content.
+5. Match depth to the level — density changes, the output contract does not:
+   - `small` — state only material behavior and boundaries, exact changed and deliberately unchanged behavior, minimal verified Scope, and the smallest observable regression-proof QA set; do not separately enumerate audience, value, scenarios, components, or analogues that add no decision or implementation constraint;
+   - `medium` — cover the main actor or caller flow, states, boundaries, affected contracts, compatibility behavior, and meaningful edge cases;
+   - `large` — cover affected roles and flows, interfaces and integrations, data and migration behavior, permissions, failure and recovery, operational risk, compatibility, and useful decomposition.
+   All required sections stay present; density never removes material obligations and never forces boilerplate; every point carries a decision, boundary, implementation, or verification obligation; no fact repeats across sections. Never emit the size classification itself.
+6. Recommend a split only for 2–7 independently deliverable direct children, each with a unique name and ordered non-empty scope; any implementation plan must match those children exactly. `large` is evidence for considering a split, not an automatic split. Otherwise return `recommended: false` inside the deliverable content.
 7. Verify every material statement against accepted decisions or source evidence. Record exact checks and unresolved facts.
 
 ## Result v1 handoff
