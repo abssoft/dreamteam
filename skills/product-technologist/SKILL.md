@@ -37,7 +37,7 @@ Name the concrete risky behavior in `blocker` and state reversibility and data-l
    Any large-impact signal raises the level even when the expected diff is short. Mixed evidence selects the higher justified level; material ambiguity returns `needs_human`, never speculative prose.
 3. Only after classifying the assignment as `large` may you launch up to three parallel read-only research children when independent repository areas or impact dimensions justify it; `small` and `medium` stay single-agent. Give each child one bounded question and the exact expected evidence. Children inspect repository evidence only and return exact paths, symbols, contracts, findings, and unknowns; they must not edit files, draft deliverable sections, decide product behavior, or launch descendants. Wait for every child, validate its evidence, and remain the single author of every decision.
 4. Preserve every accepted decision, boundary, exclusion, technical constraint, and acceptance criterion. Resolve only choices supported by evidence.
-5. Write the deliverable sections in this order:
+5. Write the deliverable as one Markdown document (`document_markdown`) whose `##` headings are exactly these sections in this order:
    - `Продуктовое решение` — material behavior, actors, boundaries, accepted decisions;
    - `Техническое задание` — exact behavior, states, contracts, failure handling, compatibility, verification obligations, and the compact pre-mortem block when material risks exist;
    - `Scope` — exact verified paths and entry points, changed interfaces and contracts, blast radius (callers, readers, consumers, integrations, shared state), `Эталон: <относительный путь>` naming the closest repository analogue for every new code unit when one exists, included work, and deliberately unchanged adjacent behavior; generic directories, speculative paths, unverified symbols, and invented analogues are forbidden — a material unknown returns `needs_human`;
@@ -49,7 +49,7 @@ Name the concrete risky behavior in `blocker` and state reversibility and data-l
    - `large` — cover affected roles and flows, interfaces and integrations, data and migration behavior, permissions, failure and recovery, operational risk, compatibility, and useful decomposition.
    All required sections stay present; density never removes material obligations and never forces boilerplate; every point carries a decision, boundary, implementation, or verification obligation; no fact repeats across sections. Never emit the size classification itself.
 7. Pre-mortem: assume the change shipped and failed. Check five failure classes — wrong logic or data assumption and unhandled null/empty/boundary cases; adjacent regression through hidden consumers, contracts, or shared state; performance, security, architecture, or scale degradation; delayed production, load, or rollback failure; executor error such as a hallucinated API, extra files, scope drift, a skipped check, or a wrong fix. Keep only material evidence-backed risks, one line each: `симптом → детекция → митигация`, where every detection references a concrete `QA check-list` item. Add one rollback line: `откат: <как, что с данными>` or `необратимо`. An irreversible change without an explicitly accepted decision returns `needs_human`. Omit paper risks, and omit the whole block when no material risk remains.
-8. Recommend a split only for 2–7 independently deliverable direct children, each with a unique name and ordered non-empty scope; any implementation plan must match those children exactly. `large` is evidence for considering a split, not an automatic split. Otherwise return `recommended: false` inside the deliverable content.
+8. Recommend a split only for 2–7 independently deliverable direct children. Each task carries exactly two fields: a unique non-empty `name` and `scope` — a non-empty ordered array of non-empty plain-text strings. No other task fields (no `order`, no priority); execution order is the array order. Any implementation plan must match those children exactly. `large` is evidence for considering a split, not an automatic split. Otherwise return `{"recommended": false, "reason": "<one line>", "tasks": []}` inside the deliverable content.
 9. Verify every material statement against accepted decisions or source evidence. Record exact checks and unresolved facts.
 
 ## Result v1 handoff
@@ -66,12 +66,7 @@ Return only JSON compatible with Result v1, using all fields below. Keep `change
   "deliverables": [{
     "kind": "product_technical_spec",
     "content": {
-      "sections": [
-        {"name": "Продуктовое решение", "content": "State the accepted product decision and boundaries."},
-        {"name": "Техническое задание", "content": "Define implementation and verification obligations."},
-        {"name": "Scope", "content": "List included and deliberately excluded surfaces."},
-        {"name": "QA check-list", "content": "List observable acceptance and regression checks."}
-      ],
+      "document_markdown": "## Продуктовое решение\nState the accepted product decision and boundaries.\n\n## Техническое задание\nDefine implementation and verification obligations.\n\n## Scope\nList included and deliberately excluded surfaces.\n\n## QA check-list\nList observable acceptance and regression checks.",
       "split_recommendation": {"recommended": false, "reason": "The assignment is independently deliverable.", "tasks": []}
     }
   }],
