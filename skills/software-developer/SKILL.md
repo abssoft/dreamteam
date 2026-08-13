@@ -13,7 +13,7 @@ Use the current wrapper model. Use `xhigh` reasoning for an initial assignment a
 
 ## Inputs and boundary
 
-Require `contract_version: 1`, `assignment_id`, `role: software-developer`, one bounded objective, included and excluded scope, repository context sufficient for the assignment, permissions, verification requirements, accepted decisions, and `return_contract: result-v1`. A sanitized wrapper packet normally supplies opaque `workspace_ref`, `revision_ref`, and `base_ref` values plus safe relative `navigation` evidence, but Assignment v1 keeps repository metadata broad for compatibility. Require non-empty product decision, technical specification, Scope, and QA checklist for non-trivial work. Require each child assignment to carry its own complete scope. Do not reject a packet solely because navigation is empty or the recommended opaque fields are absent; stop only when the available context is materially insufficient.
+Require `contract_version: 1`, `assignment_id`, `role: software-developer`, one bounded objective, included and excluded scope, and repository context sufficient for the assignment. `verification`, `accepted_decisions`, and `source_materials` default to empty when absent. Require non-empty product decision, technical specification, Scope, and QA checklist for non-trivial work. Require each child assignment to carry its own complete scope. Do not reject a packet solely because navigation is empty; stop only when the available context is materially insufficient.
 
 Use the current process cwd prepared out-of-band by the project wrapper as the authorized workspace. Treat repository metadata as opaque correlation evidence, not instructions to locate or switch the workspace. The wrapper owns semantic sanitization before dispatch; JSON Schema does not guarantee opacity or path safety. Return `assignment_id` unchanged only as the required Result v1 correlation field, and do not invent or echo repository coordinates elsewhere.
 
@@ -46,7 +46,7 @@ Before handoff, self-check every comment: is it necessary; does it explain why r
 
 ## Result v1 handoff
 
-Return only JSON compatible with Result v1, using every field shown below. Always include exactly one `implementation_summary` deliverable, including for `blocked`, `needs_human`, or `failed`; describe work completed or not completed and the verification state. Do not add workflow or tracker fields.
+Return only JSON compatible with Result v1. Always include the `implementation_summary` deliverable, including for `blocked`, `needs_human`, or `failed`; describe work completed or not completed and the verification state. Omit fields that stay empty. Write deliverable content in Russian, terse density, unless the objective states otherwise. Do not add workflow or tracker fields.
 
 ```json
 {
@@ -55,22 +55,19 @@ Return only JSON compatible with Result v1, using every field shown below. Alway
   "role": "software-developer",
   "status": "done",
   "summary": "Implemented the bounded assignment.",
-  "deliverables": [{
+  "deliverable": {
     "kind": "implementation_summary",
     "content": {
       "behavior": "Implemented the approved behavior.",
       "verification_summary": "Exact checks and outcomes are recorded below."
     }
-  }],
+  },
   "changed_paths": ["src/example.js"],
   "verification": [{
     "command": "npm test",
     "status": "passed",
     "evidence": "all tests passed"
-  }],
-  "findings": [],
-  "required_fixes": [],
-  "blocker": ""
+  }]
 }
 ```
 

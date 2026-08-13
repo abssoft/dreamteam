@@ -35,7 +35,7 @@ test('each role SKILL.md embeds a valid neutral Result v1 handoff', () => {
     const result = JSON.parse(handoff[1]);
     assertValid(validateResult, result, role);
     assert.equal(result.role, role);
-    assert.equal(result.deliverables[0].kind, kind);
+    assert.equal(result.deliverable.kind, kind);
     for (const field of ['next_stage', 'changed_sections', 'split_recommendation', 'plane_report']) {
       assert.equal(Object.hasOwn(result, field), false, `${role}: ${field}`);
     }

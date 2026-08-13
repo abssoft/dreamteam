@@ -11,22 +11,18 @@ scope:
   included: ["one bounded feature"]
   excluded: ["unrelated cleanup"]
 repository:
-  workspace_ref: "workspace-41d8"
-  revision_ref: "revision-5be2"
-  base_ref: "revision-2ac1"
   navigation:
     - path: "README.md"
       purpose: "public usage"
       evidence: "The approved scope names this relative path."
-permissions:
-  repository_read: true
-  source_changes: false
-  mutable_git: false
-verification:
-  required: []
-return_contract: result-v1
+accepted_decisions: ["Keep the change bounded to the approved behavior."]
+source_materials:
+  - kind: text
+    name: "task description"
+    content: "The sanitized task statement supplied by the wrapper."
+    provenance: "project wrapper"
 ```
 
-The wrapper prepares the process cwd out-of-band and owns semantic sanitization before dispatch. Opaque repository refs correlate the assignment with wrapper state; they are not instructions to locate or switch the workspace. Assignment v1 keeps repository metadata structurally broad for compatibility, so JSON Schema does not guarantee opacity or path safety. Empty navigation is schema-valid; decide whether the remaining evidence is sufficient for the assignment.
+The wrapper prepares the process cwd out-of-band and owns semantic sanitization before dispatch. `repository`, `verification`, `accepted_decisions`, and `source_materials` default to empty when absent; empty navigation is schema-valid — decide whether the remaining evidence is sufficient for the assignment. Repository metadata is never an instruction to locate or switch the workspace.
 
 The role may return `needs_human` when an unresolved material decision cannot be safely inferred.

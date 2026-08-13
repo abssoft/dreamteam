@@ -4,23 +4,20 @@
   "title": "DreamTeam Result v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["contract_version", "assignment_id", "role", "status", "summary", "deliverables", "changed_paths", "verification", "findings", "required_fixes", "blocker"],
+  "required": ["contract_version", "assignment_id", "role", "status", "summary", "deliverable"],
   "properties": {
     "contract_version": {"const": 1},
     "assignment_id": {"type": "string", "minLength": 1},
     "role": {"type": "string", "pattern": "^[a-z0-9-]+$"},
     "status": {"enum": ["done", "blocked", "needs_human", "failed"]},
     "summary": {"type": "string"},
-    "deliverables": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["kind", "content"],
-        "properties": {
-          "kind": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
-          "content": {}
-        }
+    "deliverable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "content"],
+      "properties": {
+        "kind": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+        "content": {}
       }
     },
     "changed_paths": {"type": "array", "items": {"type": "string"}},

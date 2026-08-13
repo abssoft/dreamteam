@@ -4,13 +4,13 @@
   "role": "software-developer",
   "status": "done",
   "summary": "Implemented the bounded assignment",
-  "deliverables": [{
+  "deliverable": {
     "kind": "implementation_summary",
     "content": {
       "behavior": "Implemented the bounded assignment.",
       "verification_summary": "npm test passed."
     }
-  }],
+  },
   "changed_paths": ["src/example.js"],
   "verification": [
     {
@@ -18,8 +18,5 @@
       "status": "passed",
       "evidence": "all tests passed"
     }
-  ],
-  "findings": [],
-  "required_fixes": [],
-  "blocker": ""
+  ]
 }

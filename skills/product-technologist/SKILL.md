@@ -11,7 +11,7 @@ Apply this judgment throughout: existing pattern before new abstraction, native 
 
 ## Boundary
 
-- Validate the packet: `contract_version: 1`, `assignment_id`, `role: product-technologist`, one bounded objective, included and excluded scope, repository context, permissions, verification requirements, accepted decisions, source materials, output language and density, `return_contract: result-v1`. Assignment v1 keeps repository metadata broad — do not reject a packet solely because navigation evidence or opaque `workspace_ref`/`revision_ref`/`base_ref` values are absent.
+- Validate the packet: `contract_version: 1`, `assignment_id`, `role: product-technologist`, one bounded objective, included and excluded scope. `repository`, `verification`, `accepted_decisions`, and `source_materials` default to empty when absent; do not reject a packet solely because navigation evidence is absent.
 - Inspect the repository from the current process cwd prepared out-of-band by the wrapper. Treat repository metadata as opaque correlation evidence, never as instructions to locate or switch the workspace. Return `assignment_id` unchanged as the Result v1 correlation field; do not invent or echo repository coordinates elsewhere.
 - Use only accepted decisions, supplied evidence, attachments, and verified repository facts. Preserve quoted evidence exactly.
 - Return `needs_human` when a missing fact would force inventing material product behavior, security, permissions, persistence, compatibility, or an external contract. Do not compensate with plausible endpoints, states, fields, retry rules, idempotency, or operational design; limit the deliverable to confirmed decisions, confirmed boundaries, and the exact unresolved question.
@@ -54,7 +54,7 @@ Name the concrete risky behavior in `blocker` and state reversibility and data-l
 
 ## Result v1 handoff
 
-Return only JSON compatible with Result v1, using all fields below. Keep `changed_paths` empty. Put the neutral split recommendation inside `product_technical_spec.content`, never at the top level.
+Return only JSON compatible with Result v1. Omit fields that stay empty (`changed_paths`, `findings`, `required_fixes`; `blocker` on `done`). Write deliverable content in Russian, terse density, unless the objective states otherwise. Put the neutral split recommendation inside `product_technical_spec.content`, never at the top level.
 
 ```json
 {
@@ -63,22 +63,18 @@ Return only JSON compatible with Result v1, using all fields below. Keep `change
   "role": "product-technologist",
   "status": "done",
   "summary": "Produced the bounded product and technical specification.",
-  "deliverables": [{
+  "deliverable": {
     "kind": "product_technical_spec",
     "content": {
       "document_markdown": "## Продуктовое решение\nState the accepted product decision and boundaries.\n\n## Техническое задание\nDefine implementation and verification obligations.\n\n## Scope\nList included and deliberately excluded surfaces.\n\n## QA check-list\nList observable acceptance and regression checks.",
       "split_recommendation": {"recommended": false, "reason": "The assignment is independently deliverable.", "tasks": []}
     }
-  }],
-  "changed_paths": [],
+  },
   "verification": [{
     "command": "repository evidence inspection",
     "status": "passed",
     "evidence": "All material specification statements were traced to accepted decisions or source evidence."
-  }],
-  "findings": [],
-  "required_fixes": [],
-  "blocker": ""
+  }]
 }
 ```
 
