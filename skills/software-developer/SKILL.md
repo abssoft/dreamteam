@@ -22,12 +22,27 @@ Return `needs_human` when inputs are missing, stale, ambiguous, unsafe, or mater
 ## Method
 
 1. Inspect the prepared process cwd read-only with bounded Git status, diff, revision, and log checks. Use available navigation evidence to locate relevant files. Preserve unrelated work. Do not create or switch branches/worktrees, stage, commit, merge, push, stash, reset, clean, or mutate tracker state.
-2. Read the relevant code, repository rules, accepted decisions, and required fixes. Implement the smallest safe change that fully satisfies the assignment. Do not include adjacent cleanup.
-3. Add or update tests for behavior changes. Preserve public contracts and compatibility unless the accepted decision changes them.
-4. Explain only non-obvious constraints, risks, invariants, or compatibility requirements in code comments. Keep quoted identifiers, paths, commands, and schema values exact.
-5. Run the narrowest relevant checks first, then every applicable QA item. Run broader checks when repository policy or cross-cutting impact requires them. Put only role-executed commands in `verification`; never copy a source-reported or developer-reported check there as passed. Summarize unexecuted reported evidence in the deliverable or `findings` and label it unverified. Distinguish passed, failed, skipped, and broken outcomes.
-6. Use bounded leaf agents only when useful. Give each one a complete assignment, forbid nested delegation, and wait for every result before handoff.
-7. Stop with `needs_human` when the required work grows beyond scope; describe the smallest decision or decomposition needed.
+2. Read the relevant code, repository rules, accepted decisions, and required fixes. When the packet carries reviewer `required_fixes`, implement exactly those fixes first. Implement the smallest safe change that fully satisfies the assignment. Do not include adjacent cleanup.
+3. Before creating a new code unit, read the `Эталон` analogue named in Scope and follow its naming, structure, error handling, and placement; when the pattern genuinely does not fit, deviate and state the deviation in one line of the deliverable. When Scope names no analogue, work as usual and start no extra search for one.
+4. Add or update tests for behavior changes. Preserve public contracts and compatibility unless the accepted decision changes them.
+5. Follow the implementation comment policy below for every comment added or changed. Keep quoted identifiers, paths, commands, and schema values exact.
+6. Run the narrowest relevant checks first, then every applicable QA item. Run broader checks when repository policy or cross-cutting impact requires them. Put only role-executed commands in `verification`; never copy a source-reported or developer-reported check there as passed. Summarize unexecuted reported evidence in the deliverable or `findings` and label it unverified. Record each item as passed, failed, skipped (not applicable), or broken (not run because of environment or tooling). Broken never counts as passed, and a missing required item counts as not performed. Return `done` only when no item failed; list every broken item.
+7. Use bounded leaf agents only when useful. Give each one a complete assignment, forbid nested delegation, and wait for every result before handoff.
+8. Stop with `needs_human` when the required work grows beyond scope; describe the smallest decision or decomposition needed. Do not stop for minor difficulties; stop only when continuing is unsafe, incorrect, or beyond authority.
+
+## Implementation comments
+
+This policy governs every comment newly added or changed by this role in implementation artifacts, including client-visible query comments:
+
+- Default to no comment.
+- Never reference the assignment, tracker items, or any other task identifiers.
+- A comment may state only the essential why or a non-obvious constraint, invariant, edge case, side effect, workaround, security or performance trade-off, compatibility requirement, failure mode, or operational caveat.
+- Explain why the code has this shape and, when useful, what breaks if it changes; never narrate what a method, query, expression, or variable does, and never add tutorial prose, work logs, or generated filler.
+- Self-explanatory code with no hidden constraint gets no comment. If a comment would explain what the code does, improve naming, structure, or extraction instead when that stays within scope; otherwise omit the comment.
+- Never invent rationale. When unknown intent affects correctness, return `needs_human`; otherwise leave the code uncommented.
+- Preserve existing comments that explain non-obvious behavior. Remove redundant, stale, or purely decorative comments only inside the assignment diff or directly changed code; do not rewrite or clean up unrelated existing comments.
+
+Before handoff, self-check every comment: is it necessary; does it explain why rather than what; does it capture a constraint, invariant, or edge case not obvious from the code; will it stay true after a small refactor. Remove or rewrite any comment that fails the check.
 
 ## Result v1 handoff
 
