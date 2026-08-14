@@ -27,6 +27,19 @@ test('contract examples validate against their schemas', () => {
   assertValid(validateResult, readJson('contracts/examples/result.json'), 'result example');
 });
 
+test('published plugin manifests use the package version', () => {
+  const version = readJson('package.json').version;
+  const manifestVersions = [
+    readJson('package-lock.json').version,
+    readJson('.claude-plugin/plugin.json').version,
+    readJson('.claude-plugin/marketplace.json').plugins[0].version,
+    readJson('.codex-plugin/plugin.json').version,
+    readJson('.agents/plugins/marketplace.json').plugins[0].version,
+  ];
+
+  assert.deepEqual(manifestVersions, [version, version, version, version, version]);
+});
+
 test('each role SKILL.md embeds a valid neutral Result v1 handoff', () => {
   for (const [role, kind] of Object.entries(roleDeliverables)) {
     const skill = readText(`skills/${role}/SKILL.md`);
