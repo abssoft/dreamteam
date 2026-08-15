@@ -29,7 +29,7 @@ Name the concrete risky behavior in `blocker` and state reversibility and data-l
 
 ## Method
 
-1. Read the assignment, available navigation evidence, and relevant files from the prepared process cwd before drafting. Read supplied attachments and screenshots when the assignment or evidence references them and use them as behavior evidence; never invent unseen details.
+1. First, from the process cwd, run the sibling `env-snapshot` skill script in one shell call (`node <plugin_root>/skills/env-snapshot/scripts/env-snapshot.mjs`; see that skill for options) and treat its output as the environment baseline — repository rules, docs index, project scripts, and git state — instead of re-collecting them; pass `--skip=rules` when the hosting runtime already injected the repository instruction chain. Then read the assignment, available navigation evidence, and relevant files from the prepared process cwd before drafting. Read supplied attachments and screenshots when the assignment or evidence references them and use them as behavior evidence; never invent unseen details.
 2. Classify the assignment internally as `small`, `medium`, or `large` from verified impact on code, interfaces, and business processes/data. Wording length and raw file count are weak signals; behavioral reach and risk decide the level:
    - `small` — expected behavior is explicit and bounded, with no material data, security, permission, integration, public-contract, or multi-step process change;
    - `medium` — one meaningful flow or coherent deliverable crosses related components or contracts and has material edge cases or compatibility boundaries;
