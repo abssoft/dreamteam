@@ -57,7 +57,7 @@ Name the concrete risky behavior in `blocker`; for migrations and deletions stat
 
 ## Result v1 handoff
 
-Return only JSON compatible with Result v1. Omit fields that stay empty (`changed_paths`, `findings`, `required_fixes`; `blocker` on `done`). Write deliverable content in Russian, terse density, unless the objective states otherwise. Put the neutral split recommendation inside `product_technical_spec.content`, never at the top level.
+Return only JSON compatible with Result v1, and emit no other text during the run: no preamble, acknowledgement, plan announcement, or progress narration before, between, or after tool calls — the final message is the JSON alone. Omit fields that stay empty (`changed_paths`, `findings`, `required_fixes`; `blocker` on `done`). Write deliverable content in Russian, terse density, unless the objective states otherwise. Put the neutral split recommendation inside `product_technical_spec.content`, never at the top level.
 
 ```json
 {

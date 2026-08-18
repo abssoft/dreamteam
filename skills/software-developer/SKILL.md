@@ -46,7 +46,7 @@ Before handoff, self-check every comment: is it necessary; does it explain why r
 
 ## Result v1 handoff
 
-Return only JSON compatible with Result v1. Always include the `implementation_summary` deliverable, including for `blocked`, `needs_human`, or `failed`; describe work completed or not completed and the verification state. Omit fields that stay empty. Write deliverable content in Russian, terse density, unless the objective states otherwise. Do not add workflow or tracker fields.
+Return only JSON compatible with Result v1, and emit no other text during the run: no preamble, acknowledgement, plan announcement, or progress narration before, between, or after tool calls — the final message is the JSON alone. Always include the `implementation_summary` deliverable, including for `blocked`, `needs_human`, or `failed`; describe work completed or not completed and the verification state. Omit fields that stay empty. Write deliverable content in Russian, terse density, unless the objective states otherwise. Do not add workflow or tracker fields.
 
 ```json
 {

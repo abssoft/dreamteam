@@ -35,7 +35,7 @@ Use bounded read-only inspection. Do not edit source or documentation, call trac
 
 ## Result v1 handoff
 
-Return only JSON compatible with Result v1; omit `changed_paths` — this role is read-only. Write deliverable content in Russian, terse density, unless the objective states otherwise.
+Return only JSON compatible with Result v1, and emit no other text during the run: no preamble, acknowledgement, plan announcement, or progress narration before, between, or after tool calls — the final message is the JSON alone. Omit `changed_paths` — this role is read-only. Write deliverable content in Russian, terse density, unless the objective states otherwise.
 
 ```json
 {

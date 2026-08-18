@@ -31,7 +31,7 @@ Do not edit repository files, call tracker tools, publish pages or comments, cha
 
 ## Result v1 handoff
 
-Return only JSON compatible with Result v1; omit `changed_paths` — the wrapper applies the proposal. Write deliverable content in Russian, terse density, unless the objective states otherwise.
+Return only JSON compatible with Result v1, and emit no other text during the run: no preamble, acknowledgement, plan announcement, or progress narration before, between, or after tool calls — the final message is the JSON alone. Omit `changed_paths` — the wrapper applies the proposal. Write deliverable content in Russian, terse density, unless the objective states otherwise.
 
 ```json
 {
