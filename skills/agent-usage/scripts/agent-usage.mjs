@@ -13,8 +13,8 @@
 //               cost_usd, unpriced_models, by_model, source,
 //               rendered: {block, table_header, rows}, comment_html}
 //   ok:false → {ok, code, warning_line}: bad_args | logs_not_found |
-//               root_not_found | ambiguous_root | timestamps_missing |
-//               log_limit_exceeded | collector_error
+//               root_not_found | ambiguous_root | workflow_run_incomplete |
+//               timestamps_missing | log_limit_exceeded | collector_error
 // steps counts API model requests across the launch: Codex — token_count
 // events, Claude — distinct requestIds carrying usage. The optimization
 // target is fewer steps per task.
@@ -47,8 +47,11 @@
 // one are listed in unpriced_models (their tokens still count in `tokens`).
 // Codex: rollout files under ~/.codex/{sessions,archived_sessions}; the root
 // thread is the one whose session_meta thread_spawn has
-// parent_thread_id === sessionId and agent_path === rootAgentRef; descendants
-// are linked by parent_thread_id chains. Token totals sum the per-event
+// parent_thread_id === sessionId and agent_path === rootAgentRef; for
+// multi_agent_v1 spawns, whose agent_path is null, the thread id must equal
+// rootAgentRef instead. Descendants are linked by parent_thread_id chains; a
+// null-path descendant additionally requires its thread id to appear in the
+// parent's log, otherwise workflow_run_incomplete. Token totals sum the per-event
 // deltas of the cumulative token_count counters; models come from
 // turn_context records.
 // Claude Code: ~/.claude/projects/**/<sessionId>/subagents/agent-<id>.jsonl;
@@ -358,13 +361,21 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
         const [record] = await readRecords(path, { firstOnly: true });
         const payload = record?.type === "session_meta" ? record.payload : undefined;
         const spawn = payload?.source?.subagent?.thread_spawn;
-        if (!isNonEmptyString(payload?.id) || !isNonEmptyString(spawn?.parent_thread_id) || !isNonEmptyString(spawn?.agent_path)) {
+        if (!isNonEmptyString(payload?.id) || !isNonEmptyString(spawn?.parent_thread_id)) {
             continue;
         }
-        metadata.push({ path, id: payload.id, parentId: spawn.parent_thread_id, agentPath: spawn.agent_path });
+        // multi_agent_v1 spawns leave no agent_path; the thread is then
+        // identified by its id and evidenced by the parent's tool output.
+        metadata.push({
+            path,
+            id: payload.id,
+            parentId: spawn.parent_thread_id,
+            agentPath: isNonEmptyString(spawn.agent_path) ? spawn.agent_path : null
+        });
     }
 
-    const roots = metadata.filter((item) => item.parentId === sessionId && item.agentPath === rootAgentRef);
+    const roots = metadata.filter((item) => item.parentId === sessionId
+        && (item.agentPath === rootAgentRef || (item.agentPath === null && item.id === rootAgentRef)));
     if (roots.length === 0) failWith("root_not_found");
     if (roots.length > 1) failWith("ambiguous_root");
 
@@ -384,6 +395,11 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
     const ledger = usageLedger();
     for (const item of selected.values()) {
         const records = await readRecords(item.path);
+        // A null-path child has no structured launch record; the only
+        // parent-side evidence is its thread id echoed in tool output.
+        for (const child of metadata.filter((meta) => meta.parentId === item.id && meta.agentPath === null)) {
+            if (!records.some((record) => JSON.stringify(record).includes(child.id))) failWith("workflow_run_incomplete");
+        }
         let activeModel;
         let prev;
         // Per-model working time within this thread: the span of all records
