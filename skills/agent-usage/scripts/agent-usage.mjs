@@ -18,18 +18,26 @@
 // steps counts API model requests across the launch: Codex — token_count
 // events, Claude — distinct requestIds carrying usage. The optimization
 // target is fewer steps per task.
-// by_model splits steps/tokens/cost per model: [{model, steps,
-//   tokens: {input, cached_input, output, total}, cost_usd|null}] sorted by
-//   model name; cost_usd is null for models without a PRICING entry. Claude
-//   attribution is exact per request; Codex attribution is per thread (a
-//   thread's cumulative totals go to its last turn_context model).
+// by_model splits wall time/steps/tokens/cost per model: [{model,
+//   wall_seconds, steps, tokens: {input, cached_input, output, total},
+//   cost_usd|null}] sorted by model name; cost_usd is null for models
+//   without a PRICING entry. Claude token/step attribution is exact per
+//   request; Codex attributes the delta between consecutive cumulative
+//   token_count events to the model active at that event (turn_context), so
+//   a thread that switches models splits correctly; a negative delta means
+//   the counter reset and the event becomes a fresh baseline. Per-model
+//   wall_seconds is that model's own working time: the span of records
+//   while the model was active (Codex, per thread) or of its own assistant
+//   records (Claude, per agent file), summed across threads/files; parallel
+//   agents can make the sum exceed the launch-level wall_seconds (the full
+//   launch span).
 // rendered.* and warning_line are ready-to-paste Russian strings — the
 // caller copies them verbatim and never re-formats numbers: rendered.block
 // is the standalone «Затрачено» table for one launch; rendered.rows is the
-// same data rows (one Markdown table line per model, newline-joined) for
-// assembling a multi-launch table over rendered.table_header. The launch
-// wall time appears only on the first row of a launch. comment_html is the
-// same breakdown as one HTML fragment for trackers that take HTML comments.
+// same data rows (one Markdown table line per model, newline-joined, each
+// carrying that model's own working time) for assembling a multi-launch
+// table over rendered.table_header. comment_html is the same breakdown as
+// one HTML fragment for trackers that take HTML comments.
 // Token cells: >=1 000 000 → millions with two decimals and «М» (3238493 →
 // 3.24М), below → space-separated thousands (323885 → 323 885); the Выход
 // cell always uses the space form.
@@ -40,9 +48,9 @@
 // Codex: rollout files under ~/.codex/{sessions,archived_sessions}; the root
 // thread is the one whose session_meta thread_spawn has
 // parent_thread_id === sessionId and agent_path === rootAgentRef; descendants
-// are linked by parent_thread_id chains. Token totals come from the last
-// token_count event of each selected thread (cumulative per thread); models
-// come from turn_context records.
+// are linked by parent_thread_id chains. Token totals sum the per-event
+// deltas of the cumulative token_count counters; models come from
+// turn_context records.
 // Claude Code: ~/.claude/projects/**/<sessionId>/subagents/agent-<id>.jsonl;
 // the launched Task's file carries agentId === rootAgentRef; usage and models
 // are summed over its assistant messages.
@@ -93,11 +101,16 @@ function usageLedger() {
     const bucket = (model) => {
         const key = isNonEmptyString(model) && model !== "<synthetic>" ? model : "неизвестно";
         if (!perModel.has(key)) {
-            perModel.set(key, { steps: 0, input: 0, cached_input: 0, output: 0, total: 0, usd: 0 });
+            perModel.set(key, { wall_ms: 0, steps: 0, input: 0, cached_input: 0, output: 0, total: 0, usd: 0 });
         }
         return perModel.get(key);
     };
     return {
+        // Milliseconds of this model's own working span (one thread or one
+        // agent file at a time); summed across units into wall_seconds.
+        addWall(model, ms) {
+            bucket(model).wall_ms += ms;
+        },
         // totals: {input, cached_input, output, total} — log-shaped counts.
         // priced: {input, cache_write, cached_input, output} — raw slices.
         add(model, steps, totals, priced) {
@@ -135,6 +148,7 @@ function usageLedger() {
             return {
                 by_model: sorted.map(([model, entry]) => ({
                     model,
+                    wall_seconds: Math.round(entry.wall_ms / 1000),
                     steps: entry.steps,
                     tokens: { input: entry.input, cached_input: entry.cached_input, output: entry.output, total: entry.total },
                     cost_usd: entry.unpriced ? null : Math.round(entry.usd * 10_000) / 10_000
@@ -181,13 +195,13 @@ function escapeHtml(value) {
 function renderUsage({ label, wall_seconds, by_model, steps, cost_usd, unpriced_models }) {
     const entries = by_model.length > 0
         ? by_model
-        : [{ model: "неизвестно", steps: 0, tokens: { input: 0, cached_input: 0, output: 0, total: 0 }, cost_usd: 0 }];
+        : [{ model: "неизвестно", wall_seconds, steps: 0, tokens: { input: 0, cached_input: 0, output: 0, total: 0 }, cost_usd: 0 }];
     const rows = entries
-        .map((entry, index) =>
+        .map((entry) =>
             [
                 "",
                 `${label}<br>*${entry.model}*`,
-                index === 0 ? formatWall(wall_seconds) : "",
+                formatWall(entry.wall_seconds),
                 `${formatTokens(entry.tokens.input)}<br>*кэш ${formatTokens(entry.tokens.cached_input)}*`,
                 formatThousands(entry.tokens.output),
                 formatTokens(entry.tokens.total),
@@ -205,7 +219,8 @@ function renderUsage({ label, wall_seconds, by_model, steps, cost_usd, unpriced_
         : String(cost_usd);
     const items = entries
         .map((entry) =>
-            `<li><b>${escapeHtml(entry.model)}</b>: вход ${formatTokens(entry.tokens.input)} (кэш ${formatTokens(entry.tokens.cached_input)}) · ` +
+            `<li><b>${escapeHtml(entry.model)}</b>: ${formatWall(entry.wall_seconds)} · ` +
+            `вход ${formatTokens(entry.tokens.input)} (кэш ${formatTokens(entry.tokens.cached_input)}) · ` +
             `выход ${formatThousands(entry.tokens.output)} · всего ${formatTokens(entry.tokens.total)} · шаги ${formatThousands(entry.steps)}` +
             `${entry.cost_usd === null ? " · без тарифа" : ` · $${entry.cost_usd}`}</li>`
         )
@@ -369,32 +384,51 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
     const ledger = usageLedger();
     for (const item of selected.values()) {
         const records = await readRecords(item.path);
-        let lastUsage;
-        let lastModel;
-        let threadSteps = 0;
+        let activeModel;
+        let prev;
+        // Per-model working time within this thread: the span of all records
+        // while that model was the active turn_context model.
+        const modelSpans = new Map();
         for (const record of records) {
             span.add(record.timestamp);
             const payload = record?.payload;
             if (record?.type === "turn_context" && isNonEmptyString(payload?.model)) {
                 models.add(payload.model);
-                lastModel = payload.model;
+                activeModel = payload.model;
+            }
+            if (activeModel !== undefined) {
+                if (!modelSpans.has(activeModel)) modelSpans.set(activeModel, spanCollector());
+                modelSpans.get(activeModel).add(record.timestamp);
             }
             if (record?.type === "event_msg" && payload?.type === "token_count" && payload.info?.total_token_usage) {
-                lastUsage = payload.info.total_token_usage;
-                threadSteps += 1;
+                const cur = payload.info.total_token_usage;
+                const now = {
+                    input: cur.input_tokens ?? 0,
+                    cached: cur.cached_input_tokens ?? 0,
+                    output: cur.output_tokens ?? 0
+                };
+                now.total = cur.total_tokens ?? now.input + now.output;
+                // token_count is cumulative per thread: the delta since the
+                // previous event is this request's usage and belongs to the
+                // model active right now. A negative delta means the counter
+                // reset — take the event as a fresh baseline.
+                let delta = prev
+                    ? { input: now.input - prev.input, cached: now.cached - prev.cached, output: now.output - prev.output, total: now.total - prev.total }
+                    : now;
+                if (delta.input < 0 || delta.cached < 0 || delta.output < 0 || delta.total < 0) delta = now;
+                prev = now;
+                // Codex input_tokens include the cached subset; price the two slices apart.
+                ledger.add(
+                    activeModel,
+                    1,
+                    { input: delta.input, cached_input: delta.cached, output: delta.output, total: delta.total },
+                    { input: Math.max(0, delta.input - delta.cached), cached_input: delta.cached, output: delta.output }
+                );
             }
         }
-        if (lastUsage) {
-            const input = lastUsage.input_tokens ?? 0;
-            const cached = lastUsage.cached_input_tokens ?? 0;
-            const output = lastUsage.output_tokens ?? 0;
-            // Codex input_tokens include the cached subset; price the two slices apart.
-            ledger.add(
-                lastModel,
-                threadSteps,
-                { input, cached_input: cached, output, total: lastUsage.total_tokens ?? input + output },
-                { input: Math.max(0, input - cached), cached_input: cached, output }
-            );
+        for (const [model, modelSpan] of modelSpans) {
+            const { min, max } = modelSpan.result();
+            if (min !== undefined && max !== undefined && max >= min) ledger.addWall(model, max - min);
         }
     }
     emit(label, span, selected.size, models, ledger, "codex");
@@ -428,6 +462,9 @@ async function collectClaude({ sessionId, rootAgentRef, label, claudeProjectsRoo
         // Streaming writes several assistant records per API request; the last
         // record per requestId carries the final usage — keep only that one.
         const usageByRequest = new Map();
+        // Per-model working time within this file: the span of the model's own
+        // assistant records (streaming duplicates extend it naturally).
+        const modelSpans = new Map();
         for (const record of records) {
             span.add(record.timestamp);
             const childId = record?.toolUseResult?.agentId;
@@ -439,7 +476,17 @@ async function collectClaude({ sessionId, rootAgentRef, label, claudeProjectsRoo
             const usage = record?.message?.usage;
             const model = record?.message?.model;
             if (usage) usageByRequest.set(record.requestId ?? record.uuid, { usage, model });
-            if (isNonEmptyString(model) && model !== "<synthetic>") models.add(model);
+            if (isNonEmptyString(model) && model !== "<synthetic>") {
+                models.add(model);
+                if (usage) {
+                    if (!modelSpans.has(model)) modelSpans.set(model, spanCollector());
+                    modelSpans.get(model).add(record.timestamp);
+                }
+            }
+        }
+        for (const [model, modelSpan] of modelSpans) {
+            const { min, max } = modelSpan.result();
+            if (min !== undefined && max !== undefined && max >= min) ledger.addWall(model, max - min);
         }
         for (const { usage, model } of usageByRequest.values()) {
             const input = usage.input_tokens ?? 0;

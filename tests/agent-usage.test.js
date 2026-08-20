@@ -128,13 +128,15 @@ test('Codex sums the launched thread tree: last cumulative token_count per threa
   // gpt-5.6-terra: ((1500-600)*2 + 600*0.2 + 80*12) / 1e6, rounded to 4 decimals.
   assert.equal(result.cost_usd, 0.0029);
   assert.deepEqual(result.unpriced_models, []);
+  // Per-model wall time sums the spans while the model was active: root
+  // 10:00:01 (turn_context) → 10:05:00 (299s) + child 10:02:00→10:03:00 (60s).
   assert.deepEqual(result.by_model, [
-    { model: 'gpt-5.6-terra', steps: 3, tokens: { input: 1500, cached_input: 600, output: 80, total: 1580 }, cost_usd: 0.0029 }
+    { model: 'gpt-5.6-terra', wall_seconds: 359, steps: 3, tokens: { input: 1500, cached_input: 600, output: 80, total: 1580 }, cost_usd: 0.0029 }
   ]);
 
   // The collector renders the «Затрачено» block itself: caller-side digit
   // formatting is banned, the caller pastes rendered.block verbatim.
-  const rows = '| Разработка<br>*gpt-5.6-terra* | 5м 0с | 1 500<br>*кэш 600* | 80 | 1 580 | 3 | 0.0029 |';
+  const rows = '| Разработка<br>*gpt-5.6-terra* | 5м 59с | 1 500<br>*кэш 600* | 80 | 1 580 | 3 | 0.0029 |';
   assert.deepEqual(result.rendered, {
     block: `Затрачено:\n\n${TABLE_HEADER}\n${rows}`,
     table_header: TABLE_HEADER,
@@ -143,7 +145,43 @@ test('Codex sums the launched thread tree: last cumulative token_count per threa
   assert.equal(
     result.comment_html,
     '<p>Метрики Разработка: 5м 0с · шаги 3 · $0.0029</p>' +
-      '<ul><li><b>gpt-5.6-terra</b>: вход 1 500 (кэш 600) · выход 80 · всего 1 580 · шаги 3 · $0.0029</li></ul>'
+      '<ul><li><b>gpt-5.6-terra</b>: 5м 59с · вход 1 500 (кэш 600) · выход 80 · всего 1 580 · шаги 3 · $0.0029</li></ul>'
+  );
+});
+
+test('Codex splits a model switch inside one thread by token_count deltas', async () => {
+  const sessionsRoot = await makeLogs({
+    'rollout-root.jsonl': [
+      codexMeta('thread-root', 'sess-1', '/root/development'),
+      codexTurnContext('gpt-5.6-sol', '2026-01-01T10:00:10.000Z'),
+      codexTokenCount({ input_tokens: 100, cached_input_tokens: 0, output_tokens: 10, total_tokens: 110 }, '2026-01-01T10:01:00.000Z'),
+      codexTurnContext('gpt-5.6-terra', '2026-01-01T10:01:30.000Z'),
+      codexTokenCount({ input_tokens: 300, cached_input_tokens: 50, output_tokens: 30, total_tokens: 330 }, '2026-01-01T10:03:00.000Z')
+    ]
+  });
+  const empty = await emptyDir();
+
+  const result = await runCollector({
+    runtime: 'codex', sessionId: 'sess-1', rootAgentRef: '/root/development', label: 'Разработка',
+    codexRoot: sessionsRoot, codexArchivedRoot: empty
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.models, ['gpt-5.6-sol', 'gpt-5.6-terra']);
+  assert.deepEqual(result.tokens, { input: 300, cached_input: 50, output: 30, total: 330 });
+  assert.equal(result.steps, 2);
+  // sol: the first cumulative event (100/0/10); terra: the delta of the second
+  // (200/50/20). Wall: sol active 10:00:10→10:01:00, terra 10:01:30→10:03:00.
+  assert.deepEqual(result.by_model, [
+    { model: 'gpt-5.6-sol', wall_seconds: 50, steps: 1, tokens: { input: 100, cached_input: 0, output: 10, total: 110 }, cost_usd: 0.0008 },
+    { model: 'gpt-5.6-terra', wall_seconds: 90, steps: 1, tokens: { input: 200, cached_input: 50, output: 20, total: 220 }, cost_usd: 0.0006 }
+  ]);
+  // Raw sums before rounding: sol 0.0008 + terra 0.00055.
+  assert.equal(result.cost_usd, 0.0014);
+  assert.equal(
+    result.rendered.rows,
+    '| Разработка<br>*gpt-5.6-sol* | 0м 50с | 100<br>*кэш 0* | 10 | 110 | 1 | 0.0008 |\n' +
+      '| Разработка<br>*gpt-5.6-terra* | 1м 30с | 200<br>*кэш 50* | 20 | 220 | 1 | 0.0006 |'
   );
 });
 
@@ -259,24 +297,26 @@ test('Claude splits the report per model with exact per-request attribution', as
   assert.deepEqual(result.tokens, { input: 1110, cached_input: 0, output: 115, total: 1225 });
   assert.equal(result.steps, 3);
   // opus: (100*5 + 10*25) / 1e6; sonnet: (1010*2 + 105*10) / 1e6; total from raw sums.
+  // Per-model wall time spans the model's own records: sonnet 10:00:00→10:02:00,
+  // opus has a single record → 0s.
   assert.deepEqual(result.by_model, [
-    { model: 'claude-opus-5', steps: 1, tokens: { input: 100, cached_input: 0, output: 10, total: 110 }, cost_usd: 0.0008 },
-    { model: 'claude-sonnet-5', steps: 2, tokens: { input: 1010, cached_input: 0, output: 105, total: 1115 }, cost_usd: 0.0031 }
+    { model: 'claude-opus-5', wall_seconds: 0, steps: 1, tokens: { input: 100, cached_input: 0, output: 10, total: 110 }, cost_usd: 0.0008 },
+    { model: 'claude-sonnet-5', wall_seconds: 120, steps: 2, tokens: { input: 1010, cached_input: 0, output: 105, total: 1115 }, cost_usd: 0.0031 }
   ]);
   assert.equal(result.cost_usd, 0.0038);
 
-  // One table row per model; the launch wall time appears only on the first row.
+  // One table row per model; each row carries that model's own working time.
   assert.equal(
     result.rendered.rows,
-    '| PRD<br>*claude-opus-5* | 2м 0с | 100<br>*кэш 0* | 10 | 110 | 1 | 0.0008 |\n' +
-      '| PRD<br>*claude-sonnet-5* |  | 1 010<br>*кэш 0* | 105 | 1 115 | 2 | 0.0031 |'
+    '| PRD<br>*claude-opus-5* | 0м 0с | 100<br>*кэш 0* | 10 | 110 | 1 | 0.0008 |\n' +
+      '| PRD<br>*claude-sonnet-5* | 2м 0с | 1 010<br>*кэш 0* | 105 | 1 115 | 2 | 0.0031 |'
   );
   assert.equal(result.rendered.block, `Затрачено:\n\n${TABLE_HEADER}\n${result.rendered.rows}`);
   assert.equal(
     result.comment_html,
     '<p>Метрики PRD: 2м 0с · шаги 3 · $0.0038</p><ul>' +
-      '<li><b>claude-opus-5</b>: вход 100 (кэш 0) · выход 10 · всего 110 · шаги 1 · $0.0008</li>' +
-      '<li><b>claude-sonnet-5</b>: вход 1 010 (кэш 0) · выход 105 · всего 1 115 · шаги 2 · $0.0031</li></ul>'
+      '<li><b>claude-opus-5</b>: 0м 0с · вход 100 (кэш 0) · выход 10 · всего 110 · шаги 1 · $0.0008</li>' +
+      '<li><b>claude-sonnet-5</b>: 2м 0с · вход 1 010 (кэш 0) · выход 105 · всего 1 115 · шаги 2 · $0.0031</li></ul>'
   );
 });
 
@@ -328,9 +368,9 @@ test('pricing matches model prefixes and quarantines unknown models without drop
   assert.equal(priced.cost_usd, 0.003);
   assert.equal(unpriced.cost_usd, null);
   const [first, second] = result.rendered.rows.split('\n');
-  assert.match(first, /^\| PRD<br>\*claude-sonnet-5-20260101\* \| /);
+  assert.match(first, /^\| PRD<br>\*claude-sonnet-5-20260101\* \| 0м 0с \| /);
   assert.match(first, /\| 1 \| 0\.003 \|$/);
-  assert.match(second, /^\| PRD<br>\*mystery-9\* \| {2}\| /);
+  assert.match(second, /^\| PRD<br>\*mystery-9\* \| 0м 0с \| /);
   assert.match(second, /\| 1 \| без тарифа \|$/);
 });
 
@@ -363,4 +403,40 @@ test('rendering switches to millions with two decimals at 1 000 000 tokens, outp
     result.rendered.rows,
     `| Ревью<br>*claude-sonnet-5* | 12м 34с | 3.24М<br>*кэш 1.24М* | 323 885 | 3.56М | 2 | ${result.cost_usd} |`
   );
+});
+
+test('per-model wall time sums the model span across separate agent files', async () => {
+  const projectsRoot = await makeLogs({
+    'proj/sess-uuid/subagents/agent-root1.jsonl': [
+      claudeAssistant({
+        requestId: 'req1', model: 'claude-sonnet-5', at: '2026-01-01T10:00:00.000Z',
+        usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 }
+      }),
+      claudeAssistant({
+        requestId: 'req2', model: 'claude-sonnet-5', at: '2026-01-01T10:00:30.000Z',
+        usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 }
+      }),
+      { type: 'user', timestamp: '2026-01-01T10:00:31.000Z', toolUseResult: { agentId: 'child1' } }
+    ],
+    'proj/sess-uuid/subagents/agent-child1.jsonl': [
+      claudeAssistant({
+        requestId: 'req3', model: 'claude-sonnet-5', at: '2026-01-01T10:01:00.000Z',
+        usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 }
+      }),
+      claudeAssistant({
+        requestId: 'req4', model: 'claude-sonnet-5', at: '2026-01-01T10:01:40.000Z',
+        usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 }
+      })
+    ]
+  });
+
+  const result = await runCollector({
+    runtime: 'claude', sessionId: 'sess-uuid', rootAgentRef: 'root1', label: 'Ревью',
+    claudeProjectsRoot: projectsRoot
+  });
+
+  assert.equal(result.ok, true);
+  // Root file span 30s + child file span 40s; the gap between files is not attributed.
+  assert.equal(result.by_model[0].wall_seconds, 70);
+  assert.equal(result.wall_seconds, 100, 'launch wall time stays the full span');
 });
