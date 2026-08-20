@@ -224,6 +224,81 @@ test('Codex without any timestamped record fails with timestamps_missing', async
   );
 });
 
+// multi_agent_v1 spawns write agent_path: null; the only parent-side launch
+// evidence is the child thread id echoed in tool output.
+function codexMultiAgentSpawnOutput(agentId, at = '2026-01-01T10:00:10.000Z') {
+  return {
+    timestamp: at,
+    type: 'response_item',
+    payload: {
+      type: 'custom_tool_call_output',
+      call_id: `call-${agentId}`,
+      output: [{ type: 'input_text', text: `{"agent_id":"${agentId}","nickname":"Mencius"}` }]
+    }
+  };
+}
+
+test('Codex resolves a multi_agent_v1 root by thread id when agent_path is null', async () => {
+  const root = await makeLogs({
+    'root.jsonl': [
+      codexMeta('01a0-root-thread', 'sess-1', null),
+      codexTurnContext('gpt-5.6-terra'),
+      codexTokenCount({ input_tokens: 100, cached_input_tokens: 0, output_tokens: 10, total_tokens: 110 }, '2026-01-01T10:07:00.000Z')
+    ]
+  });
+  const empty = await emptyDir();
+  const result = await runCollector({
+    runtime: 'codex', sessionId: 'sess-1', rootAgentRef: '01a0-root-thread', label: 'Разработка',
+    codexRoot: root, codexArchivedRoot: empty
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.agents, 1);
+  assert.deepEqual(result.tokens, { input: 100, cached_input: 0, output: 10, total: 110 });
+  assert.equal(result.wall_seconds, 420);
+});
+
+test('Codex multi_agent_v1 children need the parent log to mention their thread id', async () => {
+  const childRecords = [
+    codexMeta('child-thread', 'root-thread', null),
+    codexTurnContext('gpt-5.6-terra', '2026-01-01T10:01:00.000Z'),
+    codexTokenCount({ input_tokens: 50, cached_input_tokens: 0, output_tokens: 5, total_tokens: 55 }, '2026-01-01T10:03:00.000Z')
+  ];
+  const rootRecords = [
+    codexMeta('root-thread', 'sess-1', null),
+    codexTurnContext('gpt-5.6-terra'),
+    codexTokenCount({ input_tokens: 100, cached_input_tokens: 0, output_tokens: 10, total_tokens: 110 }, '2026-01-01T10:04:00.000Z')
+  ];
+  const evidenced = await makeLogs({
+    'root.jsonl': [...rootRecords, codexMultiAgentSpawnOutput('child-thread')],
+    'child.jsonl': childRecords
+  });
+  const unevidenced = await makeLogs({
+    'root.jsonl': rootRecords,
+    'child.jsonl': childRecords
+  });
+  const empty = await emptyDir();
+  const args = { runtime: 'codex', sessionId: 'sess-1', rootAgentRef: 'root-thread', label: 'Разработка', codexArchivedRoot: empty };
+
+  const result = await runCollector({ ...args, codexRoot: evidenced });
+  assert.equal(result.ok, true);
+  assert.equal(result.agents, 2);
+  assert.deepEqual(result.tokens, { input: 150, cached_input: 0, output: 15, total: 165 });
+
+  assert.deepEqual(await runCollector({ ...args, codexRoot: unevidenced }), failure('workflow_run_incomplete', 'Разработка'));
+});
+
+test('Codex rejects a rootAgentRef matching both a task path and a thread id', async () => {
+  const root = await makeLogs({
+    'path.jsonl': [codexMeta('path-thread', 'sess-1', '/root/development'), codexTurnContext('gpt-5.6-terra')],
+    'id.jsonl': [codexMeta('/root/development', 'sess-1', null), codexTurnContext('gpt-5.6-terra')]
+  });
+  const empty = await emptyDir();
+  assert.deepEqual(
+    await runCollector({ runtime: 'codex', sessionId: 'sess-1', rootAgentRef: '/root/development', label: 'Разработка', codexRoot: root, codexArchivedRoot: empty }),
+    failure('ambiguous_root', 'Разработка')
+  );
+});
+
 // --- Claude Code ------------------------------------------------------------
 
 test('Claude sums root and nested subagents with per-request dedup and full input accounting', async () => {
