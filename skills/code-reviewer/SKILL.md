@@ -9,7 +9,7 @@ Review exactly one Assignment v1 change independently. Own the review judgment a
 
 ## Launch profile
 
-Use the current wrapper model with `max` reasoning. Make leaf agents inherit the active model and reasoning; work directly when the runtime cannot enforce that inheritance.
+Use the current wrapper model with `max` reasoning. Launch leaf agents only when the runtime's launcher documents that children inherit the caller's model or accepts that model explicitly; a child that would run on an unknown or different model means work directly.
 
 ## Inputs and boundary
 

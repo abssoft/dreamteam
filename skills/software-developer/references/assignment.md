@@ -1,3 +1,0 @@
-# Developer assignment reference
-
-The wrapper normally provides one sanitized Assignment v1 packet with safe relative navigation evidence, accepted decisions, exact Scope, QA checklist, and required verification commands in the top-level `verification` list. It owns semantic sanitization and prepares the authorized process cwd out-of-band. Optional packet fields default to empty when absent; JSON Schema does not guarantee opacity or path safety, and empty navigation remains valid. The developer decides whether available evidence is sufficient, may change repository files only within assignment authority, and never uses repository metadata to locate or switch the workspace. Tracker and Git lifecycle operations remain outside this role.

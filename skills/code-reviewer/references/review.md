@@ -1,3 +1,0 @@
-# Reviewer reference
-
-The wrapper normally supplies one bounded sanitized assignment, opaque repository provenance, safe relative navigation evidence, and the developer diff or authority to inspect it. It owns semantic sanitization and prepares the review process cwd out-of-band. Assignment v1 keeps repository metadata structurally broad for compatibility; JSON Schema does not guarantee opacity or path safety, and empty navigation remains valid. Decide whether available evidence supports an independent review, inspect the prepared cwd without decoding repository metadata, and return findings; the wrapper decides whether and how to publish or route fixes.
