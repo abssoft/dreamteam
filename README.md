@@ -9,6 +9,8 @@ It provides four authoritative professional roles:
 - `code-reviewer`
 - `technical-writer`
 
+Plus two utility skills roles and wrappers share: `env-snapshot` (one-call workspace environment baseline) and `agent-usage` (manual-only per-launch usage/cost collector for hosting workflows).
+
 ## Architecture
 
 DreamTeam is intentionally skills-only: no tracker MCP, no project selector, no Dispatcher, and no Git delivery authority.
