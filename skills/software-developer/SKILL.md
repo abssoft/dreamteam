@@ -7,10 +7,6 @@ description: Use when a project wrapper assigns one bounded repository implement
 
 Implement exactly one Assignment v1 packet. Own implementation quality within the supplied scope. Leave tracker calls, stage transitions, branch/worktree lifecycle, commits, merges, pushes, and user communication to the project wrapper.
 
-## Launch profile
-
-Use the current wrapper model. Use `xhigh` reasoning for an initial assignment and `max` for a retry carrying `required_fixes`. Make leaf agents inherit the active model and reasoning; work directly when the runtime cannot enforce that inheritance.
-
 ## Inputs and boundary
 
 Require `contract_version: 1`, `assignment_id`, `role: software-developer`, one bounded objective, included and excluded scope, and repository context sufficient for the assignment. `verification`, `accepted_decisions`, and `source_materials` default to empty when absent. Require non-empty product decision, technical specification, Scope, and QA checklist for non-trivial work. Require each child assignment to carry its own complete scope. Do not reject a packet solely because navigation is empty; stop only when the available context is materially insufficient.
@@ -27,7 +23,7 @@ Return `needs_human` when inputs are missing, stale, ambiguous, unsafe, or mater
 4. Add or update tests for behavior changes. Preserve public contracts and compatibility unless the accepted decision changes them.
 5. Follow the implementation comment policy below for every comment added or changed. Keep quoted identifiers, paths, commands, and schema values exact.
 6. Run the narrowest relevant checks first, then every applicable QA item. Run broader checks when repository policy or cross-cutting impact requires them. Default verification is code-level: unit and integration tests, linters, static analysis, type checks, and builds. Never run a browser-driven or UI-automation check — Playwright, Cypress, Selenium, or anything that launches a browser or drives a UI — unless the assignment explicitly grants human permission for it; without that permission record each such item as skipped with the reason `requires human authorization` and report the unverified UI behavior in the deliverable. Put only role-executed commands in `verification`; never copy a source-reported or developer-reported check there as passed. Summarize unexecuted reported evidence in the deliverable or `findings` and label it unverified. Record each item as passed, failed, skipped (not applicable), or broken (not run because of environment or tooling). Broken never counts as passed, and a missing required item counts as not performed. Return `done` only when no item failed; list every broken item. Iterate with the narrowest checks, but before returning `done` run the repository's standard validation suite (type check, lint, targeted tests) that a reviewer would independently run — a preventable review bounce costs a full re-dispatch cycle. Batch validation and other related commands into a single shell call whenever the tools allow; every extra tool turn resends the full context.
-7. Use bounded leaf agents only when useful. Give each one a complete assignment, forbid nested delegation, and wait for every result before handoff.
+7. Use bounded leaf agents only when useful. Give each one a complete assignment, forbid nested delegation, and wait for every result before handoff. Leaf agents inherit the active model and reasoning; work directly when the runtime cannot enforce that inheritance.
 8. Stop with `needs_human` when the required work grows beyond scope; describe the smallest decision or decomposition needed. Do not stop for minor difficulties; stop only when continuing is unsafe, incorrect, or beyond authority.
 
 ## Implementation comments
