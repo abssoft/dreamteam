@@ -28,9 +28,9 @@ Args (all required):
 
 ## Output contract
 
-`ok: true` → `label`, `wall_seconds`, `started_at`, `ended_at`, `agents`, `steps`, `models`, `tokens {input, cached_input, output, total}`, `cost_usd`, `unpriced_models`, `by_model` (per-model `steps`/`tokens`/`cost_usd`, `cost_usd: null` when the model has no price entry), `source`, and two ready-to-paste renderings:
+`ok: true` → `label`, `wall_seconds` (full launch span), `started_at`, `ended_at`, `agents`, `steps`, `models`, `tokens {input, cached_input, output, total}`, `cost_usd`, `unpriced_models`, `by_model` (per-model `wall_seconds`/`steps`/`tokens`/`cost_usd`, `cost_usd: null` when the model has no price entry), `source`, and two ready-to-paste renderings:
 
-- `rendered.block` — standalone Russian «Затрачено» Markdown table for one launch; `rendered.rows` (one line per model) over `rendered.table_header` assemble a multi-launch table. Wall time appears only on a launch's first row.
+- `rendered.block` — standalone Russian «Затрачено» Markdown table for one launch; `rendered.rows` (one line per model) over `rendered.table_header` assemble a multi-launch table. Each row reads as one statement: this model worked this long, spent these tokens over these steps, and it cost this much.
 - `comment_html` — the same breakdown as one HTML fragment for trackers that take HTML comments.
 
 Callers paste these strings verbatim and never re-format numbers, labels, or table markup.
@@ -41,5 +41,5 @@ Callers paste these strings verbatim and never re-format numbers, labels, or tab
 
 - `steps` counts API model requests (the optimization target is fewer steps per task): Codex — `token_count` events; Claude Code — distinct requests carrying usage.
 - `tokens.input` is the full model input; `tokens.cached_input` is its cache-read subset, so `total = input + output`.
-- Claude Code attribution is exact per request; Codex attribution is per thread (a thread's cumulative totals go to its last `turn_context` model).
+- Per-model attribution: Claude Code — exact per request; Codex — the delta between consecutive cumulative `token_count` events goes to the model active at that event, so a thread that switches models splits correctly. Per-model `wall_seconds` is the model's own working span (records while it was active per thread, or its own assistant records per agent file), summed across threads/files — parallel agents can make it exceed the launch-level `wall_seconds`.
 - Pricing lives in the script's `PRICING` table (USD per 1M tokens, with the check date in the comment). Models without an entry keep their tokens counted and appear in `unpriced_models` / as `без тарифа`.
