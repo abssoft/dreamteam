@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: "Reviewer finds a defect green tests miss"
+context:
+  scaffold_script: "scaffold.sh"

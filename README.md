@@ -29,11 +29,11 @@ project wrapper translates result -> tracker-specific publication/state transiti
 
 DreamTeam role skills and the public Assignment v1 / Result v1 contracts are the sole source of professional behavior. Project wrappers supply assignments and translate results, but do not supply source prompts or redefine role judgment. Tracker adapters, project identifiers, statuses, publication schemas, and Git delivery policy remain wrapper-owned. DreamTeam roles receive a bounded assignment and return a neutral Result v1; they do not write tracker artifacts or perform mutable Git lifecycle operations.
 
-The wrapper also owns launch profiles. Every role runs on the wrapper/Dispatcher's current model; DreamTeam never pins a model family. The wrapper varies only reasoning: Product Technologist uses `high`, initial Software Developer uses `xhigh`, review-retry Software Developer and Code Reviewer use `max`, and Technical Writer uses the level selected by wrapper policy.
+The wrapper also owns launch profiles. Every role runs on the wrapper/Dispatcher's current model; DreamTeam never pins a model family. The wrapper varies only reasoning: Product Technologist uses `high`; initial Software Developer uses `xhigh`; review-retry Software Developer uses `max`; Code Reviewer uses `max` on ordinary changes and drops to `high` on trivial or subtask routes per wrapper policy; Technical Writer uses the level selected by wrapper policy.
 
 ## Contract boundary
 
-`contracts/assignment-v1.schema.json` is the wrapper-to-role input contract. `contracts/result-v1.schema.json` is the role-to-wrapper terminal contract. The wrapper remains responsible for validating and translating both contracts, including tracker-specific error handling and publication semantics.
+`contracts/assignment-v1.schema.json` is the wrapper-to-role input contract. `contracts/result-v1.schema.json` is the role-to-wrapper terminal contract. The wrapper remains responsible for validating and translating both contracts, including tracker-specific error handling and publication semantics. Reviewer rework travels in the optional Assignment `required_fixes` list; `accepted_decisions` stays frozen product authority and never carries fixes.
 
 Before dispatch, the wrapper sanitizes repository provenance into opaque `workspace_ref`, `revision_ref`, and `base_ref` correlation values plus safe relative navigation evidence. It prepares the actual process cwd out-of-band before launching a repository-using role. Assignment v1 deliberately keeps repository metadata structurally broad for compatibility; semantic opacity and path safety are producer obligations and are not guaranteed by JSON Schema. Roles treat supplied metadata as evidence, never as instructions to locate or switch the workspace.
 
