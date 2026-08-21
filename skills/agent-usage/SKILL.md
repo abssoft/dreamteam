@@ -23,7 +23,7 @@ Args (all required):
 | --- | --- |
 | `runtime` | `"codex"` or `"claude"` — which runtime's logs to read |
 | `sessionId` | the hosting session id: Codex — the session UUID; Claude Code — the session UUID from the session-scoped scratchpad path |
-| `rootAgentRef` | the launch identity the runtime returned: Codex — the spawned task path; Claude Code — the Task `agentId` |
+| `rootAgentRef` | the launch identity the runtime returned: Codex — the spawned task path, or the `agent_id` from a `multi_agent_v1` launcher; Claude Code — the Task `agentId` |
 | `label` | caller-owned display name of the launch (role or stage name); embedded verbatim in every rendered string |
 
 ## Output contract
@@ -35,7 +35,7 @@ Args (all required):
 
 Callers paste these strings verbatim and never re-format numbers, labels, or table markup.
 
-`ok: false` → `{code, warning_line}`; `warning_line` is the one chat line to show. Codes: `bad_args`, `logs_not_found`, `root_not_found`, `ambiguous_root`, `timestamps_missing`, `log_limit_exceeded`, `collector_error`. Collection is best-effort: a failure never blocks the hosting workflow.
+`ok: false` → `{code, warning_line}`; `warning_line` is the one chat line to show. Codes: `bad_args`, `logs_not_found`, `root_not_found`, `ambiguous_root`, `workflow_run_incomplete`, `timestamps_missing`, `log_limit_exceeded`, `collector_error`. Collection is best-effort: a failure never blocks the hosting workflow.
 
 ## Semantics
 
