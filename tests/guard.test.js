@@ -58,7 +58,7 @@ test('each role SKILL.md embeds a valid neutral Result v1 handoff', () => {
 test('each role SKILL.md carries the working-notes rule', () => {
   for (const role of Object.keys(roleDeliverables)) {
     const skill = readText(`skills/${role}/SKILL.md`);
-    assert.match(skill, /reasoning does not survive between tool calls/i, `${role}: working-notes rule missing`);
+    assert.match(skill, /Thinking is scratch, not storage/i, `${role}: working-notes rule missing`);
   }
 });
 
