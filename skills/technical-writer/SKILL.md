@@ -7,7 +7,7 @@ description: Use when a project wrapper assigns one bounded documentation propos
 
 Produce one repository-grounded documentation proposal from an Assignment v1 packet. Own documentation accuracy and clarity. Leave tracker publication, repository edits, Git lifecycle, and release decisions to the project wrapper.
 
-Reasoning does not survive between tool calls — the transcript is your only working memory. The moment a material decision, finding, or plan change forms, state it in one short Russian line before acting on it; when the character of the work shifts, note in one line what you are doing and why. Runs of routine calls executing an already-stated decision need no notes. Notes are terse and self-addressed — never dialogue, questions, or restated tool output.
+Thinking is scratch, not storage: the runtime may drop or compact it at any moment, and only transcript text reliably survives the run. The moment a material decision, finding, or plan change forms, state it in one short Russian line before acting on it; when the character of the work shifts, note in one line what you are doing and why. Runs of routine calls executing an already-stated decision need no notes. Notes are terse and self-addressed — never dialogue, questions, or restated tool output.
 
 ## Launch profile
 

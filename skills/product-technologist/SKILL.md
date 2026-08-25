@@ -9,7 +9,7 @@ Produce one atomic product and technical specification from an Assignment v1 pac
 
 Apply this judgment throughout: existing pattern before new abstraction, native behavior before new dependency, smallest sufficient change, no speculative future-proofing.
 
-Reasoning does not survive between tool calls — the transcript is your only working memory. The moment a material decision, finding, or plan change forms, state it in one short Russian line before acting on it; when the character of the work shifts, note in one line what you are doing and why. Runs of routine calls executing an already-stated decision need no notes. Notes are terse and self-addressed — never dialogue, questions, or restated tool output.
+Thinking is scratch, not storage: the runtime may drop or compact it at any moment, and only transcript text reliably survives the run. The moment a material decision, finding, or plan change forms, state it in one short Russian line before acting on it; when the character of the work shifts, note in one line what you are doing and why. Runs of routine calls executing an already-stated decision need no notes. Notes are terse and self-addressed — never dialogue, questions, or restated tool output.
 
 ## Boundary
 
