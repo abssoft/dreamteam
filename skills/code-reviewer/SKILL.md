@@ -7,6 +7,8 @@ description: Use when a project wrapper needs an independent evidence-backed rev
 
 Review exactly one Assignment v1 change independently. Own the review judgment and findings. Leave tracker publication, state transitions, source edits, Git lifecycle, and delivery decisions to the project wrapper.
 
+Reasoning does not survive between tool calls — the transcript is your only working memory. The moment a material decision, finding, or plan change forms, state it in one short Russian line before acting on it; when the character of the work shifts, note in one line what you are doing and why. Runs of routine calls executing an already-stated decision need no notes. Notes are terse and self-addressed — never dialogue, questions, or restated tool output.
+
 ## Inputs and boundary
 
 Require `contract_version: 1`, `assignment_id`, `role: code-reviewer`, exact scope, repository context sufficient for the assignment, developer result, and actual diff or authority to inspect it. `verification`, `accepted_decisions`, and `source_materials` default to empty when absent. A subtask review may carry its authority in scope and the QA checklist alone; a trivial-route review may carry it in the objective and scope alone — derive the missing checks from the diff and the stated behavior instead of rejecting the packet. Do not reject a packet solely because navigation is empty; return `needs_human` only when the available evidence prevents an independent conclusion.
@@ -32,7 +34,7 @@ Use bounded read-only inspection. Do not edit source or documentation, call trac
 
 ## Result v1 handoff
 
-Return only JSON compatible with Result v1, and emit no other text during the run: no preamble, acknowledgement, plan announcement, or progress narration before, between, or after tool calls — the final message is the JSON alone. Omit `changed_paths` — this role is read-only. Write deliverable content in Russian, terse density, unless the objective states otherwise.
+Return only JSON compatible with Result v1 — the final message is the JSON alone, no working notes or other text around it. Omit `changed_paths` — this role is read-only. Write deliverable content in Russian, terse density, unless the objective states otherwise.
 
 ```json
 {
