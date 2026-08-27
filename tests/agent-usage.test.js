@@ -139,10 +139,14 @@ test('Codex sums the launched thread tree: last cumulative token_count per threa
   // The collector renders the «Затрачено» block itself: caller-side digit
   // formatting is banned, the caller pastes rendered.block verbatim.
   const rows = '| Разработка<br>*gpt-5.6-terra* | 5м 59с | 1 500<br>*кэш 600* | 80 | 1 580 | 3 | 0.0029 |';
+  // The ИТОГО line uses the launch-level wall time (5м 0с), not the per-model
+  // wall sum (5м 59с).
+  const totalRow = '| **ИТОГО** | 5м 0с | 1 500<br>*кэш 600* | 80 | 1 580 | 3 | 0.0029 |';
   assert.deepEqual(result.rendered, {
-    block: `Затрачено:\n\n${TABLE_HEADER}\n${rows}`,
+    block: `Затрачено:\n\n${TABLE_HEADER}\n${rows}\n${totalRow}`,
     table_header: TABLE_HEADER,
-    rows
+    rows,
+    total_row: totalRow
   });
   assert.equal(
     result.comment_html,
@@ -517,7 +521,11 @@ test('Claude splits the report per model with exact per-request attribution', as
     '| PRD<br>*claude-opus-5* | 0м 0с | 100<br>*кэш 0* | 10 | 110 | 1 | 0.0008 |\n' +
       '| PRD<br>*claude-sonnet-5* | 2м 0с | 1 010<br>*кэш 0* | 105 | 1 115 | 2 | 0.0031 |'
   );
-  assert.equal(result.rendered.block, `Затрачено:\n\n${TABLE_HEADER}\n${result.rendered.rows}`);
+  assert.equal(
+    result.rendered.total_row,
+    '| **ИТОГО** | 2м 0с | 1 110<br>*кэш 0* | 115 | 1 225 | 3 | 0.0038 |'
+  );
+  assert.equal(result.rendered.block, `Затрачено:\n\n${TABLE_HEADER}\n${result.rendered.rows}\n${result.rendered.total_row}`);
   assert.equal(
     result.comment_html,
     '<p>Метрики PRD: 2м 0с · шаги 3 · $0.0038</p><ul>' +
@@ -578,6 +586,8 @@ test('pricing matches model prefixes and quarantines unknown models without drop
   assert.match(first, /\| 1 \| 0\.003 \|$/);
   assert.match(second, /^\| PRD<br>\*mystery-9\* \| 0м 0с \| /);
   assert.match(second, /\| 1 \| без тарифа \|$/);
+  // The ИТОГО $ cell carries the unpriced note, same as comment_html.
+  assert.match(result.rendered.total_row, /^\| \*\*ИТОГО\*\* \| .* \| 2 \| 0\.003 \(без тарифа: mystery-9\) \|$/);
 });
 
 // --- rendering ----------------------------------------------------------------

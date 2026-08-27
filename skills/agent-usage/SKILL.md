@@ -30,7 +30,7 @@ Args:
 
 `ok: true` → `label`, `wall_seconds` (full launch span), `started_at`, `ended_at`, `agents`, `steps`, `models`, `tokens {input, cached_input, output, total}`, `cost_usd`, `unpriced_models`, `by_model` (per-model `wall_seconds`/`steps`/`tokens`/`cost_usd`, `cost_usd: null` when the model has no price entry), `source`, and two ready-to-paste renderings:
 
-- `rendered.block` — standalone Russian «Затрачено» Markdown table for one launch; `rendered.rows` (one line per model) over `rendered.table_header` assemble a multi-launch table. Each row reads as one statement: this model worked this long, spent these tokens over these steps, and it cost this much.
+- `rendered.block` — standalone Russian «Затрачено» Markdown table for one launch, closed by the `rendered.total_row` «ИТОГО» line (launch-level wall time plus summed tokens/steps/cost; per-model wall sums may exceed its time); `rendered.rows` (one line per model) over `rendered.table_header` assemble a multi-launch table — keep per-launch total_rows out of it. Each row reads as one statement: this model worked this long, spent these tokens over these steps, and it cost this much.
 - `comment_html` — the same breakdown as one HTML fragment for trackers that take HTML comments.
 
 Callers paste these strings verbatim and never re-format numbers, labels, or table markup.
