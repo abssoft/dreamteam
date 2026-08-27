@@ -65,7 +65,9 @@ test('collector rejects malformed arguments with bad_args and exit 0', async () 
     { runtime: 'codex', sessionId: ' ', rootAgentRef: 'r', label: 'Разработка' },
     { runtime: 'codex', sessionId: 's', rootAgentRef: '', label: 'Разработка' },
     { runtime: 'claude', sessionId: 's', rootAgentRef: 'r', label: '' },
-    { runtime: 'claude', sessionId: 's', rootAgentRef: 'r' }
+    { runtime: 'claude', sessionId: 's', rootAgentRef: 'r' },
+    { runtime: 'claude', sessionId: 's', label: '' },
+    { runtime: 'codex', label: 'Основная сессия' }
   ]) {
     assert.deepEqual(await runCollector(args), {
       ok: false,
@@ -296,6 +298,135 @@ test('Codex rejects a rootAgentRef matching both a task path and a thread id', a
   assert.deepEqual(
     await runCollector({ runtime: 'codex', sessionId: 'sess-1', rootAgentRef: '/root/development', label: 'Разработка', codexRoot: root, codexArchivedRoot: empty }),
     failure('ambiguous_root', 'Разработка')
+  );
+});
+
+// --- whole-session scope (rootAgentRef omitted) -----------------------------
+
+test('Codex whole-session scope sums the session rollout and its spawned tree per model', async () => {
+  const sessionsRoot = await makeLogs({
+    'main.jsonl': [
+      { timestamp: '2026-01-01T10:00:00.000Z', type: 'session_meta', payload: { id: 'sess-1' } },
+      codexTurnContext('gpt-5.6-sol', '2026-01-01T10:00:05.000Z'),
+      codexTokenCount({ input_tokens: 1000, cached_input_tokens: 100, output_tokens: 100, total_tokens: 1100 }, '2026-01-01T10:06:00.000Z')
+    ],
+    'task.jsonl': [
+      codexMeta('thread-task', 'sess-1', '/root/development'),
+      codexTurnContext('gpt-5.6-terra', '2026-01-01T10:01:00.000Z'),
+      codexTokenCount({ input_tokens: 200, cached_input_tokens: 0, output_tokens: 20, total_tokens: 220 }, '2026-01-01T10:02:00.000Z')
+    ],
+    'foreign.jsonl': [
+      codexMeta('thread-foreign', 'sess-2', '/root/review'),
+      codexTurnContext('gpt-5.6-terra', '2026-01-01T10:00:30.000Z'),
+      codexTokenCount({ input_tokens: 7, output_tokens: 7, total_tokens: 14 }, '2026-01-01T10:00:40.000Z')
+    ]
+  });
+  const empty = await emptyDir();
+
+  const result = await runCollector({ runtime: 'codex', sessionId: 'sess-1', codexRoot: sessionsRoot, codexArchivedRoot: empty });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.label, 'Основная сессия');
+  assert.equal(result.agents, 2, 'the session itself plus its spawned thread; the foreign session stays out');
+  assert.deepEqual(result.models, ['gpt-5.6-sol', 'gpt-5.6-terra']);
+  assert.deepEqual(result.tokens, { input: 1200, cached_input: 100, output: 120, total: 1320 });
+  assert.equal(result.steps, 2);
+  assert.equal(result.wall_seconds, 360);
+  // sol: ((1000-100)*5 + 100*0.5 + 100*30) / 1e6; terra: (200*2 + 20*12) / 1e6.
+  assert.deepEqual(result.by_model, [
+    { model: 'gpt-5.6-sol', wall_seconds: 355, steps: 1, tokens: { input: 1000, cached_input: 100, output: 100, total: 1100 }, cost_usd: 0.0076 },
+    { model: 'gpt-5.6-terra', wall_seconds: 60, steps: 1, tokens: { input: 200, cached_input: 0, output: 20, total: 220 }, cost_usd: 0.0006 }
+  ]);
+  assert.equal(result.cost_usd, 0.0082);
+  assert.equal(
+    result.rendered.rows,
+    '| Основная сессия<br>*gpt-5.6-sol* | 5м 55с | 1 000<br>*кэш 100* | 100 | 1 100 | 1 | 0.0076 |\n' +
+      '| Основная сессия<br>*gpt-5.6-terra* | 1м 0с | 200<br>*кэш 0* | 20 | 220 | 1 | 0.0006 |'
+  );
+});
+
+test('Codex whole-session scope without the session rollout fails with logs_not_found', async () => {
+  const sessionsRoot = await makeLogs({
+    'foreign.jsonl': [codexMeta('thread-foreign', 'sess-2', '/root/review'), codexTurnContext('gpt-5.6-terra')]
+  });
+  const empty = await emptyDir();
+  assert.deepEqual(
+    await runCollector({ runtime: 'codex', sessionId: 'sess-1', codexRoot: sessionsRoot, codexArchivedRoot: empty }),
+    failure('logs_not_found', 'Основная сессия')
+  );
+});
+
+test('Claude whole-session scope sums the transcript plus every subagent file per model', async () => {
+  const projectsRoot = await makeLogs({
+    'proj/sess-uuid.jsonl': [
+      claudeAssistant({
+        requestId: 'req1', model: 'claude-fable-5', at: '2026-01-01T10:00:00.000Z',
+        usage: { input_tokens: 1000, cache_creation_input_tokens: 0, cache_read_input_tokens: 200, output_tokens: 100 }
+      }),
+      claudeAssistant({
+        requestId: 'req2', model: 'claude-fable-5', at: '2026-01-01T10:10:00.000Z',
+        usage: { input_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 10 }
+      })
+    ],
+    // No toolUseResult link anywhere — directory membership alone puts the
+    // subagent file in scope.
+    'proj/sess-uuid/subagents/agent-orphan.jsonl': [
+      claudeAssistant({
+        requestId: 'req3', model: 'claude-sonnet-5', at: '2026-01-01T10:05:00.000Z',
+        usage: { input_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 5 }
+      })
+    ],
+    'other/other-sess.jsonl': [
+      claudeAssistant({
+        requestId: 'reqX', model: 'claude-sonnet-5', at: '2026-01-01T09:00:00.000Z',
+        usage: { input_tokens: 9, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 9 }
+      })
+    ]
+  });
+
+  const result = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', claudeProjectsRoot: projectsRoot });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.label, 'Основная сессия');
+  assert.equal(result.agents, 2, 'the session transcript plus one subagent file; other sessions stay out');
+  assert.deepEqual(result.models, ['claude-fable-5', 'claude-sonnet-5']);
+  assert.deepEqual(result.tokens, { input: 1350, cached_input: 200, output: 115, total: 1465 });
+  assert.equal(result.steps, 3);
+  assert.equal(result.wall_seconds, 600);
+  // fable: (1000*10 + 200*1 + 100*50 + 100*10 + 10*50) / 1e6; sonnet: (50*2 + 5*10) / 1e6.
+  assert.deepEqual(result.by_model, [
+    { model: 'claude-fable-5', wall_seconds: 600, steps: 2, tokens: { input: 1300, cached_input: 200, output: 110, total: 1410 }, cost_usd: 0.0167 },
+    { model: 'claude-sonnet-5', wall_seconds: 0, steps: 1, tokens: { input: 50, cached_input: 0, output: 5, total: 55 }, cost_usd: 0.0001 }
+  ]);
+  assert.equal(result.cost_usd, 0.0169);
+  assert.equal(
+    result.rendered.rows,
+    '| Основная сессия<br>*claude-fable-5* | 10м 0с | 1 300<br>*кэш 200* | 110 | 1 410 | 2 | 0.0167 |\n' +
+      '| Основная сессия<br>*claude-sonnet-5* | 0м 0с | 50<br>*кэш 0* | 5 | 55 | 1 | 0.0001 |'
+  );
+});
+
+test('Claude whole-session scope failure codes: logs_not_found without the transcript, ambiguous_root on duplicates', async () => {
+  const withoutTranscript = await makeLogs({
+    'proj/sess-uuid/subagents/agent-root1.jsonl': [
+      claudeAssistant({
+        requestId: 'req1', model: 'claude-sonnet-5', at: '2026-01-01T10:00:00.000Z',
+        usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 }
+      })
+    ]
+  });
+  assert.deepEqual(
+    await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', rootAgentRef: null, claudeProjectsRoot: withoutTranscript }),
+    failure('logs_not_found', 'Основная сессия')
+  );
+
+  const doubled = await makeLogs({
+    'projA/sess-uuid.jsonl': [{ type: 'user', timestamp: '2026-01-01T10:00:00.000Z' }],
+    'projB/sess-uuid.jsonl': [{ type: 'user', timestamp: '2026-01-01T10:00:00.000Z' }]
+  });
+  assert.deepEqual(
+    await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', label: 'Чат', claudeProjectsRoot: doubled }),
+    failure('ambiguous_root', 'Чат')
   );
 });
 
