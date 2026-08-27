@@ -3,10 +3,16 @@
 // only: the hosting workflow (a project Dispatcher or a human) runs it once
 // per launch after the terminal result; roles never run it.
 // Input: single CLI arg — JSON {runtime:"codex"|"claude", sessionId,
-//   rootAgentRef, label, codexRoot?, codexArchivedRoot?,
+//   rootAgentRef?, label?, codexRoot?, codexArchivedRoot?,
 //   claudeProjectsRoot?} (the three optional roots override the default log
 //   locations; used by tests). `label` is the caller-owned display name of
 //   the launch (stage, role, or task name) — this script embeds it verbatim.
+// rootAgentRef targets one finished launch. Omitted (or null) it switches to
+//   whole-session scope: everything the current chat spent — the session's
+//   own log plus every launch it spawned — split per model as usual; label
+//   then defaults to «Основная сессия» (required otherwise). A session
+//   report already contains every launch, so never sum its rows with
+//   per-launch rows in one table.
 // Output: one JSON line on stdout; always exit 0.
 //   ok:true  → {ok, label, wall_seconds, started_at, ended_at, agents,
 //               steps, models, tokens: {input, cached_input, output, total},
@@ -51,15 +57,19 @@
 // multi_agent_v1 spawns, whose agent_path is null, the thread id must equal
 // rootAgentRef instead. Descendants are linked by parent_thread_id chains; a
 // null-path descendant additionally requires its thread id to appear in the
-// parent's log, otherwise workflow_run_incomplete. Token totals sum the per-event
-// deltas of the cumulative token_count counters; models come from
-// turn_context records.
+// parent's log, otherwise workflow_run_incomplete. In whole-session scope the
+// root is the rollout whose session_meta id equals sessionId (its spawn
+// source is irrelevant; missing → logs_not_found) and descendants attach as
+// usual. Token totals sum the per-event deltas of the cumulative token_count
+// counters; models come from turn_context records.
 // Claude Code: ~/.claude/projects/**/<sessionId>/subagents/agent-<id>.jsonl;
 // the launched Task's file carries agentId === rootAgentRef; usage and models
-// are summed over its assistant messages.
+// are summed over its assistant messages. In whole-session scope the root is
+// <projects>/<slug>/<sessionId>.jsonl and every *.jsonl directly under its
+// subagents dir joins even without a toolUseResult link.
 
 import { homedir } from "node:os";
-import { join, basename } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { createReadStream } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
@@ -351,19 +361,26 @@ function emit(label, span, agents, models, ledger, source) {
 }
 
 async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexArchivedRoot }) {
+    const sessionScope = rootAgentRef == null;
     const state = { files: [], seen: new Set() };
     await listJsonlFiles(codexRoot ?? join(homedir(), ".codex", "sessions"), state);
     await listJsonlFiles(codexArchivedRoot ?? join(homedir(), ".codex", "archived_sessions"), state);
     if (state.files.length === 0) failWith("logs_not_found");
 
     const metadata = [];
+    const sessionRoots = [];
     for (const path of state.files) {
         const [record] = await readRecords(path, { firstOnly: true });
         const payload = record?.type === "session_meta" ? record.payload : undefined;
-        const spawn = payload?.source?.subagent?.thread_spawn;
-        if (!isNonEmptyString(payload?.id) || !isNonEmptyString(spawn?.parent_thread_id)) {
+        if (!isNonEmptyString(payload?.id)) continue;
+        // Whole-session scope roots at the session's own rollout, whatever
+        // spawned it; launch scope only ever matches spawned threads.
+        if (sessionScope && payload.id === sessionId) {
+            sessionRoots.push({ path, id: payload.id });
             continue;
         }
+        const spawn = payload?.source?.subagent?.thread_spawn;
+        if (!isNonEmptyString(spawn?.parent_thread_id)) continue;
         // multi_agent_v1 spawns leave no agent_path; the thread is then
         // identified by its id and evidenced by the parent's tool output.
         metadata.push({
@@ -374,9 +391,11 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
         });
     }
 
-    const roots = metadata.filter((item) => item.parentId === sessionId
-        && (item.agentPath === rootAgentRef || (item.agentPath === null && item.id === rootAgentRef)));
-    if (roots.length === 0) failWith("root_not_found");
+    const roots = sessionScope
+        ? sessionRoots
+        : metadata.filter((item) => item.parentId === sessionId
+            && (item.agentPath === rootAgentRef || (item.agentPath === null && item.id === rootAgentRef)));
+    if (roots.length === 0) failWith(sessionScope ? "logs_not_found" : "root_not_found");
     if (roots.length > 1) failWith("ambiguous_root");
 
     const selected = new Map([[roots[0].id, roots[0]]]);
@@ -453,20 +472,35 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
 async function collectClaude({ sessionId, rootAgentRef, label, claudeProjectsRoot }) {
     // Subagent transcripts live at <projects>/<slug>/<sessionId>/subagents/agent-<agentId>.jsonl;
     // nested subagents are linked through toolUseResult.agentId in the parent's records.
+    const sessionScope = rootAgentRef == null;
     const state = { files: [], seen: new Set() };
     await listJsonlFiles(claudeProjectsRoot ?? join(homedir(), ".claude", "projects"), state);
     const agentFile = (id) =>
         state.files.filter((path) => path.endsWith(join(sessionId, "subagents", `agent-${id}.jsonl`)));
 
-    const rootMatches = agentFile(rootAgentRef);
-    if (rootMatches.length === 0) {
-        if (state.files.some((path) => basename(path) === `${sessionId}.jsonl`)) failWith("root_not_found");
-        failWith("logs_not_found");
+    const pending = [];
+    if (sessionScope) {
+        // Whole-session scope: the session transcript plus every subagent
+        // file in its directory — linked or not, it was spent in this chat.
+        const mains = state.files.filter((path) => basename(path) === `${sessionId}.jsonl`);
+        if (mains.length === 0) failWith("logs_not_found");
+        if (mains.length > 1) failWith("ambiguous_root");
+        const subagentsDir = join(dirname(mains[0]), sessionId, "subagents");
+        pending.push([sessionId, mains[0]]);
+        for (const path of state.files) {
+            if (dirname(path) === subagentsDir) pending.push([basename(path, ".jsonl").replace(/^agent-/, ""), path]);
+        }
+    } else {
+        const rootMatches = agentFile(rootAgentRef);
+        if (rootMatches.length === 0) {
+            if (state.files.some((path) => basename(path) === `${sessionId}.jsonl`)) failWith("root_not_found");
+            failWith("logs_not_found");
+        }
+        if (rootMatches.length > 1) failWith("ambiguous_root");
+        pending.push([rootAgentRef, rootMatches[0]]);
     }
-    if (rootMatches.length > 1) failWith("ambiguous_root");
 
     const selected = new Map();
-    const pending = [[rootAgentRef, rootMatches[0]]];
     const span = spanCollector();
     const models = new Set();
     const ledger = usageLedger();
@@ -529,10 +563,19 @@ async function main() {
         failWith("bad_args");
     }
     const { runtime, sessionId, rootAgentRef, label } = args ?? {};
-    if (!["codex", "claude"].includes(runtime) || !isNonEmptyString(sessionId) || !isNonEmptyString(rootAgentRef) || !isNonEmptyString(label)) {
+    // rootAgentRef omitted/null → whole-session scope, where label may also
+    // be omitted; an explicitly passed empty value stays a caller bug.
+    const sessionScope = rootAgentRef == null;
+    if (
+        !["codex", "claude"].includes(runtime) ||
+        !isNonEmptyString(sessionId) ||
+        (!sessionScope && !isNonEmptyString(rootAgentRef)) ||
+        !(isNonEmptyString(label) || (sessionScope && label == null))
+    ) {
         failWith("bad_args");
     }
-    launchLabel = label.trim();
+    args.label = isNonEmptyString(label) ? label : "Основная сессия";
+    launchLabel = args.label.trim();
     if (runtime === "codex") {
         await collectCodex(args);
     } else {

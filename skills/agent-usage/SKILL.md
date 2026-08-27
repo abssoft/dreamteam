@@ -1,11 +1,11 @@
 ---
 name: agent-usage
-description: Manual-only usage collector for one finished agent launch (time, tokens, steps, cost per model). Invoke only on an explicit request or from a workflow that names this skill; never auto-trigger on ordinary work.
+description: Manual-only usage collector for one finished agent launch or the whole current session (time, tokens, steps, cost per model). Invoke only on an explicit request or from a workflow that names this skill; never auto-trigger on ordinary work.
 ---
 
 # Agent Usage
 
-One bundled script reads local runtime logs (Codex rollouts or Claude Code transcripts) and reports what one finished agent launch cost: wall time, tokens, steps (API model requests), and USD — split per model. Hosting workflows and humans call it; roles never do.
+One bundled script reads local runtime logs (Codex rollouts or Claude Code transcripts) and reports what one finished agent launch cost: wall time, tokens, steps (API model requests), and USD — split per model. Without `rootAgentRef` it reports the whole hosting session instead — «Основная сессия»: everything the current chat spent, its own usage plus every launch it spawned, split per model the same way. Hosting workflows and humans call it; roles never do.
 
 ## Run
 
@@ -17,14 +17,14 @@ node <plugin_root>/skills/agent-usage/scripts/agent-usage.mjs '<args JSON>'
 
 `<plugin_root>` is the installed plugin directory containing `skills/` — resolve it from the location of this skill file.
 
-Args (all required):
+Args:
 
 | Field | Meaning |
 | --- | --- |
-| `runtime` | `"codex"` or `"claude"` — which runtime's logs to read |
-| `sessionId` | the hosting session id: Codex — the session UUID; Claude Code — the session UUID from the session-scoped scratchpad path |
-| `rootAgentRef` | the launch identity the runtime returned: Codex — the spawned task path, or the `agent_id` from a `multi_agent_v1` launcher; Claude Code — the Task `agentId` |
-| `label` | caller-owned display name of the launch (role or stage name); embedded verbatim in every rendered string |
+| `runtime` | required. `"codex"` or `"claude"` — which runtime's logs to read |
+| `sessionId` | required. The hosting session id: Codex — the session UUID; Claude Code — the session UUID from the session-scoped scratchpad path |
+| `rootAgentRef` | the launch identity the runtime returned: Codex — the spawned task path, or the `agent_id` from a `multi_agent_v1` launcher; Claude Code — the Task `agentId`. Omit (or pass `null`) for whole-session scope: the session's own log plus every launch it spawned |
+| `label` | caller-owned display name of the launch (role or stage name); embedded verbatim in every rendered string. Required with `rootAgentRef`; in whole-session scope optional, defaulting to «Основная сессия» |
 
 ## Output contract
 
@@ -39,6 +39,7 @@ Callers paste these strings verbatim and never re-format numbers, labels, or tab
 
 ## Semantics
 
+- Whole-session scope (no `rootAgentRef`): Claude Code — the session transcript plus every `*.jsonl` directly under `<sessionId>/subagents/`, linked or not; Codex — the session's own rollout plus its descendant thread tree. A missing session log is `logs_not_found` (never `root_not_found`). The session already contains every launch — never sum its rows with per-launch rows in one table.
 - `steps` counts API model requests (the optimization target is fewer steps per task): Codex — `token_count` events; Claude Code — distinct requests carrying usage.
 - `tokens.input` is the full model input; `tokens.cached_input` is its cache-read subset, so `total = input + output`.
 - Per-model attribution: Claude Code — exact per request; Codex — the delta between consecutive cumulative `token_count` events goes to the model active at that event, so a thread that switches models splits correctly. Per-model `wall_seconds` is the model's own working span (records while it was active per thread, or its own assistant records per agent file), summed across threads/files — parallel agents can make it exceed the launch-level `wall_seconds`.
