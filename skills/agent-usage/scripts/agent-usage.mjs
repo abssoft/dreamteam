@@ -25,11 +25,22 @@
 // steps counts API model requests across the launch: Codex — token_count
 // events, Claude — distinct requestIds carrying usage. The optimization
 // target is fewer steps per task.
-// wall_seconds is ACTIVE time, not the calendar span: on the merged sorted
-// timeline of all record timestamps, gaps between consecutive records are
-// summed only while <= 30 minutes — longer pauses (a session resumed the
-// next day) are idle and don't count. started_at/ended_at still bound the
-// full calendar span, so ended-started may far exceed wall_seconds.
+// wall_seconds is WORKING time, not the calendar span: the union of exact
+// turn intervals across all threads/files — Codex task_started→
+// task_complete/turn_aborted event pairs (what the UI shows as "Worked
+// for"; a turn left dangling by a crash closes at the last record before
+// the resume's task_started, or the thread's last record at EOF), Claude
+// a real user message to the last WORK record before the next one (an
+// assistant record or a tool result — recognized by the toolUseResult
+// side-field or a tool_result content block, since subagent files omit
+// the side-field; queue-operation/system/attachment records are stamped
+// at user-return time or out of order and never bound a turn). Pauses
+// between turns — the user reading or away — never count; parallel
+// subagents overlap their parent's turn and count once. A unit without
+// any marker falls back to a 30-minute idle-gap heuristic over its raw
+// record timestamps (pooled across such units). started_at/ended_at still
+// bound the full calendar span, so ended-started may far exceed
+// wall_seconds.
 // by_model splits wall time/steps/tokens/cost per model: [{model,
 //   wall_seconds, steps, tokens: {input, cached_input, output, total},
 //   cost_usd|null}] sorted by model name; cost_usd is null for models
@@ -38,10 +49,11 @@
 //   token_count events to the model active at that event (turn_context), so
 //   a thread that switches models splits correctly; a negative delta means
 //   the counter reset and the event becomes a fresh baseline. Per-model
-//   wall_seconds is that model's own active time under the same 30-minute
-//   idle-gap rule, over the records while the model was active (Codex, per
-//   thread) or its own assistant records (Claude, per agent file), summed
-//   across threads/files; parallel agents can make the sum exceed the
+//   wall_seconds is that model's own working time: its activity segments
+//   (records while the model was active — Codex per thread; its own
+//   assistant records — Claude per agent file; 30-minute idle gaps split
+//   segments) clipped to the unit's turn intervals, summed across
+//   threads/files; parallel agents can make the sum exceed the
 //   launch-level wall_seconds.
 // rendered.* and warning_line are ready-to-paste Russian strings — the
 // caller copies them verbatim and never re-formats numbers: rendered.block
@@ -354,30 +366,80 @@ function toMillis(value) {
     return Number.isFinite(ms) ? ms : undefined;
 }
 
-// Pauses longer than this between consecutive records are idle (a session
-// resumed hours or days later) and are excluded from active wall time.
+// Fallback only (units without turn markers): pauses longer than this
+// between consecutive records are idle and excluded from active wall time.
 const IDLE_GAP_MS = 30 * 60 * 1000;
 
-// Active-time accumulator: min/max bound the calendar span; active_ms sums
-// the gaps between consecutive timestamps on the sorted timeline, skipping
-// any gap over IDLE_GAP_MS. A merged timeline across parallel units counts
-// overlapping activity once.
-function activityCollector() {
-    const stamps = [];
+// [startMs, endMs] pairs → sorted, overlap-free union.
+function mergeIntervals(intervals) {
+    const sorted = intervals.filter(([start, end]) => end >= start).sort((a, b) => a[0] - b[0]);
+    const merged = [];
+    for (const [start, end] of sorted) {
+        const last = merged[merged.length - 1];
+        if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+        else merged.push([start, end]);
+    }
+    return merged;
+}
+
+function intervalsLength(intervals) {
+    return intervals.reduce((sum, [start, end]) => sum + (end - start), 0);
+}
+
+// Timestamps → activity segments, split where consecutive stamps sit more
+// than IDLE_GAP_MS apart.
+function gapSegments(stamps) {
+    const sorted = [...stamps].sort((a, b) => a - b);
+    const segments = [];
+    for (const ms of sorted) {
+        const last = segments[segments.length - 1];
+        if (last && ms - last[1] <= IDLE_GAP_MS) last[1] = ms;
+        else segments.push([ms, ms]);
+    }
+    return segments;
+}
+
+// A model's own activity never exceeds the time its unit was actually
+// working: clip the model's segments to the unit's work intervals.
+function clipToIntervals(segments, intervals) {
+    const clipped = [];
+    for (const [segStart, segEnd] of segments) {
+        for (const [start, end] of intervals) {
+            const from = Math.max(segStart, start);
+            const to = Math.min(segEnd, end);
+            if (to > from) clipped.push([from, to]);
+        }
+    }
+    return clipped;
+}
+
+// Launch-level wall accumulator. Units with exact turn intervals contribute
+// them directly; units without markers pour raw timestamps into one shared
+// fallback pool segmented by idle gaps (pooled so a parent waiting on its
+// child bridges across the two files). Overlaps — parallel agents inside a
+// parent's turn — merge and count once. min/max over every record timestamp
+// still bound the calendar span for started_at/ended_at.
+function wallTracker() {
+    let min;
+    let max;
+    const intervals = [];
+    const fallbackStamps = [];
     return {
-        add(value) {
+        stamp(value) {
             const ms = toMillis(value);
-            if (ms !== undefined) stamps.push(ms);
+            if (ms === undefined) return;
+            if (min === undefined || ms < min) min = ms;
+            if (max === undefined || ms > max) max = ms;
+        },
+        addIntervals(list) {
+            intervals.push(...list);
+        },
+        addFallbackStamps(stamps) {
+            fallbackStamps.push(...stamps);
         },
         result() {
-            if (stamps.length === 0) return { min: undefined, max: undefined, active_ms: 0 };
-            stamps.sort((a, b) => a - b);
-            let active = 0;
-            for (let i = 1; i < stamps.length; i++) {
-                const gap = stamps[i] - stamps[i - 1];
-                if (gap <= IDLE_GAP_MS) active += gap;
-            }
-            return { min: stamps[0], max: stamps[stamps.length - 1], active_ms: active };
+            const merged = mergeIntervals([...intervals, ...gapSegments(fallbackStamps)]);
+            return { min, max, active_ms: intervalsLength(merged) };
         }
     };
 }
@@ -448,7 +510,7 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
         }
     }
 
-    const span = activityCollector();
+    const span = wallTracker();
     const models = new Set();
     const ledger = usageLedger();
     for (const item of selected.values()) {
@@ -460,19 +522,45 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
         }
         let activeModel;
         let prev;
-        // Per-model working time within this thread: the span of all records
-        // while that model was the active turn_context model.
-        const modelSpans = new Map();
+        // Exact working time per thread: task_started→task_complete (or
+        // turn_aborted) event pairs — the same spans the UI shows as
+        // "Worked for". A turn left dangling by a crash closes at the last
+        // record seen before the resume's task_started (never at the new
+        // start itself — the idle until the resume is not work), or at the
+        // thread's last record when the file ends.
+        const turnBounds = [];
+        let openTurnStart;
+        let prevMs;
+        const unitStamps = [];
+        let unitMax;
+        // Per-model activity: every record's timestamp while that model was
+        // the active turn_context model.
+        const modelStamps = new Map();
         for (const record of records) {
-            span.add(record.timestamp);
+            span.stamp(record.timestamp);
+            const ms = toMillis(record.timestamp);
             const payload = record?.payload;
+            if (record?.type === "event_msg" && ms !== undefined) {
+                if (payload?.type === "task_started") {
+                    if (openTurnStart !== undefined) turnBounds.push([openTurnStart, Math.max(openTurnStart, prevMs ?? openTurnStart)]);
+                    openTurnStart = ms;
+                } else if ((payload?.type === "task_complete" || payload?.type === "turn_aborted") && openTurnStart !== undefined) {
+                    turnBounds.push([openTurnStart, ms]);
+                    openTurnStart = undefined;
+                }
+            }
+            if (ms !== undefined) {
+                unitStamps.push(ms);
+                prevMs = ms;
+                if (unitMax === undefined || ms > unitMax) unitMax = ms;
+            }
             if (record?.type === "turn_context" && isNonEmptyString(payload?.model)) {
                 models.add(payload.model);
                 activeModel = payload.model;
             }
-            if (activeModel !== undefined) {
-                if (!modelSpans.has(activeModel)) modelSpans.set(activeModel, activityCollector());
-                modelSpans.get(activeModel).add(record.timestamp);
+            if (activeModel !== undefined && ms !== undefined) {
+                if (!modelStamps.has(activeModel)) modelStamps.set(activeModel, []);
+                modelStamps.get(activeModel).push(ms);
             }
             if (record?.type === "event_msg" && payload?.type === "token_count" && payload.info?.total_token_usage) {
                 const cur = payload.info.total_token_usage;
@@ -500,8 +588,14 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
                 );
             }
         }
-        for (const [model, modelSpan] of modelSpans) {
-            ledger.addWall(model, modelSpan.result().active_ms);
+        if (openTurnStart !== undefined && unitMax !== undefined) turnBounds.push([openTurnStart, unitMax]);
+        // Exact turn intervals when the thread has markers; otherwise its
+        // stamps join the shared idle-gap fallback pool.
+        const unitIntervals = turnBounds.length > 0 ? mergeIntervals(turnBounds) : gapSegments(unitStamps);
+        if (turnBounds.length > 0) span.addIntervals(unitIntervals);
+        else span.addFallbackStamps(unitStamps);
+        for (const [model, stamps] of modelStamps) {
+            ledger.addWall(model, intervalsLength(clipToIntervals(gapSegments(stamps), unitIntervals)));
         }
     }
     emit(label, span, selected.size, models, ledger, "codex");
@@ -539,7 +633,7 @@ async function collectClaude({ sessionId, rootAgentRef, label, claudeProjectsRoo
     }
 
     const selected = new Map();
-    const span = activityCollector();
+    const span = wallTracker();
     const models = new Set();
     const ledger = usageLedger();
     while (pending.length > 0) {
@@ -550,30 +644,66 @@ async function collectClaude({ sessionId, rootAgentRef, label, claudeProjectsRoo
         // Streaming writes several assistant records per API request; the last
         // record per requestId carries the final usage — keep only that one.
         const usageByRequest = new Map();
-        // Per-model working time within this file: the span of the model's own
-        // assistant records (streaming duplicates extend it naturally).
-        const modelSpans = new Map();
+        // Exact working time per file: a turn runs from a real user message
+        // to the last WORK record before the next one — an assistant record
+        // or a tool result. Tool results are user-typed but never turn
+        // starts, and subagent files carry them without the toolUseResult
+        // side-field, so a tool_result content block marks them too.
+        // Non-work records (queue-operation, system, attachment) are
+        // stamped when the user returns or out of order, so they neither
+        // start nor extend a turn — the think pause before the user's next
+        // message never counts.
+        const turnBounds = [];
+        let openTurnStart;
+        let turnWorkMax;
+        const closeTurn = () => {
+            if (openTurnStart === undefined) return;
+            turnBounds.push([openTurnStart, Math.max(openTurnStart, turnWorkMax ?? openTurnStart)]);
+            openTurnStart = undefined;
+        };
+        const unitStamps = [];
+        // Per-model activity: the model's own assistant records carrying
+        // usage (streaming duplicates extend a segment naturally).
+        const modelStamps = new Map();
         for (const record of records) {
-            span.add(record.timestamp);
+            span.stamp(record.timestamp);
+            const ms = toMillis(record.timestamp);
+            if (ms !== undefined) unitStamps.push(ms);
             const childId = record?.toolUseResult?.agentId;
             if (isNonEmptyString(childId) && !selected.has(childId)) {
                 const childMatches = agentFile(childId);
                 if (childMatches.length === 1) pending.push([childId, childMatches[0]]);
             }
+            const content = record?.message?.content;
+            const isToolResult = Boolean(record.toolUseResult) ||
+                (Array.isArray(content) && content.some((block) => block?.type === "tool_result"));
+            if (record?.type === "user" && record?.message?.role === "user" && ms !== undefined && !isToolResult) {
+                closeTurn();
+                openTurnStart = ms;
+                turnWorkMax = undefined;
+            }
+            const isWork = record?.type === "assistant" || (record?.type === "user" && isToolResult);
+            if (isWork && ms !== undefined && (turnWorkMax === undefined || ms > turnWorkMax)) turnWorkMax = ms;
             if (record?.type !== "assistant") continue;
             const usage = record?.message?.usage;
             const model = record?.message?.model;
             if (usage) usageByRequest.set(record.requestId ?? record.uuid, { usage, model });
             if (isNonEmptyString(model) && model !== "<synthetic>") {
                 models.add(model);
-                if (usage) {
-                    if (!modelSpans.has(model)) modelSpans.set(model, activityCollector());
-                    modelSpans.get(model).add(record.timestamp);
+                if (usage && ms !== undefined) {
+                    if (!modelStamps.has(model)) modelStamps.set(model, []);
+                    modelStamps.get(model).push(ms);
                 }
             }
         }
-        for (const [model, modelSpan] of modelSpans) {
-            ledger.addWall(model, modelSpan.result().active_ms);
+        closeTurn();
+        // Exact turn intervals when the file has user-message markers;
+        // otherwise its stamps join the shared idle-gap fallback pool.
+        const unitIntervals = turnBounds.length > 0 ? mergeIntervals(turnBounds) : gapSegments(unitStamps);
+        if (turnBounds.length > 0) span.addIntervals(unitIntervals);
+        else span.addFallbackStamps(unitStamps);
+        for (const [model, stamps] of modelStamps) {
+            ledger.addWall(model, intervalsLength(clipToIntervals(gapSegments(stamps), unitIntervals)));
         }
         for (const { usage, model } of usageByRequest.values()) {
             const input = usage.input_tokens ?? 0;
