@@ -2,12 +2,11 @@
 
 DreamTeam is a public, cross-runtime skills-only plugin for Codex and Claude Code.
 
-It provides four authoritative professional roles:
+It provides three authoritative professional roles:
 
 - `product-technologist`
 - `software-developer`
 - `code-reviewer`
-- `technical-writer`
 
 Plus two utility skills roles and wrappers share: `env-snapshot` (one-call workspace environment baseline) and `agent-usage` (manual-only per-launch usage/cost collector for hosting workflows).
 
@@ -22,7 +21,7 @@ project wrapper
         | Assignment v1
         v
 DreamTeam role
-  product-technologist | software-developer | code-reviewer | technical-writer
+  product-technologist | software-developer | code-reviewer
         |
         | Result v1
         v
