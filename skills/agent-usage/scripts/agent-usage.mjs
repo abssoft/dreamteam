@@ -17,13 +17,19 @@
 //   ok:true  → {ok, label, wall_seconds, started_at, ended_at, agents,
 //               steps, models, tokens: {input, cached_input, output, total},
 //               cost_usd, unpriced_models, by_model, source,
-//               rendered: {block, table_header, rows}, comment_html}
+//               rendered: {block, table_header, rows, total_row},
+//               comment_html}
 //   ok:false → {ok, code, warning_line}: bad_args | logs_not_found |
 //               root_not_found | ambiguous_root | workflow_run_incomplete |
 //               timestamps_missing | log_limit_exceeded | collector_error
 // steps counts API model requests across the launch: Codex — token_count
 // events, Claude — distinct requestIds carrying usage. The optimization
 // target is fewer steps per task.
+// wall_seconds is ACTIVE time, not the calendar span: on the merged sorted
+// timeline of all record timestamps, gaps between consecutive records are
+// summed only while <= 30 minutes — longer pauses (a session resumed the
+// next day) are idle and don't count. started_at/ended_at still bound the
+// full calendar span, so ended-started may far exceed wall_seconds.
 // by_model splits wall time/steps/tokens/cost per model: [{model,
 //   wall_seconds, steps, tokens: {input, cached_input, output, total},
 //   cost_usd|null}] sorted by model name; cost_usd is null for models
@@ -32,11 +38,11 @@
 //   token_count events to the model active at that event (turn_context), so
 //   a thread that switches models splits correctly; a negative delta means
 //   the counter reset and the event becomes a fresh baseline. Per-model
-//   wall_seconds is that model's own working time: the span of records
-//   while the model was active (Codex, per thread) or of its own assistant
-//   records (Claude, per agent file), summed across threads/files; parallel
-//   agents can make the sum exceed the launch-level wall_seconds (the full
-//   launch span).
+//   wall_seconds is that model's own active time under the same 30-minute
+//   idle-gap rule, over the records while the model was active (Codex, per
+//   thread) or its own assistant records (Claude, per agent file), summed
+//   across threads/files; parallel agents can make the sum exceed the
+//   launch-level wall_seconds.
 // rendered.* and warning_line are ready-to-paste Russian strings — the
 // caller copies them verbatim and never re-formats numbers: rendered.block
 // is the standalone «Затрачено» table for one launch; rendered.rows is the
@@ -124,7 +130,7 @@ function usageLedger() {
         return perModel.get(key);
     };
     return {
-        // Milliseconds of this model's own working span (one thread or one
+        // Milliseconds of this model's own active time (one thread or one
         // agent file at a time); summed across units into wall_seconds.
         addWall(model, ms) {
             bucket(model).wall_ms += ms;
@@ -348,29 +354,41 @@ function toMillis(value) {
     return Number.isFinite(ms) ? ms : undefined;
 }
 
-function spanCollector() {
-    let min;
-    let max;
+// Pauses longer than this between consecutive records are idle (a session
+// resumed hours or days later) and are excluded from active wall time.
+const IDLE_GAP_MS = 30 * 60 * 1000;
+
+// Active-time accumulator: min/max bound the calendar span; active_ms sums
+// the gaps between consecutive timestamps on the sorted timeline, skipping
+// any gap over IDLE_GAP_MS. A merged timeline across parallel units counts
+// overlapping activity once.
+function activityCollector() {
+    const stamps = [];
     return {
         add(value) {
             const ms = toMillis(value);
-            if (ms === undefined) return;
-            if (min === undefined || ms < min) min = ms;
-            if (max === undefined || ms > max) max = ms;
+            if (ms !== undefined) stamps.push(ms);
         },
         result() {
-            return { min, max };
+            if (stamps.length === 0) return { min: undefined, max: undefined, active_ms: 0 };
+            stamps.sort((a, b) => a - b);
+            let active = 0;
+            for (let i = 1; i < stamps.length; i++) {
+                const gap = stamps[i] - stamps[i - 1];
+                if (gap <= IDLE_GAP_MS) active += gap;
+            }
+            return { min: stamps[0], max: stamps[stamps.length - 1], active_ms: active };
         }
     };
 }
 
 function emit(label, span, agents, models, ledger, source) {
-    const { min, max } = span.result();
+    const { min, max, active_ms } = span.result();
     if (min === undefined || max === undefined || max < min) failWith("timestamps_missing");
     const result = {
         ok: true,
         label,
-        wall_seconds: Math.round((max - min) / 1000),
+        wall_seconds: Math.round(active_ms / 1000),
         started_at: new Date(min).toISOString(),
         ended_at: new Date(max).toISOString(),
         agents,
@@ -430,7 +448,7 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
         }
     }
 
-    const span = spanCollector();
+    const span = activityCollector();
     const models = new Set();
     const ledger = usageLedger();
     for (const item of selected.values()) {
@@ -453,7 +471,7 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
                 activeModel = payload.model;
             }
             if (activeModel !== undefined) {
-                if (!modelSpans.has(activeModel)) modelSpans.set(activeModel, spanCollector());
+                if (!modelSpans.has(activeModel)) modelSpans.set(activeModel, activityCollector());
                 modelSpans.get(activeModel).add(record.timestamp);
             }
             if (record?.type === "event_msg" && payload?.type === "token_count" && payload.info?.total_token_usage) {
@@ -483,8 +501,7 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
             }
         }
         for (const [model, modelSpan] of modelSpans) {
-            const { min, max } = modelSpan.result();
-            if (min !== undefined && max !== undefined && max >= min) ledger.addWall(model, max - min);
+            ledger.addWall(model, modelSpan.result().active_ms);
         }
     }
     emit(label, span, selected.size, models, ledger, "codex");
@@ -522,7 +539,7 @@ async function collectClaude({ sessionId, rootAgentRef, label, claudeProjectsRoo
     }
 
     const selected = new Map();
-    const span = spanCollector();
+    const span = activityCollector();
     const models = new Set();
     const ledger = usageLedger();
     while (pending.length > 0) {
@@ -550,14 +567,13 @@ async function collectClaude({ sessionId, rootAgentRef, label, claudeProjectsRoo
             if (isNonEmptyString(model) && model !== "<synthetic>") {
                 models.add(model);
                 if (usage) {
-                    if (!modelSpans.has(model)) modelSpans.set(model, spanCollector());
+                    if (!modelSpans.has(model)) modelSpans.set(model, activityCollector());
                     modelSpans.get(model).add(record.timestamp);
                 }
             }
         }
         for (const [model, modelSpan] of modelSpans) {
-            const { min, max } = modelSpan.result();
-            if (min !== undefined && max !== undefined && max >= min) ledger.addWall(model, max - min);
+            ledger.addWall(model, modelSpan.result().active_ms);
         }
         for (const { usage, model } of usageByRequest.values()) {
             const input = usage.input_tokens ?? 0;

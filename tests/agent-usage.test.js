@@ -621,6 +621,30 @@ test('rendering switches to millions with two decimals at 1 000 000 tokens, outp
   );
 });
 
+test('idle gaps over 30 minutes are excluded from wall time; started/ended keep the calendar span', async () => {
+  // A session resumed the next day: 5 minutes of work, an overnight gap,
+  // 10 more minutes. Wall time is the active sum, not the calendar span.
+  const sessionsRoot = await makeLogs({
+    'main.jsonl': [
+      { timestamp: '2026-01-01T10:00:00.000Z', type: 'session_meta', payload: { id: 'sess-1' } },
+      codexTurnContext('gpt-5.6-terra', '2026-01-01T10:00:00.000Z'),
+      codexTokenCount({ input_tokens: 100, cached_input_tokens: 0, output_tokens: 10, total_tokens: 110 }, '2026-01-01T10:05:00.000Z'),
+      codexTokenCount({ input_tokens: 300, cached_input_tokens: 0, output_tokens: 30, total_tokens: 330 }, '2026-01-02T09:00:00.000Z'),
+      codexTokenCount({ input_tokens: 500, cached_input_tokens: 0, output_tokens: 50, total_tokens: 550 }, '2026-01-02T09:10:00.000Z')
+    ]
+  });
+  const empty = await emptyDir();
+
+  const result = await runCollector({ runtime: 'codex', sessionId: 'sess-1', codexRoot: sessionsRoot, codexArchivedRoot: empty });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.started_at, '2026-01-01T10:00:00.000Z');
+  assert.equal(result.ended_at, '2026-01-02T09:10:00.000Z');
+  assert.equal(result.wall_seconds, 900, '5 minutes on day one plus 10 on day two; the overnight gap does not count');
+  assert.equal(result.by_model[0].wall_seconds, 900);
+  assert.match(result.rendered.total_row, /^\| \*\*ИТОГО\*\* \| 15м 0с \| /);
+});
+
 test('per-model wall time sums the model span across separate agent files', async () => {
   const projectsRoot = await makeLogs({
     'proj/sess-uuid/subagents/agent-root1.jsonl': [
