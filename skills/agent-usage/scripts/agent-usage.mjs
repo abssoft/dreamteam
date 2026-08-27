@@ -16,7 +16,7 @@
 // Output: one JSON line on stdout; always exit 0.
 //   ok:true  → {ok, label, wall_seconds, started_at, ended_at, agents,
 //               steps, models, tokens: {input, cached_input, output, total},
-//               cost_usd, unpriced_models, by_model, source,
+//               cost_usd, unpriced_models, by_launch, by_model, source,
 //               rendered: {block, table_header, rows, total_row},
 //               comment_html}
 //   ok:false → {ok, code, warning_line}: bad_args | logs_not_found |
@@ -41,6 +41,13 @@
 // record timestamps (pooled across such units). started_at/ended_at still
 // bound the full calendar span, so ended-started may far exceed
 // wall_seconds.
+// by_launch splits the same figures per (launch, model) so subagents stay
+//   visible: [{launch, model, wall_seconds, steps, tokens, cost_usd|null}].
+//   The root unit carries the report label; each spawned unit rows under
+//   its own name — Codex agent_path (nickname, then thread id, when
+//   absent), Claude the parent's Task/Agent tool_use input.description
+//   (then subagent_type; «Сабагент <id-prefix>» when unlinked). Launches
+//   keep processing order (root first), models sort inside a launch.
 // by_model splits wall time/steps/tokens/cost per model: [{model,
 //   wall_seconds, steps, tokens: {input, cached_input, output, total},
 //   cost_usd|null}] sorted by model name; cost_usd is null for models
@@ -58,9 +65,10 @@
 // rendered.* and warning_line are ready-to-paste Russian strings — the
 // caller copies them verbatim and never re-formats numbers: rendered.block
 // is the standalone «Затрачено» table for one launch; rendered.rows is the
-// same data rows (one Markdown table line per model, newline-joined, each
-// carrying that model's own working time) for assembling a multi-launch
-// table over rendered.table_header; rendered.total_row is the «ИТОГО» line
+// same data rows (one Markdown table line per by_launch entry —
+// launch × model — newline-joined, each carrying that model's own working
+// time inside that launch) for assembling a multi-launch table over
+// rendered.table_header; rendered.total_row is the «ИТОГО» line
 // closing rendered.block (launch-level wall time, summed tokens/steps/cost —
 // per-model wall sums may exceed its time; on unpriced models the $ cell
 // carries the «без тарифа» note). In a multi-launch table the caller keeps
@@ -129,28 +137,33 @@ function rateFor(model) {
     return key ? PRICING[key] : undefined;
 }
 
-// Per-model accumulator: steps, tokens, and cost per model plus the launch
-// totals. Codex adds one entry per thread (usage: raw slices for pricing);
-// Claude adds one entry per API request.
+// Usage accumulator keyed by (launch, model): the hosting session and each
+// subagent launch stay separate rows instead of dissolving into per-model
+// totals. Launches keep first-seen order (the root unit is processed
+// first); models sort alphabetically inside a launch. Codex adds one entry
+// per thread (usage: raw slices for pricing); Claude adds one entry per
+// API request.
 function usageLedger() {
-    const perModel = new Map();
-    const bucket = (model) => {
-        const key = isNonEmptyString(model) && model !== "<synthetic>" ? model : "неизвестно";
-        if (!perModel.has(key)) {
-            perModel.set(key, { wall_ms: 0, steps: 0, input: 0, cached_input: 0, output: 0, total: 0, usd: 0 });
+    const perLaunch = new Map();
+    const bucket = (launch, model) => {
+        const modelKey = isNonEmptyString(model) && model !== "<synthetic>" ? model : "неизвестно";
+        if (!perLaunch.has(launch)) perLaunch.set(launch, new Map());
+        const models = perLaunch.get(launch);
+        if (!models.has(modelKey)) {
+            models.set(modelKey, { wall_ms: 0, steps: 0, input: 0, cached_input: 0, output: 0, total: 0, usd: 0 });
         }
-        return perModel.get(key);
+        return models.get(modelKey);
     };
     return {
         // Milliseconds of this model's own active time (one thread or one
         // agent file at a time); summed across units into wall_seconds.
-        addWall(model, ms) {
-            bucket(model).wall_ms += ms;
+        addWall(launch, model, ms) {
+            bucket(launch, model).wall_ms += ms;
         },
         // totals: {input, cached_input, output, total} — log-shaped counts.
         // priced: {input, cache_write, cached_input, output} — raw slices.
-        add(model, steps, totals, priced) {
-            const entry = bucket(model);
+        add(launch, model, steps, totals, priced) {
+            const entry = bucket(launch, model);
             const rate = rateFor(model);
             entry.steps += steps;
             entry.input += totals.input;
@@ -169,30 +182,67 @@ function usageLedger() {
             }
         },
         result() {
-            const sorted = [...perModel.entries()].sort(([a], [b]) => a.localeCompare(b));
+            const by_launch = [];
+            for (const [launch, models] of perLaunch) {
+                for (const [model, entry] of [...models.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+                    by_launch.push({
+                        launch,
+                        model,
+                        wall_seconds: Math.round(entry.wall_ms / 1000),
+                        steps: entry.steps,
+                        tokens: { input: entry.input, cached_input: entry.cached_input, output: entry.output, total: entry.total },
+                        cost_usd: entry.unpriced ? null : Math.round(entry.usd * 10_000) / 10_000,
+                        unpriced: Boolean(entry.unpriced)
+                    });
+                }
+            }
+            // by_model keeps the aggregate per-model contract on top of the
+            // per-launch split; sums run over raw (unrounded) USD.
+            const aggregate = new Map();
+            for (const [, models] of perLaunch) {
+                for (const [model, entry] of models) {
+                    if (!aggregate.has(model)) {
+                        aggregate.set(model, {
+                            model, wall_seconds: 0, steps: 0,
+                            tokens: { input: 0, cached_input: 0, output: 0, total: 0 }, usd: 0, unpriced: false
+                        });
+                    }
+                    const agg = aggregate.get(model);
+                    agg.wall_seconds += Math.round(entry.wall_ms / 1000);
+                    agg.steps += entry.steps;
+                    agg.tokens.input += entry.input;
+                    agg.tokens.cached_input += entry.cached_input;
+                    agg.tokens.output += entry.output;
+                    agg.tokens.total += entry.total;
+                    if (entry.unpriced) agg.unpriced = true;
+                    else agg.usd += entry.usd;
+                }
+            }
+            const sorted = [...aggregate.values()].sort((a, b) => a.model.localeCompare(b.model));
             const tokens = { input: 0, cached_input: 0, output: 0, total: 0 };
             let steps = 0;
             let usd = 0;
-            for (const [, entry] of sorted) {
-                tokens.input += entry.input;
-                tokens.cached_input += entry.cached_input;
-                tokens.output += entry.output;
-                tokens.total += entry.total;
+            for (const entry of sorted) {
+                tokens.input += entry.tokens.input;
+                tokens.cached_input += entry.tokens.cached_input;
+                tokens.output += entry.tokens.output;
+                tokens.total += entry.tokens.total;
                 steps += entry.steps;
                 if (!entry.unpriced) usd += entry.usd;
             }
             return {
-                by_model: sorted.map(([model, entry]) => ({
-                    model,
-                    wall_seconds: Math.round(entry.wall_ms / 1000),
+                by_launch: by_launch.map(({ unpriced, ...row }) => row),
+                by_model: sorted.map((entry) => ({
+                    model: entry.model,
+                    wall_seconds: entry.wall_seconds,
                     steps: entry.steps,
-                    tokens: { input: entry.input, cached_input: entry.cached_input, output: entry.output, total: entry.total },
-                    cost_usd: entry.unpriced ? null : Math.round(entry.usd * 10_000) / 10_000
+                    tokens: entry.tokens,
+                    cost_usd: entry.unpriced ? null : Math.round(entry.usd * 10_000) / 10_000,
                 })),
                 tokens,
                 steps,
                 cost_usd: Math.round(usd * 10_000) / 10_000,
-                unpriced_models: sorted.filter(([, entry]) => entry.unpriced).map(([model]) => model)
+                unpriced_models: sorted.filter((entry) => entry.unpriced).map((entry) => entry.model)
             };
         }
     };
@@ -228,15 +278,15 @@ function escapeHtml(value) {
     return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
-function renderUsage({ label, wall_seconds, by_model, tokens, steps, cost_usd, unpriced_models }) {
-    const entries = by_model.length > 0
-        ? by_model
-        : [{ model: "неизвестно", wall_seconds, steps: 0, tokens: { input: 0, cached_input: 0, output: 0, total: 0 }, cost_usd: 0 }];
+function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd, unpriced_models }) {
+    const entries = by_launch.length > 0
+        ? by_launch
+        : [{ launch: label, model: "неизвестно", wall_seconds, steps: 0, tokens: { input: 0, cached_input: 0, output: 0, total: 0 }, cost_usd: 0 }];
     const rows = entries
         .map((entry) =>
             [
                 "",
-                `${label}<br>*${entry.model}*`,
+                `${entry.launch}<br>*${entry.model}*`,
                 formatWall(entry.wall_seconds),
                 `${formatTokens(entry.tokens.input)}<br>*кэш ${formatTokens(entry.tokens.cached_input)}*`,
                 formatThousands(entry.tokens.output),
@@ -270,7 +320,7 @@ function renderUsage({ label, wall_seconds, by_model, tokens, steps, cost_usd, u
         .trim();
     const items = entries
         .map((entry) =>
-            `<li><b>${escapeHtml(entry.model)}</b>: ${formatWall(entry.wall_seconds)} · ` +
+            `<li><b>${escapeHtml(entry.launch)} · ${escapeHtml(entry.model)}</b>: ${formatWall(entry.wall_seconds)} · ` +
             `вход ${formatTokens(entry.tokens.input)} (кэш ${formatTokens(entry.tokens.cached_input)}) · ` +
             `выход ${formatThousands(entry.tokens.output)} · всего ${formatTokens(entry.tokens.total)} · шаги ${formatThousands(entry.steps)}` +
             `${entry.cost_usd === null ? " · без тарифа" : ` · $${entry.cost_usd}`}</li>`
@@ -488,7 +538,8 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
             path,
             id: payload.id,
             parentId: spawn.parent_thread_id,
-            agentPath: isNonEmptyString(spawn.agent_path) ? spawn.agent_path : null
+            agentPath: isNonEmptyString(spawn.agent_path) ? spawn.agent_path : null,
+            nickname: isNonEmptyString(spawn.agent_nickname) ? spawn.agent_nickname : null
         });
     }
 
@@ -514,6 +565,10 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
     const models = new Set();
     const ledger = usageLedger();
     for (const item of selected.values()) {
+        // The root unit carries the launch label; each spawned thread rows
+        // under its own role path (nickname, then id, when the path is
+        // absent) so subagents stay visible in the report.
+        const unitLabel = item.id === roots[0].id ? label : item.agentPath ?? item.nickname ?? item.id;
         const records = await readRecords(item.path);
         // A null-path child has no structured launch record; the only
         // parent-side evidence is its thread id echoed in tool output.
@@ -581,6 +636,7 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
                 prev = now;
                 // Codex input_tokens include the cached subset; price the two slices apart.
                 ledger.add(
+                    unitLabel,
                     activeModel,
                     1,
                     { input: delta.input, cached_input: delta.cached, output: delta.output, total: delta.total },
@@ -595,7 +651,7 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
         if (turnBounds.length > 0) span.addIntervals(unitIntervals);
         else span.addFallbackStamps(unitStamps);
         for (const [model, stamps] of modelStamps) {
-            ledger.addWall(model, intervalsLength(clipToIntervals(gapSegments(stamps), unitIntervals)));
+            ledger.addWall(unitLabel, model, intervalsLength(clipToIntervals(gapSegments(stamps), unitIntervals)));
         }
     }
     emit(label, span, selected.size, models, ledger, "codex");
@@ -636,10 +692,21 @@ async function collectClaude({ sessionId, rootAgentRef, label, claudeProjectsRoo
     const span = wallTracker();
     const models = new Set();
     const ledger = usageLedger();
+    // Subagent launch names come from the parent's Task/Agent tool_use
+    // blocks (input.description, then subagent_type), matched to the child
+    // through the tool_result's tool_use_id → toolUseResult.agentId pair.
+    // Parents always process before their children (the root is queued
+    // first), so a child's label is known by the time its file is read.
+    const rootAgentId = pending[0][0];
+    const labelById = new Map();
+    const toolUseNames = new Map();
     while (pending.length > 0) {
         const [agentId, path] = pending.shift();
         if (selected.has(agentId)) continue;
         selected.set(agentId, path);
+        const unitLabel = agentId === rootAgentId
+            ? label
+            : labelById.get(agentId) ?? `Сабагент ${agentId.slice(0, 8)}`;
         const records = await readRecords(path);
         // Streaming writes several assistant records per API request; the last
         // record per requestId carries the final usage — keep only that one.
@@ -669,12 +736,27 @@ async function collectClaude({ sessionId, rootAgentRef, label, claudeProjectsRoo
             span.stamp(record.timestamp);
             const ms = toMillis(record.timestamp);
             if (ms !== undefined) unitStamps.push(ms);
+            const content = record?.message?.content;
+            if (record?.type === "assistant" && Array.isArray(content)) {
+                for (const block of content) {
+                    if (block?.type === "tool_use" && isNonEmptyString(block.id)) {
+                        const name = block.input?.description ?? block.input?.subagent_type;
+                        if (isNonEmptyString(name)) toolUseNames.set(block.id, name);
+                    }
+                }
+            }
             const childId = record?.toolUseResult?.agentId;
             if (isNonEmptyString(childId) && !selected.has(childId)) {
+                if (Array.isArray(content)) {
+                    for (const block of content) {
+                        if (block?.type === "tool_result" && toolUseNames.has(block.tool_use_id)) {
+                            labelById.set(childId, toolUseNames.get(block.tool_use_id));
+                        }
+                    }
+                }
                 const childMatches = agentFile(childId);
                 if (childMatches.length === 1) pending.push([childId, childMatches[0]]);
             }
-            const content = record?.message?.content;
             const isToolResult = Boolean(record.toolUseResult) ||
                 (Array.isArray(content) && content.some((block) => block?.type === "tool_result"));
             if (record?.type === "user" && record?.message?.role === "user" && ms !== undefined && !isToolResult) {
@@ -703,7 +785,7 @@ async function collectClaude({ sessionId, rootAgentRef, label, claudeProjectsRoo
         if (turnBounds.length > 0) span.addIntervals(unitIntervals);
         else span.addFallbackStamps(unitStamps);
         for (const [model, stamps] of modelStamps) {
-            ledger.addWall(model, intervalsLength(clipToIntervals(gapSegments(stamps), unitIntervals)));
+            ledger.addWall(unitLabel, model, intervalsLength(clipToIntervals(gapSegments(stamps), unitIntervals)));
         }
         for (const { usage, model } of usageByRequest.values()) {
             const input = usage.input_tokens ?? 0;
@@ -712,6 +794,7 @@ async function collectClaude({ sessionId, rootAgentRef, label, claudeProjectsRoo
             const output = usage.output_tokens ?? 0;
             // Same shape as Codex: input is the full model input, cache reads included.
             ledger.add(
+                unitLabel,
                 model,
                 1,
                 { input: input + cacheCreate + cacheRead, cached_input: cacheRead, output, total: input + cacheCreate + cacheRead + output },

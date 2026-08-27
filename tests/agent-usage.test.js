@@ -137,8 +137,16 @@ test('Codex sums the launched thread tree: last cumulative token_count per threa
   ]);
 
   // The collector renders the «Затрачено» block itself: caller-side digit
-  // formatting is banned, the caller pastes rendered.block verbatim.
-  const rows = '| Разработка<br>*gpt-5.6-terra* | 5м 59с | 1 500<br>*кэш 600* | 80 | 1 580 | 3 | 0.0029 |';
+  // formatting is banned, the caller pastes rendered.block verbatim. One
+  // row per launch × model: the root under the report label, the spawned
+  // thread under its own agent_path.
+  assert.deepEqual(result.by_launch, [
+    { launch: 'Разработка', model: 'gpt-5.6-terra', wall_seconds: 299, steps: 2, tokens: { input: 1000, cached_input: 400, output: 50, total: 1050 }, cost_usd: 0.0019 },
+    { launch: '/root/development/helper', model: 'gpt-5.6-terra', wall_seconds: 60, steps: 1, tokens: { input: 500, cached_input: 200, output: 30, total: 530 }, cost_usd: 0.001 }
+  ]);
+  const rows =
+    '| Разработка<br>*gpt-5.6-terra* | 4м 59с | 1 000<br>*кэш 400* | 50 | 1 050 | 2 | 0.0019 |\n' +
+    '| /root/development/helper<br>*gpt-5.6-terra* | 1м 0с | 500<br>*кэш 200* | 30 | 530 | 1 | 0.001 |';
   // The ИТОГО line uses the launch-level wall time (5м 0с), not the per-model
   // wall sum (5м 59с).
   const totalRow = '| **ИТОГО** | 5м 0с | 1 500<br>*кэш 600* | 80 | 1 580 | 3 | 0.0029 |';
@@ -151,7 +159,8 @@ test('Codex sums the launched thread tree: last cumulative token_count per threa
   assert.equal(
     result.comment_html,
     '<p>Метрики Разработка: 5м 0с · шаги 3 · $0.0029</p>' +
-      '<ul><li><b>gpt-5.6-terra</b>: 5м 59с · вход 1 500 (кэш 600) · выход 80 · всего 1 580 · шаги 3 · $0.0029</li></ul>'
+      '<ul><li><b>Разработка · gpt-5.6-terra</b>: 4м 59с · вход 1 000 (кэш 400) · выход 50 · всего 1 050 · шаги 2 · $0.0019</li>' +
+      '<li><b>/root/development/helper · gpt-5.6-terra</b>: 1м 0с · вход 500 (кэш 200) · выход 30 · всего 530 · шаги 1 · $0.001</li></ul>'
   );
 });
 
@@ -342,10 +351,11 @@ test('Codex whole-session scope sums the session rollout and its spawned tree pe
     { model: 'gpt-5.6-terra', wall_seconds: 60, steps: 1, tokens: { input: 200, cached_input: 0, output: 20, total: 220 }, cost_usd: 0.0006 }
   ]);
   assert.equal(result.cost_usd, 0.0082);
+  // The spawned thread rows under its own agent_path, not the session label.
   assert.equal(
     result.rendered.rows,
     '| Основная сессия<br>*gpt-5.6-sol* | 5м 55с | 1 000<br>*кэш 100* | 100 | 1 100 | 1 | 0.0076 |\n' +
-      '| Основная сессия<br>*gpt-5.6-terra* | 1м 0с | 200<br>*кэш 0* | 20 | 220 | 1 | 0.0006 |'
+      '| /root/development<br>*gpt-5.6-terra* | 1м 0с | 200<br>*кэш 0* | 20 | 220 | 1 | 0.0006 |'
   );
 });
 
@@ -403,10 +413,12 @@ test('Claude whole-session scope sums the transcript plus every subagent file pe
     { model: 'claude-sonnet-5', wall_seconds: 0, steps: 1, tokens: { input: 50, cached_input: 0, output: 5, total: 55 }, cost_usd: 0.0001 }
   ]);
   assert.equal(result.cost_usd, 0.0169);
+  // The unlinked subagent has no Task tool_use name to inherit, so it rows
+  // under the id-prefix placeholder.
   assert.equal(
     result.rendered.rows,
     '| Основная сессия<br>*claude-fable-5* | 10м 0с | 1 300<br>*кэш 200* | 110 | 1 410 | 2 | 0.0167 |\n' +
-      '| Основная сессия<br>*claude-sonnet-5* | 0м 0с | 50<br>*кэш 0* | 5 | 55 | 1 | 0.0001 |'
+      '| Сабагент orphan<br>*claude-sonnet-5* | 0м 0с | 50<br>*кэш 0* | 5 | 55 | 1 | 0.0001 |'
   );
 });
 
@@ -447,8 +459,8 @@ test('Claude sums root and nested subagents with per-request dedup and full inpu
         requestId: 'req1', model: 'claude-sonnet-5', at: '2026-01-01T10:00:05.000Z',
         usage: { input_tokens: 100, cache_creation_input_tokens: 200, cache_read_input_tokens: 300, output_tokens: 40 }
       }),
-      { type: 'assistant', requestId: 'req2', timestamp: '2026-01-01T10:00:06.000Z', message: { model: '<synthetic>', content: [] } },
-      { type: 'user', timestamp: '2026-01-01T10:00:07.000Z', toolUseResult: { agentId: 'child1' } }
+      { type: 'assistant', requestId: 'req2', timestamp: '2026-01-01T10:00:06.000Z', message: { model: '<synthetic>', content: [{ type: 'tool_use', id: 'tu1', name: 'Agent', input: { description: 'Помощник ревью' } }] } },
+      { type: 'user', timestamp: '2026-01-01T10:00:07.000Z', toolUseResult: { agentId: 'child1' }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1' }] } }
     ],
     'proj/sess-uuid/subagents/agent-child1.jsonl': [
       claudeAssistant({
@@ -477,6 +489,8 @@ test('Claude sums root and nested subagents with per-request dedup and full inpu
   // claude-sonnet-5: (100*2 + 200*2.5 + 300*0.2 + 40*10 + 10*2 + 5*10) / 1e6, rounded to 4 decimals.
   assert.equal(result.cost_usd, 0.0012);
   assert.deepEqual(result.unpriced_models, []);
+  // The nested subagent rows under the parent's tool_use description.
+  assert.deepEqual(result.by_launch.map((row) => row.launch), ['Ревью', 'Помощник ревью']);
 });
 
 test('Claude splits the report per model with exact per-request attribution', async () => {
@@ -529,8 +543,8 @@ test('Claude splits the report per model with exact per-request attribution', as
   assert.equal(
     result.comment_html,
     '<p>Метрики PRD: 2м 0с · шаги 3 · $0.0038</p><ul>' +
-      '<li><b>claude-opus-5</b>: 0м 0с · вход 100 (кэш 0) · выход 10 · всего 110 · шаги 1 · $0.0008</li>' +
-      '<li><b>claude-sonnet-5</b>: 2м 0с · вход 1 010 (кэш 0) · выход 105 · всего 1 115 · шаги 2 · $0.0031</li></ul>'
+      '<li><b>PRD · claude-opus-5</b>: 0м 0с · вход 100 (кэш 0) · выход 10 · всего 110 · шаги 1 · $0.0008</li>' +
+      '<li><b>PRD · claude-sonnet-5</b>: 2м 0с · вход 1 010 (кэш 0) · выход 105 · всего 1 115 · шаги 2 · $0.0031</li></ul>'
   );
 });
 
