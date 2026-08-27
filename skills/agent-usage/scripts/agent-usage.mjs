@@ -42,7 +42,12 @@
 // is the standalone «Затрачено» table for one launch; rendered.rows is the
 // same data rows (one Markdown table line per model, newline-joined, each
 // carrying that model's own working time) for assembling a multi-launch
-// table over rendered.table_header. comment_html is the same breakdown as
+// table over rendered.table_header; rendered.total_row is the «ИТОГО» line
+// closing rendered.block (launch-level wall time, summed tokens/steps/cost —
+// per-model wall sums may exceed its time; on unpriced models the $ cell
+// carries the «без тарифа» note). In a multi-launch table the caller keeps
+// per-launch total_rows out and cannot total across launches itself (digit
+// formatting is script-only). comment_html is the same breakdown as
 // one HTML fragment for trackers that take HTML comments.
 // Token cells: >=1 000 000 → millions with two decimals and «М» (3238493 →
 // 3.24М), below → space-separated thousands (323885 → 323 885); the Выход
@@ -205,7 +210,7 @@ function escapeHtml(value) {
     return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
-function renderUsage({ label, wall_seconds, by_model, steps, cost_usd, unpriced_models }) {
+function renderUsage({ label, wall_seconds, by_model, tokens, steps, cost_usd, unpriced_models }) {
     const entries = by_model.length > 0
         ? by_model
         : [{ model: "неизвестно", wall_seconds, steps: 0, tokens: { input: 0, cached_input: 0, output: 0, total: 0 }, cost_usd: 0 }];
@@ -230,6 +235,21 @@ function renderUsage({ label, wall_seconds, by_model, steps, cost_usd, unpriced_
     const totalCost = unpriced_models.length > 0
         ? `${cost_usd} (без тарифа: ${unpriced_models.join(", ")})`
         : String(cost_usd);
+    // The ИТОГО line closes the single-launch block: launch-level wall time
+    // (per-model wall sums may exceed it) plus the summed tokens/steps/cost.
+    const total_row = [
+        "",
+        "**ИТОГО**",
+        formatWall(wall_seconds),
+        `${formatTokens(tokens.input)}<br>*кэш ${formatTokens(tokens.cached_input)}*`,
+        formatThousands(tokens.output),
+        formatTokens(tokens.total),
+        formatThousands(steps),
+        totalCost,
+        ""
+    ]
+        .join(" | ")
+        .trim();
     const items = entries
         .map((entry) =>
             `<li><b>${escapeHtml(entry.model)}</b>: ${formatWall(entry.wall_seconds)} · ` +
@@ -243,9 +263,10 @@ function renderUsage({ label, wall_seconds, by_model, steps, cost_usd, unpriced_
 
     return {
         rendered: {
-            block: `Затрачено:\n\n${TABLE_HEADER}\n${rows}`,
+            block: `Затрачено:\n\n${TABLE_HEADER}\n${rows}\n${total_row}`,
             table_header: TABLE_HEADER,
-            rows
+            rows,
+            total_row
         },
         comment_html
     };
