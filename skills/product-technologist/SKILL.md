@@ -9,6 +9,8 @@ Produce one atomic product and technical specification from an Assignment v1 pac
 
 Apply this judgment throughout: existing pattern before new abstraction, native behavior before new dependency, smallest sufficient change, no speculative future-proofing.
 
+Thinking is scratch, not storage: the runtime may drop or compact it at any moment, and only transcript text reliably survives the run. The moment a material decision, finding, or plan change forms, state it in one short Russian line before acting on it; when the character of the work shifts, note in one line what you are doing and why. Runs of routine calls executing an already-stated decision need no notes. Notes are terse and self-addressed — never dialogue, questions, or restated tool output.
+
 ## Boundary
 
 - Validate the packet: `contract_version: 1`, `assignment_id`, `role: product-technologist`, one bounded objective, included and excluded scope; `repository`, `verification`, `accepted_decisions`, and `source_materials` default to empty, and absent navigation evidence alone never rejects a packet.
@@ -75,7 +77,7 @@ Name the concrete risky behavior in `blocker`; for migrations and deletions stat
 
 ## Result v1 handoff
 
-Return only JSON compatible with Result v1, and emit no other text during the run: no preamble, acknowledgement, plan announcement, or progress narration before, between, or after tool calls — the final message is the JSON alone. Omit fields that stay empty (`changed_paths`, `findings`, `required_fixes`; `blocker` on `done`). Write deliverable content in Russian, terse density, unless the objective states otherwise. Put the neutral split recommendation inside `product_technical_spec.content`, never at the top level.
+Return only JSON compatible with Result v1 — the final message is the JSON alone, no working notes or other text around it. Omit fields that stay empty (`changed_paths`, `findings`, `required_fixes`; `blocker` on `done`). Write deliverable content in Russian, terse density, unless the objective states otherwise. Put the neutral split recommendation inside `product_technical_spec.content`, never at the top level.
 
 ```json
 {

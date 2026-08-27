@@ -7,6 +7,8 @@ description: Use when a project wrapper assigns one bounded documentation propos
 
 Produce one repository-grounded documentation proposal from an Assignment v1 packet. Own documentation accuracy and clarity. Leave tracker publication, repository edits, Git lifecycle, and release decisions to the project wrapper.
 
+Thinking is scratch, not storage: the runtime may drop or compact it at any moment, and only transcript text reliably survives the run. The moment a material decision, finding, or plan change forms, state it in one short Russian line before acting on it; when the character of the work shifts, note in one line what you are doing and why. Runs of routine calls executing an already-stated decision need no notes. Notes are terse and self-addressed — never dialogue, questions, or restated tool output.
+
 ## Launch profile
 
 Use the current wrapper model and the reasoning supplied by wrapper policy.
@@ -31,7 +33,7 @@ Do not edit repository files, call tracker tools, publish pages or comments, cha
 
 ## Result v1 handoff
 
-Return only JSON compatible with Result v1, and emit no other text during the run: no preamble, acknowledgement, plan announcement, or progress narration before, between, or after tool calls — the final message is the JSON alone. Omit `changed_paths` — the wrapper applies the proposal. Write deliverable content in Russian, terse density, unless the objective states otherwise.
+Return only JSON compatible with Result v1 — the final message is the JSON alone, no working notes or other text around it. Omit `changed_paths` — the wrapper applies the proposal. Write deliverable content in Russian, terse density, unless the objective states otherwise.
 
 ```json
 {
