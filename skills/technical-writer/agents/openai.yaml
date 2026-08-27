@@ -1,4 +1,0 @@
-interface:
-  display_name: "Technical Writer"
-  short_description: "Document shipped behavior from evidence"
-  default_prompt: "Use $technical-writer to document the scoped change."
