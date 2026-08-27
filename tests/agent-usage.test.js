@@ -645,6 +645,173 @@ test('idle gaps over 30 minutes are excluded from wall time; started/ended keep 
   assert.match(result.rendered.total_row, /^\| \*\*ИТОГО\*\* \| 15м 0с \| /);
 });
 
+test('Codex wall time is the union of task_started→task_complete turns; pauses between turns never count', async () => {
+  const sessionsRoot = await makeLogs({
+    'main.jsonl': [
+      { timestamp: '2026-01-01T10:00:00.000Z', type: 'session_meta', payload: { id: 'sess-1' } },
+      { timestamp: '2026-01-01T10:00:00.000Z', type: 'event_msg', payload: { type: 'task_started' } },
+      codexTurnContext('gpt-5.6-terra', '2026-01-01T10:00:01.000Z'),
+      codexTokenCount({ input_tokens: 100, cached_input_tokens: 0, output_tokens: 10, total_tokens: 110 }, '2026-01-01T10:03:00.000Z'),
+      { timestamp: '2026-01-01T10:04:00.000Z', type: 'event_msg', payload: { type: 'task_complete' } },
+      // 10 minutes of the user reading — inside the old 30-minute gap, but
+      // between turns, so it must not count.
+      { timestamp: '2026-01-01T10:14:00.000Z', type: 'event_msg', payload: { type: 'task_started' } },
+      codexTokenCount({ input_tokens: 300, cached_input_tokens: 0, output_tokens: 30, total_tokens: 330 }, '2026-01-01T10:15:00.000Z'),
+      // No task_complete: the interrupted turn closes at the last record.
+      codexTokenCount({ input_tokens: 400, cached_input_tokens: 0, output_tokens: 40, total_tokens: 440 }, '2026-01-01T10:16:00.000Z')
+    ],
+    // Subagent thread working inside the parent's first turn: its own turn
+    // overlaps the parent's interval and must count once, not twice.
+    'task.jsonl': [
+      codexMeta('thread-task', 'sess-1', '/root/development'),
+      { timestamp: '2026-01-01T10:01:00.000Z', type: 'event_msg', payload: { type: 'task_started' } },
+      codexTurnContext('gpt-5.6-terra', '2026-01-01T10:01:00.000Z'),
+      codexTokenCount({ input_tokens: 50, cached_input_tokens: 0, output_tokens: 5, total_tokens: 55 }, '2026-01-01T10:02:00.000Z'),
+      { timestamp: '2026-01-01T10:02:30.000Z', type: 'event_msg', payload: { type: 'task_complete' } }
+    ]
+  });
+  const empty = await emptyDir();
+
+  const result = await runCollector({ runtime: 'codex', sessionId: 'sess-1', codexRoot: sessionsRoot, codexArchivedRoot: empty });
+
+  assert.equal(result.ok, true);
+  // Turn one 10:00:00→10:04:00 (240s, subagent inside), turn two
+  // 10:14:00→10:16:00 (120s, closed at the last record).
+  assert.equal(result.wall_seconds, 360);
+  assert.equal(result.started_at, '2026-01-01T10:00:00.000Z');
+  assert.equal(result.ended_at, '2026-01-01T10:16:00.000Z');
+  // Per-model activity clips to turn intervals: main terra 10:00:01→10:04:00
+  // (239s) plus 10:14:00→10:16:00 (120s) — the model segment spans the
+  // pause (gap under 30m) but the clip cuts it out; the task thread adds
+  // 10:01:00→10:02:30 (90s).
+  assert.equal(result.by_model[0].wall_seconds, 239 + 120 + 90);
+});
+
+test('Claude wall time runs from each real user message to the last record before the next; think pauses never count', async () => {
+  const projectsRoot = await makeLogs({
+    'proj/sess-uuid.jsonl': [
+      { type: 'user', timestamp: '2026-01-01T10:00:00.000Z', message: { role: 'user', content: 'go' } },
+      claudeAssistant({
+        requestId: 'req1', model: 'claude-sonnet-5', at: '2026-01-01T10:00:30.000Z',
+        usage: { input_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 10 }
+      }),
+      // Tool result: a user-typed record but not a turn start.
+      { type: 'user', timestamp: '2026-01-01T10:01:00.000Z', message: { role: 'user', content: [] }, toolUseResult: { ok: true } },
+      claudeAssistant({
+        requestId: 'req2', model: 'claude-sonnet-5', at: '2026-01-01T10:02:00.000Z',
+        usage: { input_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 10 }
+      }),
+      // 15 minutes of the user thinking — under the 30-minute gap, but
+      // between turns, so it must not count.
+      { type: 'user', timestamp: '2026-01-01T10:17:00.000Z', message: { role: 'user', content: 'more' } },
+      claudeAssistant({
+        requestId: 'req3', model: 'claude-sonnet-5', at: '2026-01-01T10:18:00.000Z',
+        usage: { input_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 10 }
+      })
+    ]
+  });
+
+  const result = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', claudeProjectsRoot: projectsRoot });
+
+  assert.equal(result.ok, true);
+  // Turn one 10:00:00→10:02:00 (120s), turn two 10:17:00→10:18:00 (60s).
+  assert.equal(result.wall_seconds, 180);
+  assert.equal(result.started_at, '2026-01-01T10:00:00.000Z');
+  assert.equal(result.ended_at, '2026-01-01T10:18:00.000Z');
+  // Model segments (10:00:30→10:02:00→…→10:18:00, gaps under 30m) clip to
+  // the turn intervals: 90s inside turn one, 60s inside turn two.
+  assert.equal(result.by_model[0].wall_seconds, 150);
+  assert.equal(result.steps, 3);
+});
+
+test('Codex dangling turn closes at the last record before the resume, and turn_aborted closes a turn', async () => {
+  const sessionsRoot = await makeLogs({
+    'main.jsonl': [
+      { timestamp: '2026-01-01T10:00:00.000Z', type: 'session_meta', payload: { id: 'sess-1' } },
+      // Turn one dies without task_complete (crash): its last record is
+      // 10:04:00, and the resume next day must not bridge the idle night.
+      { timestamp: '2026-01-01T10:00:00.000Z', type: 'event_msg', payload: { type: 'task_started' } },
+      codexTurnContext('gpt-5.6-terra', '2026-01-01T10:00:01.000Z'),
+      codexTokenCount({ input_tokens: 100, cached_input_tokens: 0, output_tokens: 10, total_tokens: 110 }, '2026-01-01T10:04:00.000Z'),
+      { timestamp: '2026-01-02T09:00:00.000Z', type: 'event_msg', payload: { type: 'task_started' } },
+      // Turn two is interrupted: turn_aborted closes it; the 40-minute
+      // pause after the abort must not count even in this marker unit.
+      { timestamp: '2026-01-02T09:02:00.000Z', type: 'event_msg', payload: { type: 'turn_aborted' } },
+      { timestamp: '2026-01-02T09:42:00.000Z', type: 'event_msg', payload: { type: 'task_started' } },
+      codexTokenCount({ input_tokens: 300, cached_input_tokens: 0, output_tokens: 30, total_tokens: 330 }, '2026-01-02T09:43:00.000Z'),
+      { timestamp: '2026-01-02T09:44:00.000Z', type: 'event_msg', payload: { type: 'task_complete' } }
+    ]
+  });
+  const empty = await emptyDir();
+
+  const result = await runCollector({ runtime: 'codex', sessionId: 'sess-1', codexRoot: sessionsRoot, codexArchivedRoot: empty });
+
+  assert.equal(result.ok, true);
+  // 240s (crashed turn, closed at its own last record) + 120s (aborted)
+  // + 120s (completed). Neither the overnight idle nor the 40m pause count.
+  assert.equal(result.wall_seconds, 480);
+  assert.equal(result.ended_at, '2026-01-02T09:44:00.000Z');
+});
+
+test('Claude non-work records stamped at user-return time never extend a turn', async () => {
+  const projectsRoot = await makeLogs({
+    'proj/sess-uuid.jsonl': [
+      { type: 'user', timestamp: '2026-01-01T10:00:00.000Z', message: { role: 'user', content: 'go' } },
+      claudeAssistant({
+        requestId: 'req1', model: 'claude-sonnet-5', at: '2026-01-01T10:02:00.000Z',
+        usage: { input_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 10 }
+      }),
+      // The user returns two hours later: queue-operation and system
+      // records are stamped at submit time, right before the user record —
+      // the turn must still close at the last WORK record (10:02:00).
+      { type: 'queue-operation', timestamp: '2026-01-01T12:00:08.000Z', operation: 'enqueue' },
+      { type: 'system', timestamp: '2026-01-01T12:00:09.000Z' },
+      { type: 'user', timestamp: '2026-01-01T12:00:10.000Z', message: { role: 'user', content: 'more' } },
+      claudeAssistant({
+        requestId: 'req2', model: 'claude-sonnet-5', at: '2026-01-01T12:01:10.000Z',
+        usage: { input_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 10 }
+      })
+    ]
+  });
+
+  const result = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', claudeProjectsRoot: projectsRoot });
+
+  assert.equal(result.ok, true);
+  // Turn one 10:00:00→10:02:00 (120s), turn two 12:00:10→12:01:10 (60s).
+  assert.equal(result.wall_seconds, 180);
+});
+
+test('Claude subagent tool results without the toolUseResult side-field are work, not turn starts', async () => {
+  const projectsRoot = await makeLogs({
+    // Real subagent files open with the task prompt (a genuine user record)
+    // and store tool results as user-role records with a tool_result
+    // content block but NO toolUseResult side-field: they must extend the
+    // turn, not restart it — the 5 minutes a tool runs stay counted.
+    'proj/sess-uuid/subagents/agent-root1.jsonl': [
+      { type: 'user', timestamp: '2026-01-01T10:00:00.000Z', message: { role: 'user', content: 'task prompt' } },
+      claudeAssistant({
+        requestId: 'req1', model: 'claude-sonnet-5', at: '2026-01-01T10:00:30.000Z',
+        usage: { input_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 10 }
+      }),
+      { type: 'user', timestamp: '2026-01-01T10:05:30.000Z', message: { role: 'user', content: [{ type: 'tool_result', content: 'done' }] } },
+      claudeAssistant({
+        requestId: 'req2', model: 'claude-sonnet-5', at: '2026-01-01T10:06:00.000Z',
+        usage: { input_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 10 }
+      })
+    ]
+  });
+
+  const result = await runCollector({
+    runtime: 'claude', sessionId: 'sess-uuid', rootAgentRef: 'root1', label: 'Разработка',
+    claudeProjectsRoot: projectsRoot
+  });
+
+  assert.equal(result.ok, true);
+  // One turn 10:00:00→10:06:00; the tool_result at 10:05:30 must not split it.
+  assert.equal(result.wall_seconds, 360);
+  assert.equal(result.by_model[0].wall_seconds, 330, 'model segment 10:00:30→10:06:00 clipped to the turn');
+});
+
 test('per-model wall time sums the model span across separate agent files', async () => {
   const projectsRoot = await makeLogs({
     'proj/sess-uuid/subagents/agent-root1.jsonl': [
