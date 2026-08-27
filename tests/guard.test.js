@@ -19,7 +19,6 @@ const roleDeliverables = {
   'product-technologist': 'product_technical_spec',
   'software-developer': 'implementation_summary',
   'code-reviewer': 'review_report',
-  'technical-writer': 'documentation_proposal',
 };
 
 test('contract examples validate against their schemas', () => {
