@@ -1,6 +1,6 @@
 {
   "name": "dream-team",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Tracker-neutral professional skills for project-owned SDLC workflows.",
   "author": {"name": "DreamTeam"},
   "keywords": ["sdlc", "workflow", "product", "development", "review"],
