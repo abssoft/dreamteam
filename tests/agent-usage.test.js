@@ -139,14 +139,14 @@ test('Codex sums the launched thread tree: last cumulative token_count per threa
   // The collector renders the «Затрачено» block itself: caller-side digit
   // formatting is banned, the caller pastes rendered.block verbatim. One
   // row per launch × model: the root under the report label, the spawned
-  // thread under its own agent_path.
+  // thread under its role name derived from agent_path.
   assert.deepEqual(result.by_launch, [
     { launch: 'Разработка', model: 'gpt-5.6-terra', wall_seconds: 299, steps: 2, tokens: { input: 1000, cached_input: 400, output: 50, total: 1050 }, cost_usd: 0.0019 },
-    { launch: '/root/development/helper', model: 'gpt-5.6-terra', wall_seconds: 60, steps: 1, tokens: { input: 500, cached_input: 200, output: 30, total: 530 }, cost_usd: 0.001 }
+    { launch: 'Helper', model: 'gpt-5.6-terra', wall_seconds: 60, steps: 1, tokens: { input: 500, cached_input: 200, output: 30, total: 530 }, cost_usd: 0.001 }
   ]);
   const rows =
     '| Разработка<br>*gpt-5.6-terra* | 4м 59с | 1 000<br>*кэш 400* | 50 | 1 050 | 2 | 0.0019 |\n' +
-    '| /root/development/helper<br>*gpt-5.6-terra* | 1м 0с | 500<br>*кэш 200* | 30 | 530 | 1 | 0.001 |';
+    '| Helper<br>*gpt-5.6-terra* | 1м 0с | 500<br>*кэш 200* | 30 | 530 | 1 | 0.001 |';
   // The ИТОГО line uses the launch-level wall time (5м 0с), not the per-model
   // wall sum (5м 59с).
   const totalRow = '| **ИТОГО** | 5м 0с | 1 500<br>*кэш 600* | 80 | 1 580 | 3 | 0.0029 |';
@@ -160,7 +160,7 @@ test('Codex sums the launched thread tree: last cumulative token_count per threa
     result.comment_html,
     '<p>Метрики Разработка: 5м 0с · шаги 3 · $0.0029</p>' +
       '<ul><li><b>Разработка · gpt-5.6-terra</b>: 4м 59с · вход 1 000 (кэш 400) · выход 50 · всего 1 050 · шаги 2 · $0.0019</li>' +
-      '<li><b>/root/development/helper · gpt-5.6-terra</b>: 1м 0с · вход 500 (кэш 200) · выход 30 · всего 530 · шаги 1 · $0.001</li></ul>'
+      '<li><b>Helper · gpt-5.6-terra</b>: 1м 0с · вход 500 (кэш 200) · выход 30 · всего 530 · шаги 1 · $0.001</li></ul>'
   );
 });
 
@@ -351,11 +351,11 @@ test('Codex whole-session scope sums the session rollout and its spawned tree pe
     { model: 'gpt-5.6-terra', wall_seconds: 60, steps: 1, tokens: { input: 200, cached_input: 0, output: 20, total: 220 }, cost_usd: 0.0006 }
   ]);
   assert.equal(result.cost_usd, 0.0082);
-  // The spawned thread rows under its own agent_path, not the session label.
+  // The spawned thread rows under its role name (/root/development → Разработка), not the session label.
   assert.equal(
     result.rendered.rows,
     '| Основная сессия<br>*gpt-5.6-sol* | 5м 55с | 1 000<br>*кэш 100* | 100 | 1 100 | 1 | 0.0076 |\n' +
-      '| /root/development<br>*gpt-5.6-terra* | 1м 0с | 200<br>*кэш 0* | 20 | 220 | 1 | 0.0006 |'
+      '| Разработка<br>*gpt-5.6-terra* | 1м 0с | 200<br>*кэш 0* | 20 | 220 | 1 | 0.0006 |'
   );
 });
 

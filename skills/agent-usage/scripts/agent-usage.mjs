@@ -44,10 +44,13 @@
 // by_launch splits the same figures per (launch, model) so subagents stay
 //   visible: [{launch, model, wall_seconds, steps, tokens, cost_usd|null}].
 //   The root unit carries the report label; each spawned unit rows under
-//   its own name — Codex agent_path (nickname, then thread id, when
-//   absent), Claude the parent's Task/Agent tool_use input.description
-//   (then subagent_type; «Сабагент <id-prefix>» when unlinked). Launches
-//   keep processing order (root first), models sort inside a launch.
+//   its own name — Codex: the agent_path's last segment through
+//   ROLE_LABELS (known roles get the dispatcher's Russian stage names,
+//   the rest humanize: underscores → spaces, capitalized; nickname, then
+//   thread id, when the path is absent), Claude: the parent's Task/Agent
+//   tool_use input.description (then subagent_type; «Сабагент
+//   <id-prefix>» when unlinked). Launches keep processing order (root
+//   first), models sort inside a launch.
 // by_model splits wall time/steps/tokens/cost per model: [{model,
 //   wall_seconds, steps, tokens: {input, cached_input, output, total},
 //   cost_usd|null}] sorted by model name; cost_usd is null for models
@@ -129,6 +132,27 @@ const PRICING = Object.freeze({
     "gpt-5.6-terra": { input: 2, cached_input: 0.2, output: 12 },
     "gpt-5.6-luna": { input: 0.2, cached_input: 0.02, output: 1.2 }
 });
+
+// Subagent display names for Codex agent_path values: known role segments
+// map to the dispatcher's Russian stage names (keep in sync with the
+// dispatcher SKILL's label set); anything else humanizes its last path
+// segment (underscores → spaces, capitalized).
+const ROLE_LABELS = Object.freeze({
+    development: "Разработка",
+    review: "Ревью",
+    prd: "PRD",
+    product: "PRD",
+    documentation: "Документация"
+});
+
+function labelForAgentPath(path) {
+    const segment = path.split("/").filter(Boolean).pop();
+    if (!isNonEmptyString(segment)) return path;
+    const known = ROLE_LABELS[segment.toLowerCase()];
+    if (known) return known;
+    const words = segment.replaceAll("_", " ").trim();
+    return words.charAt(0).toUpperCase() + words.slice(1);
+}
 
 function rateFor(model) {
     if (!isNonEmptyString(model)) return undefined;
@@ -566,9 +590,11 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
     const ledger = usageLedger();
     for (const item of selected.values()) {
         // The root unit carries the launch label; each spawned thread rows
-        // under its own role path (nickname, then id, when the path is
-        // absent) so subagents stay visible in the report.
-        const unitLabel = item.id === roots[0].id ? label : item.agentPath ?? item.nickname ?? item.id;
+        // under its role name derived from agent_path (nickname, then id,
+        // when the path is absent) so subagents stay visible in the report.
+        const unitLabel = item.id === roots[0].id
+            ? label
+            : item.agentPath !== null ? labelForAgentPath(item.agentPath) : item.nickname ?? item.id;
         const records = await readRecords(item.path);
         // A null-path child has no structured launch record; the only
         // parent-side evidence is its thread id echoed in tool output.
