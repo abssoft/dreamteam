@@ -53,6 +53,8 @@ function claudeAssistant({ requestId, model, usage, at }) {
   return { type: 'assistant', requestId, timestamp: at, message: { model, usage } };
 }
 
+const round4 = (value) => Math.round(value * 10_000) / 10_000;
+
 const TABLE_HEADER = '| Роль | Время | Вход | Выход | Всего | Шаги | $ |\n|---|---:|---:|---:|---:|---:|---:|';
 
 // --- argument validation ----------------------------------------------------
@@ -860,4 +862,177 @@ test('per-model wall time sums the model span across separate agent files', asyn
   // Root file span 30s + child file span 40s; the gap between files is not attributed.
   assert.equal(result.by_model[0].wall_seconds, 70);
   assert.equal(result.wall_seconds, 100, 'launch wall time stays the full span');
+});
+
+// --- analysis mode (analyze: true) ------------------------------------------
+
+function claudeStep({ requestId, at, ctx, output, toolUse }) {
+  const record = {
+    type: 'assistant',
+    requestId,
+    timestamp: at,
+    message: {
+      model: 'claude-opus-5',
+      usage: { input_tokens: ctx, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: output }
+    }
+  };
+  if (toolUse) record.message.content = [{ type: 'tool_use', id: toolUse.id, name: toolUse.name, input: toolUse.input }];
+  return record;
+}
+
+function claudeToolResult({ at, id, text, isError = false }) {
+  return {
+    type: 'user',
+    timestamp: at,
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: text, is_error: isError }] }
+  };
+}
+
+function codexToolCall(callId, name, args, at) {
+  return { timestamp: at, type: 'response_item', payload: { type: 'function_call', call_id: callId, name, arguments: args } };
+}
+
+function codexToolOutput(callId, output, at) {
+  return { timestamp: at, type: 'response_item', payload: { type: 'function_call_output', call_id: callId, output } };
+}
+
+function codexStep(lastUsage, totalUsage, at) {
+  return {
+    timestamp: at,
+    type: 'event_msg',
+    payload: { type: 'token_count', info: { total_token_usage: totalUsage, last_token_usage: lastUsage } }
+  };
+}
+
+// Four steps whose context grows 100 → 1000 → 1500 → 2000, with one tool
+// result landing in each of the first two gaps.
+function claudeAnalysisLog(finalCtx) {
+  return {
+    'proj/sess-uuid.jsonl': [
+      { type: 'user', timestamp: '2026-01-01T10:00:00.000Z', message: { role: 'user', content: 'go' } },
+      claudeStep({ requestId: 'r1', at: '2026-01-01T10:00:01.000Z', ctx: 100, output: 10, toolUse: { id: 't1', name: 'Read', input: { file_path: '/a.txt' } } }),
+      claudeToolResult({ at: '2026-01-01T10:00:02.000Z', id: 't1', text: 'a'.repeat(4000) }),
+      claudeStep({ requestId: 'r2', at: '2026-01-01T10:00:03.000Z', ctx: 1000, output: 10, toolUse: { id: 't2', name: 'Read', input: { file_path: '/b.txt' } } }),
+      claudeToolResult({ at: '2026-01-01T10:00:04.000Z', id: 't2', text: 'b'.repeat(2000) }),
+      claudeStep({ requestId: 'r3', at: '2026-01-01T10:00:05.000Z', ctx: 1500, output: 10 }),
+      claudeStep({ requestId: 'r4', at: '2026-01-01T10:00:06.000Z', ctx: 2000, output: 10 }),
+      claudeStep({ requestId: 'r5', at: '2026-01-01T10:00:07.000Z', ctx: finalCtx, output: 10 })
+    ]
+  };
+}
+
+test('analysis is opt-in: absent by default, non-boolean analyze is a caller bug', async () => {
+  const projectsRoot = await makeLogs(claudeAnalysisLog(2500));
+
+  const plain = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', claudeProjectsRoot: projectsRoot });
+  assert.equal(plain.ok, true);
+  assert.equal('analysis' in plain, false, 'existing callers never see the analysis payload');
+  assert.equal('analysis_block' in plain.rendered, false, 'rendered.block stays the only launch table');
+
+  assert.equal(
+    (await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', analyze: 'yes', claudeProjectsRoot: projectsRoot })).code,
+    'bad_args'
+  );
+});
+
+test('Claude attribution splits the measured context growth and charges each chunk for later steps', async () => {
+  const projectsRoot = await makeLogs(claudeAnalysisLog(2500));
+
+  const result = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', analyze: true, claudeProjectsRoot: projectsRoot });
+
+  assert.equal(result.ok, true);
+  const { analysis } = result;
+  assert.equal(analysis.requests, 5);
+  // Gap 1 grew 900 and the previous step wrote 10 of it itself → 890 to /a.txt;
+  // gap 2 grew 500 minus 10 → 490 to /b.txt. One result per gap, so exact.
+  assert.deepEqual(analysis.by_detail, [
+    // /a.txt is re-sent by steps 3, 4 and 5: 890 × 3. Priced as one cache
+    // write plus three cache reads on opus-5 (6.25 / 0.5 per 1M).
+    { detail: 'Read · /a.txt', calls: 1, errors: 0, injected: 890, resent: 2670, usd: 0.0069 },
+    // /b.txt lands one step later, so it is re-sent twice.
+    { detail: 'Read · /b.txt', calls: 1, errors: 0, injected: 490, resent: 980, usd: 0.0036 }
+  ]);
+  assert.deepEqual(analysis.by_tool, [{ tool: 'Read', calls: 2, errors: 0, injected: 1380, resent: 3650, usd: 0.0104 }]);
+  // The opening context belongs to no tool and is re-sent by every later step.
+  assert.deepEqual(analysis.base, { tokens: 100, per_unit: 100, resent: 400, share: analysis.base.share, usd: 0.0008 });
+  assert.equal(analysis.context.growth, 2400);
+  assert.equal(analysis.coverage.attributed, 1380);
+  assert.equal(analysis.resets, 0);
+  assert.equal(analysis.per_step.growth, 480, 'context gained per model request');
+  assert.equal(analysis.per_step.usd, round4(result.cost_usd / 5));
+  assert.match(result.rendered.analysis_block, /^Анализ контекста:/);
+  assert.match(result.rendered.analysis_block, /\| Read \| 2 \| 1 380 \| 3 650 \| — \| \$0\.01 \|/);
+  // The verdict is prose with the same figures, never a second table.
+  assert.match(result.rendered.analysis_block, /\*\*Куда ушло больше всего\.\*\*/);
+  assert.match(result.rendered.analysis_block, /\*\*Read\*\* — \$0\.01\. 2 вызова/);
+  assert.match(result.rendered.analysis_block, /\*\*На будущее\.\*\* Запуск стоил \$[\d.]+ за шаг на 5 шагах\./);
+});
+
+test('a context reset ends the segment so earlier chunks stop being charged', async () => {
+  // The last step's context collapses to 400 — a compaction: nothing injected
+  // before it survives into the steps that follow.
+  const projectsRoot = await makeLogs(claudeAnalysisLog(400));
+
+  const { analysis } = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', analyze: true, claudeProjectsRoot: projectsRoot });
+
+  assert.equal(analysis.resets, 1);
+  // /a.txt is now re-sent by steps 3 and 4 only: 890 × 2, not × 3.
+  assert.deepEqual(analysis.by_detail, [
+    { detail: 'Read · /a.txt', calls: 1, errors: 0, injected: 890, resent: 1780, usd: 0.0065 },
+    { detail: 'Read · /b.txt', calls: 1, errors: 0, injected: 490, resent: 490, usd: 0.0033 }
+  ]);
+});
+
+test('repeats list only content-bearing sources, not repeated command words', async () => {
+  const projectsRoot = await makeLogs({
+    'proj/sess-uuid.jsonl': [
+      { type: 'user', timestamp: '2026-01-01T10:00:00.000Z', message: { role: 'user', content: 'go' } },
+      claudeStep({ requestId: 'r1', at: '2026-01-01T10:00:01.000Z', ctx: 100, output: 10, toolUse: { id: 't1', name: 'Read', input: { file_path: '/a.txt' } } }),
+      claudeToolResult({ at: '2026-01-01T10:00:02.000Z', id: 't1', text: 'a'.repeat(400) }),
+      claudeStep({ requestId: 'r2', at: '2026-01-01T10:00:03.000Z', ctx: 1000, output: 10, toolUse: { id: 't2', name: 'Read', input: { file_path: '/a.txt' } } }),
+      claudeToolResult({ at: '2026-01-01T10:00:04.000Z', id: 't2', text: 'a'.repeat(400) }),
+      claudeStep({ requestId: 'r3', at: '2026-01-01T10:00:05.000Z', ctx: 1500, output: 10, toolUse: { id: 't3', name: 'Bash', input: { command: 'git status' } } }),
+      claudeToolResult({ at: '2026-01-01T10:00:06.000Z', id: 't3', text: 'c'.repeat(400) }),
+      claudeStep({ requestId: 'r4', at: '2026-01-01T10:00:07.000Z', ctx: 2000, output: 10, toolUse: { id: 't4', name: 'Bash', input: { command: 'git diff' } } }),
+      claudeToolResult({ at: '2026-01-01T10:00:08.000Z', id: 't4', text: 'd'.repeat(400) }),
+      claudeStep({ requestId: 'r5', at: '2026-01-01T10:00:09.000Z', ctx: 2500, output: 10 })
+    ]
+  });
+
+  const { analysis } = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', analyze: true, claudeProjectsRoot: projectsRoot });
+
+  // Both /a.txt and `git` were hit twice; only the re-read re-injects the same bytes.
+  assert.deepEqual(analysis.repeats.map((entry) => entry.detail), ['Read · /a.txt']);
+  assert.equal(analysis.repeats[0].calls, 2);
+});
+
+test('Codex attribution reads context from last_token_usage and flags non-zero exit codes', async () => {
+  const sessionsRoot = await makeLogs({
+    'main.jsonl': [
+      { timestamp: '2026-01-01T10:00:00.000Z', type: 'session_meta', payload: { id: 'sess-1' } },
+      codexTurnContext('gpt-5.6-sol', '2026-01-01T10:00:01.000Z'),
+      codexStep({ input_tokens: 1000, output_tokens: 20 }, { input_tokens: 1000, cached_input_tokens: 0, output_tokens: 20, total_tokens: 1020 }, '2026-01-01T10:00:02.000Z'),
+      codexToolCall('c1', 'shell', '{"cmd":"rg foo"}', '2026-01-01T10:00:03.000Z'),
+      codexToolOutput('c1', 'x'.repeat(4000), '2026-01-01T10:00:04.000Z'),
+      codexStep({ input_tokens: 5000, output_tokens: 30 }, { input_tokens: 6000, cached_input_tokens: 0, output_tokens: 50, total_tokens: 6050 }, '2026-01-01T10:00:05.000Z'),
+      codexToolCall('c2', 'shell', '{"cmd":"cat missing"}', '2026-01-01T10:00:06.000Z'),
+      codexToolOutput('c2', 'Process exited with code 1', '2026-01-01T10:00:07.000Z'),
+      codexStep({ input_tokens: 6000, output_tokens: 10 }, { input_tokens: 12000, cached_input_tokens: 0, output_tokens: 60, total_tokens: 12060 }, '2026-01-01T10:00:08.000Z')
+    ]
+  });
+  const empty = await emptyDir();
+
+  const { analysis } = await runCollector({
+    runtime: 'codex', sessionId: 'sess-1', analyze: true, codexRoot: sessionsRoot, codexArchivedRoot: empty
+  });
+
+  assert.equal(analysis.requests, 3);
+  assert.deepEqual(analysis.by_tool, [{ tool: 'Shell', calls: 2, errors: 1, injected: 4950, resent: 3980, usd: 0.0267 }]);
+  assert.deepEqual(analysis.by_detail, [
+    { detail: 'Shell · rg', calls: 1, errors: 0, injected: 3980, resent: 3980, usd: 0.0219 },
+    { detail: 'Shell · cat', calls: 1, errors: 1, injected: 970, resent: 0, usd: 0.0049 }
+  ]);
+  assert.deepEqual(analysis.base, { tokens: 1000, per_unit: 1000, resent: 2000, share: analysis.base.share, usd: 0.0060 });
+  // The failed call is charged exactly, not by proportion of the tool's total.
+  assert.deepEqual(analysis.errors, { calls: 1, injected: 970, resent: 0, usd: 0.0049 });
 });
