@@ -3,10 +3,12 @@
 // only: the hosting workflow (a project Dispatcher or a human) runs it once
 // per launch after the terminal result; roles never run it.
 // Input: single CLI arg — JSON {runtime:"codex"|"claude", sessionId,
-//   rootAgentRef?, label?, codexRoot?, codexArchivedRoot?,
+//   rootAgentRef?, label?, analyze?, codexRoot?, codexArchivedRoot?,
 //   claudeProjectsRoot?} (the three optional roots override the default log
 //   locations; used by tests). `label` is the caller-owned display name of
 //   the launch (stage, role, or task name) — this script embeds it verbatim.
+// analyze:true adds the context-attribution pass (see `analysis` below); it
+//   is off by default and adds fields only, so existing callers are unchanged.
 // rootAgentRef targets one finished launch. Omitted (or null) it switches to
 //   whole-session scope: everything the current chat spent — the session's
 //   own log plus every launch it spawned — split per model as usual; label
@@ -17,8 +19,8 @@
 //   ok:true  → {ok, label, wall_seconds, started_at, ended_at, agents,
 //               steps, models, tokens: {input, cached_input, output, total},
 //               cost_usd, unpriced_models, by_launch, by_model, source,
-//               rendered: {block, table_header, rows, total_row},
-//               comment_html}
+//               rendered: {block, table_header, rows, total_row,
+//               analysis_block?}, comment_html, analysis?}
 //   ok:false → {ok, code, warning_line}: bad_args | logs_not_found |
 //               root_not_found | ambiguous_root | workflow_run_incomplete |
 //               timestamps_missing | log_limit_exceeded | collector_error
@@ -78,6 +80,35 @@
 // per-launch total_rows out and cannot total across launches itself (digit
 // formatting is script-only). comment_html is the same breakdown as
 // one HTML fragment for trackers that take HTML comments.
+// analysis (analyze:true only) answers «почему столько», never «сколько»:
+//   the token totals above stay the exact figures from the logs, and this
+//   pass splits them by cause. Per unit, every model request contributes a
+//   context size (Claude: input+cache_creation+cache_read; Codex:
+//   last_token_usage.input_tokens) and the tool results that arrived between
+//   two requests share the measured growth of that step, minus the previous
+//   step's own output. A step holding one tool result is exact; several
+//   split it by JSON size, and coverage.share reports how much of the total
+//   growth was placed at all. Each chunk is then charged `resent` = injected
+//   × the number of later requests still carrying it: a context shrinking
+//   below RESET_RATIO of the previous step is a compaction, and chunks
+//   before it stop being charged past that point (`resets` counts them).
+//   base is the unit's opening context — system prompt, tool schemas, skill
+//   text — which belongs to no tool and is re-sent by every later step;
+//   on multi-agent launches it sums per unit, since each subagent starts a
+//   context of its own. by_tool/by_detail rank causes (MCP server, skill,
+//   file, command word, host); repeats lists only content-bearing sources
+//   (Read, WebFetch, MCP) hit more than once, where a second call re-injects
+//   the same bytes. Everything is then priced with rates blended across the
+//   models the launch actually used (re-sends bill as cache reads, a chunk's
+//   first appearance as a cache write), giving per_step cost, the cold-start
+//   cost of a multi-unit launch, and cache.rebuilt — writes beyond the
+//   context actually gained, i.e. content cached twice. verdict ranks it into
+//   `largest` (where the money went; overhead is not automatically waste) and
+//   `waste` (redundant re-reads, failed calls, cache rebuilt for nothing),
+//   each item carrying the figure it rests on and one concrete action.
+//   rendered.analysis_block is the ready-to-paste Russian block: the tables
+//   followed by that verdict in prose, printed AFTER rendered.block and never
+//   merged into it.
 // Token cells: >=1 000 000 → millions with two decimals and «М» (3238493 →
 // 3.24М), below → space-separated thousands (323885 → 323 885); the Выход
 // cell always uses the space form.
@@ -294,6 +325,22 @@ function formatTokens(value) {
     return value >= 1_000_000 ? `${(value / 1_000_000).toFixed(2)}М` : formatThousands(value);
 }
 
+// Russian noun agreement for the counts embedded in findings prose.
+function plural(count, one, few, many) {
+    const mod100 = Math.abs(count) % 100;
+    const mod10 = Math.abs(count) % 10;
+    if (mod100 >= 11 && mod100 <= 14) return many;
+    if (mod10 === 1) return one;
+    if (mod10 >= 2 && mod10 <= 4) return few;
+    return many;
+}
+
+// Cost cells read as money, not as the 4-decimal ledger figure.
+function formatUsd(value) {
+    if (value === null || value === undefined) return "—";
+    return `$${value >= 0.01 ? value.toFixed(2) : String(round4(value))}`;
+}
+
 function formatWall(wallSeconds) {
     return `${Math.floor(wallSeconds / 60)}м ${wallSeconds % 60}с`;
 }
@@ -362,6 +409,306 @@ function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd, 
         },
         comment_html
     };
+}
+
+// The analysis block answers «почему столько», not «сколько» — it is rendered
+// separately and pasted after rendered.block, never merged into it.
+// Prose, not a table: the tables say where tokens are, this says what to do
+// about it. Two lists — the largest cost items (overhead is not automatically
+// waste) and the ones that bought nothing — each item stating the number it
+// rests on, then the action.
+function renderVerdict(analysis) {
+    const lines = ["Выводы:"];
+    const cost = (item) => (item.usd === null ? formatTokens(item.tokens) : formatUsd(item.usd));
+    // Facts are written as clause fragments so they can also read inline;
+    // here each opens its own sentence.
+    const sentence = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+
+    if (analysis.verdict.largest.length > 0) {
+        lines.push("", "**Куда ушло больше всего.**");
+        analysis.verdict.largest.forEach((item, index) => {
+            lines.push(`${index + 1}. **${item.title}** — ${cost(item)}. ${sentence(item.fact)}. ${item.advice}`);
+        });
+    }
+
+    if (analysis.verdict.waste.length > 0) {
+        lines.push("", "**Потрачено впустую.**");
+        analysis.verdict.waste.forEach((item, index) => {
+            lines.push(`${index + 1}. **${item.title}** — ${cost(item)}. ${sentence(item.fact)}. ${item.advice}`);
+        });
+    } else {
+        lines.push("", "**Потрачено впустую.** Повторных чтений, ошибочных вызовов и лишней перестройки кэша не найдено.");
+    }
+
+    const perStep = analysis.priced ? `${formatUsd(analysis.per_step.usd)} за шаг` : `+${formatTokens(analysis.per_step.growth)} контекста за шаг`;
+    const closing = [`**На будущее.** Запуск стоил ${perStep} на ${formatThousands(analysis.requests)} ${plural(analysis.requests, "шаге", "шагах", "шагах")}.`];
+    if (analysis.units > 1) {
+        closing.push(
+            `Холодный старт ${formatThousands(analysis.units)} ${plural(analysis.units, "юнита", "юнитов", "юнитов")} стоил ${formatTokens(analysis.base.tokens)} ещё до первого полезного действия — дробить задачу на новые запуски выгодно только когда каждый экономит больше шагов, чем стоит его старт.`
+        );
+    }
+    if (analysis.resets > 0) {
+        closing.push(
+            `Контекст сбрасывался ${formatThousands(analysis.resets)} ${plural(analysis.resets, "раз", "раза", "раз")} — после сброса модель дочитывает то, что уже читала, так что дешевле уложиться до порога, чем пережить компакцию.`
+        );
+    }
+    if (analysis.coverage.share < 0.5) {
+        closing.push(
+            `Атрибуция объяснила ${Math.round(analysis.coverage.share * 100)}% прироста — остальное принесли сообщения пользователя и вывод модели, так что разбивку по инструментам читать как нижнюю границу.`
+        );
+    }
+    lines.push("", closing.join(" "));
+    return lines;
+}
+
+function renderAnalysis(analysis) {
+    const percent = (value) => `${Math.round(value * 100)}%`;
+    const toolRows = analysis.by_tool
+        .slice(0, ANALYSIS_TOP_TOOLS)
+        .map((entry) =>
+            `| ${entry.tool} | ${formatThousands(entry.calls)} | ${formatTokens(entry.injected)} | ` +
+            `${formatTokens(entry.resent)} | ${entry.errors === 0 ? "—" : formatThousands(entry.errors)} | ${formatUsd(entry.usd)} |`
+        );
+    const hidden = analysis.by_tool.length - Math.min(analysis.by_tool.length, ANALYSIS_TOP_TOOLS);
+    if (hidden > 0) {
+        const rest = analysis.by_tool.slice(ANALYSIS_TOP_TOOLS);
+        const restErrors = rest.reduce((sum, entry) => sum + entry.errors, 0);
+        toolRows.push(
+            `| *ещё ${formatThousands(hidden)}* | ${formatThousands(rest.reduce((sum, entry) => sum + entry.calls, 0))} | ` +
+            `${formatTokens(rest.reduce((sum, entry) => sum + entry.injected, 0))} | ` +
+            `${formatTokens(rest.reduce((sum, entry) => sum + entry.resent, 0))} | ` +
+            `${restErrors === 0 ? "—" : formatThousands(restErrors)} | ` +
+            `${formatUsd(rest.reduce((sum, entry) => sum + (entry.usd ?? 0), 0) || null)} |`
+        );
+    }
+
+    const sections = [
+        "Анализ контекста:",
+        "",
+        "| Показатель | Значение |",
+        "|---|---:|",
+        `| Шагов (запросов к модели) | ${formatThousands(analysis.requests)} |`,
+        `| Контекст: старт → пик | ${formatTokens(analysis.context.start)} → ${formatTokens(analysis.context.peak)} |`,
+        `| Прирост контекста | ${formatTokens(analysis.context.growth)} |`,
+        `| Базовый контекст, переслан | ${formatTokens(analysis.base.tokens)} × ${formatThousands(Math.max(0, analysis.requests - analysis.units))} = ${formatTokens(analysis.base.resent)} (${percent(analysis.base.share)}) |`,
+        `| Пересылок всего | ${formatTokens(analysis.resends.total)} |`,
+        `| Прирост объяснён | ${percent(analysis.coverage.share)} |`,
+        `| Цена шага | ${analysis.priced ? formatUsd(analysis.per_step.usd) : "—"} · +${formatTokens(analysis.per_step.growth)} контекста |`
+    ];
+    if (analysis.units > 1) {
+        sections.push(
+            `| Холодный старт | ${formatThousands(analysis.units)} ${plural(analysis.units, "юнит", "юнита", "юнитов")} × ~${formatTokens(analysis.base.per_unit)} = ${formatTokens(analysis.base.tokens)} |`
+        );
+    }
+    if (analysis.priced && (analysis.cache.rebuild_overpay_usd ?? 0) > 0) {
+        sections.push(
+            `| Кэш переписан заново | ${formatTokens(analysis.cache.rebuilt)} = переплата ${formatUsd(analysis.cache.rebuild_overpay_usd)} |`
+        );
+    }
+    if (analysis.per_step.by_launch.length > 1) {
+        const worst = analysis.per_step.by_launch[0];
+        sections.push(`| Дороже всех на шаг | ${worst.launch} — ${formatUsd(worst.per_step)} × ${formatThousands(worst.steps)} |`);
+    }
+    if (analysis.resets > 0) sections.push(`| Сбросов контекста (компакция) | ${formatThousands(analysis.resets)} |`);
+    if (analysis.cache.read > 0 || analysis.cache.write > 0) {
+        sections.push(`| Кэш: чтений / записей | ${formatTokens(analysis.cache.read)} / ${formatTokens(analysis.cache.write)} |`);
+    }
+
+    if (toolRows.length > 0) {
+        sections.push(
+            "",
+            "| Инструмент | Вызовов | Влил | Пересылок | Ошибок | $ |",
+            "|---|---:|---:|---:|---:|---:|",
+            ...toolRows
+        );
+    }
+    if (analysis.by_detail.length > 0) {
+        sections.push(
+            "",
+            "| Конкретный источник | Вызовов | Влил | Пересылок | $ |",
+            "|---|---:|---:|---:|---:|",
+            ...analysis.by_detail.map((entry) =>
+                `| ${entry.detail} | ${formatThousands(entry.calls)} | ${formatTokens(entry.injected)} | ${formatTokens(entry.resent)} | ${formatUsd(entry.usd)} |`
+            )
+        );
+    }
+    sections.push("", ...renderVerdict(analysis));
+    sections.push(
+        "",
+        "*«Влил» — сколько токенов результат добавил в контекст (из измеренного прироста шага). " +
+        "«Пересылок» — сколько токенов ушло на повторную отправку этого куска на следующих шагах. " +
+        "Суммы токенов в основной таблице точные; здесь точен и прирост, оценочно только деление прироста между несколькими результатами одного шага.*"
+    );
+    return sections.join("\n");
+}
+
+// Token-weighted rates across the models this launch actually used, so the
+// analysis can price re-sends without pretending they all ran on one model.
+// Re-sent context bills as a cache read; a chunk's first appearance bills as
+// a cache write. Null when no model in the launch has a PRICING entry.
+function blendedRates(byModel) {
+    let weight = 0;
+    const blend = { input: 0, cached_input: 0, cache_write: 0, output: 0 };
+    for (const entry of byModel) {
+        const rate = rateFor(entry.model);
+        if (!rate) continue;
+        const share = entry.tokens.total;
+        if (share <= 0) continue;
+        weight += share;
+        blend.input += share * rate.input;
+        blend.cached_input += share * rate.cached_input;
+        blend.cache_write += share * (rate.cache_write_5m ?? rate.input);
+        blend.output += share * rate.output;
+    }
+    if (weight === 0) return null;
+    for (const key of Object.keys(blend)) blend[key] /= weight;
+    return blend;
+}
+
+const round4 = (value) => Math.round(value * 10_000) / 10_000;
+
+// Advice is tied to the kind of source, because the fix differs: a skill is
+// loaded whole and never leaves, an MCP answer is sized by its request, a
+// file read can be ranged, a command's output can be filtered.
+function adviceForTool(tool) {
+    if (tool.startsWith("Skill:")) {
+        return "Скил грузится целиком и живёт до конца запуска — вынести редкие разделы в отдельные файлы, чтобы они читались только при необходимости.";
+    }
+    if (tool.startsWith("MCP ")) {
+        return "Ответ MCP оседает в контексте навсегда — запрашивать меньший объём (лимиты, поля, пагинация) вместо полной выдачи.";
+    }
+    if (tool.startsWith("Агент:")) {
+        return "Сабагент возвращает отчёт в родительский контекст — просить сжатый результат, а не полный пересказ работы.";
+    }
+    if (tool === "Read") {
+        return "Читать нужный диапазон (offset/limit), а не файл целиком: прочитанное пересылается на каждом следующем шаге.";
+    }
+    if (tool === "Bash" || tool === "Shell") {
+        return "Резать вывод на стороне команды (head, grep, --quiet), а не сваливать полный лог в контекст.";
+    }
+    if (tool === "WebFetch") return "Страницы попадают в контекст целиком — забирать только нужный фрагмент.";
+    return "Проверить, нужен ли полный ответ этого инструмента — в контексте он останется до конца запуска.";
+}
+
+// Prices the attribution and builds the verdict: where the money went, what
+// of it was pure loss, and one concrete action per item. Every figure here is
+// derived from the same measured tokens as the tables above — nothing is
+// re-estimated at this stage.
+function priceAnalysis(analysis, result) {
+    const rates = blendedRates(result.by_model ?? []);
+    analysis.priced = rates !== null;
+    const charge = (injected, resent) =>
+        rates === null ? null : round4((injected * rates.cache_write + resent * rates.cached_input) / 1_000_000);
+
+    analysis.per_step = {
+        usd: analysis.requests > 0 ? round4((result.cost_usd ?? 0) / analysis.requests) : 0,
+        growth: analysis.requests > 0 ? Math.round(analysis.context.growth / analysis.requests) : 0
+    };
+    analysis.base.usd = charge(analysis.base.tokens, analysis.base.resent);
+    for (const entry of analysis.by_tool) entry.usd = charge(entry.injected, entry.resent);
+    for (const entry of analysis.by_detail) entry.usd = charge(entry.injected, entry.resent);
+    for (const entry of analysis.repeats) entry.usd = charge(entry.injected, entry.resent);
+    analysis.errors.usd = charge(analysis.errors.injected, analysis.errors.resent);
+    // Caching new content is unavoidable and costs the write rate once. Only
+    // the writes beyond the context the launch actually gained are rebuilds
+    // of content that had been cached already; the overpay is that excess at
+    // the gap between the write and the read rate. A conservative floor: the
+    // baseline charges every new token as if it were cached perfectly.
+    analysis.cache.rebuilt = Math.max(0, analysis.cache.write - analysis.context.growth);
+    analysis.cache.rebuild_overpay_usd =
+        rates === null ? null : round4((analysis.cache.rebuilt * (rates.cache_write - rates.cached_input)) / 1_000_000);
+
+    // The launch paying most per step, over enough steps to mean something.
+    const perLaunch = new Map();
+    for (const row of result.by_launch ?? []) {
+        if (!perLaunch.has(row.launch)) perLaunch.set(row.launch, { launch: row.launch, steps: 0, usd: 0 });
+        const entry = perLaunch.get(row.launch);
+        entry.steps += row.steps;
+        entry.usd += row.cost_usd ?? 0;
+    }
+    const ranked = [...perLaunch.values()]
+        .filter((entry) => entry.steps >= 3)
+        .map((entry) => ({ ...entry, per_step: round4(entry.usd / entry.steps) }))
+        .sort((a, b) => b.per_step - a.per_step);
+    analysis.per_step.by_launch = ranked;
+
+    analysis.verdict = buildVerdict(analysis);
+}
+
+// Two ranked lists: the largest cost items (overhead, not necessarily waste)
+// and the ones that are pure loss (redundant re-reads, failed calls, cache
+// rebuilt for nothing). Ordered by money where prices exist, by tokens where
+// they do not.
+function buildVerdict(analysis) {
+    const size = (usd, tokens) => (usd === null ? tokens : usd);
+    const largest = [];
+    if (analysis.base.share > 0.15) {
+        largest.push({
+            key: "base",
+            title: "Базовый контекст",
+            usd: analysis.base.usd,
+            tokens: analysis.base.tokens + analysis.base.resent,
+            fact:
+                `${formatTokens(analysis.base.tokens)} на старте` +
+                `${analysis.units > 1 ? ` (${formatThousands(analysis.units)} ${plural(analysis.units, "юнит", "юнита", "юнитов")} × ~${formatTokens(analysis.base.per_unit)})` : ""}` +
+                `, переслан ${formatThousands(Math.max(0, analysis.requests - analysis.units))} ${plural(Math.max(0, analysis.requests - analysis.units), "раз", "раза", "раз")}` +
+                ` — ${Math.round(analysis.base.share * 100)}% всех пересылок`,
+            advice:
+                analysis.units > 1
+                    ? "Каждый сабагент начинает свой контекст с нуля — отключить неиспользуемые MCP-серверы, сократить текст скилов и не дробить задачу на лишние запуски."
+                    : "Это системный промпт, схемы инструментов и текст скилов. Режется отключением неиспользуемых MCP-серверов и сокращением скилов, а не работой агента."
+        });
+    }
+    for (const entry of analysis.by_tool.slice(0, 3)) {
+        if (entry.injected + entry.resent <= 0) continue;
+        largest.push({
+            key: `tool:${entry.tool}`,
+            title: entry.tool,
+            usd: entry.usd,
+            tokens: entry.injected + entry.resent,
+            fact:
+                `${formatThousands(entry.calls)} ${plural(entry.calls, "вызов", "вызова", "вызовов")}, ` +
+                `влил ${formatTokens(entry.injected)}, переслано ${formatTokens(entry.resent)}`,
+            advice: adviceForTool(entry.tool)
+        });
+    }
+    largest.sort((a, b) => size(b.usd, b.tokens) - size(a.usd, a.tokens));
+
+    const waste = [];
+    for (const entry of analysis.repeats) {
+        // Only the calls after the first re-inject bytes already in context.
+        const share = (entry.calls - 1) / entry.calls;
+        waste.push({
+            title: entry.detail,
+            usd: entry.usd === null ? null : round4(entry.usd * share),
+            tokens: Math.round((entry.injected + entry.resent) * share),
+            fact: `запрошен ${formatThousands(entry.calls)} ${plural(entry.calls, "раз", "раза", "раз")} — лишние ${formatThousands(entry.calls - 1)} вернули то же содержимое`,
+            advice: "Держать прочитанное в рабочих заметках вместо повторного чтения."
+        });
+    }
+    if (analysis.errors.calls > 0 && analysis.errors.injected + analysis.errors.resent > 0) {
+        waste.push({
+            title: "Неудачные вызовы инструментов",
+            usd: analysis.errors.usd,
+            tokens: analysis.errors.injected + analysis.errors.resent,
+            fact: `${formatThousands(analysis.errors.calls)} ${plural(analysis.errors.calls, "вызов", "вызова", "вызовов")} вернули ошибку, их вывод всё равно осел в контексте`,
+            advice: "Ошибка стоит полный шаг и обычно повторяется с ещё большим контекстом — чинить причину, а не повторять вызов."
+        });
+    }
+    if (analysis.cache.rebuilt > 0 && (analysis.cache.rebuild_overpay_usd ?? 0) > 0) {
+        waste.push({
+            title: "Перестройка кэша",
+            usd: analysis.cache.rebuild_overpay_usd,
+            tokens: analysis.cache.rebuilt,
+            fact:
+                `записей в кэш ${formatTokens(analysis.cache.write)} при приросте контекста ${formatTokens(analysis.context.growth)} — ` +
+                `${formatTokens(analysis.cache.rebuilt)} сверх нового содержимого записаны повторно`,
+            advice: "Кэш перестраивается из-за пауз дольше его TTL между шагами или правок в начале контекста; плотнее идущие шаги платят меньше."
+        });
+    }
+    waste.sort((a, b) => size(b.usd, b.tokens) - size(a.usd, a.tokens));
+
+    return { largest: largest.slice(0, 4), waste: waste.slice(0, 4) };
 }
 
 function failWith(code) {
@@ -487,6 +834,237 @@ function clipToIntervals(segments, intervals) {
     return clipped;
 }
 
+// --- Context attribution (analysis mode) ------------------------------------
+// Token totals come from the logs and are exact; what the logs never say is
+// which tool result is sitting inside them. Attribution splits the measured
+// context growth of each step between the tool results that arrived during
+// it, then multiplies every chunk by how many later steps re-sent it. The
+// split is the only estimated part — a step holding a single tool result is
+// exact — and coverage reports how much of the measured growth was placed.
+
+const CHARS_PER_TOKEN = 4;
+// A context smaller than this fraction of the previous step's means the
+// window was reset (compaction or /clear): earlier chunks stop being re-sent.
+const RESET_RATIO = 0.7;
+const ANALYSIS_TOP_TOOLS = 8;
+const ANALYSIS_TOP_DETAILS = 6;
+const ANALYSIS_TOP_REPEATS = 5;
+
+function safeStringify(value) {
+    try {
+        return JSON.stringify(value) ?? "";
+    } catch {
+        return String(value);
+    }
+}
+
+// Relative size only — used to share one step's growth between several tool
+// results, never as a token count of its own.
+function estimateSize(value) {
+    if (value === undefined || value === null) return 0;
+    const text = typeof value === "string" ? value : safeStringify(value);
+    return Math.round(text.length / CHARS_PER_TOKEN);
+}
+
+function shortHost(url) {
+    const match = /^https?:\/\/([^/]+)/.exec(String(url ?? ""));
+    return match ? match[1] : null;
+}
+
+// Claude tool_use block → groupable label plus the one identifier worth
+// ranking separately (file, command word, host).
+function claudeToolLabel(name, input) {
+    const ti = input && typeof input === "object" ? input : {};
+    if (!isNonEmptyString(name)) return { tool: "неизвестно", detail: null };
+    const mcp = /^mcp__(.+?)__(.+)$/.exec(name);
+    if (mcp) return { tool: `MCP ${mcp[1]}/${mcp[2]}`, detail: null, repeatable: true };
+    if (name === "Task" || name === "Agent") return { tool: `Агент:${ti.subagent_type ?? "без имени"}`, detail: null };
+    if (name === "Skill") return { tool: `Skill:${ti.skill ?? ti.skill_name ?? "без имени"}`, detail: null };
+    if (["Read", "Edit", "Write", "NotebookEdit", "MultiEdit"].includes(name)) {
+        return { tool: name, detail: ti.file_path ?? ti.notebook_path ?? null, repeatable: name === "Read" };
+    }
+    if (name === "Bash") {
+        const head = String(ti.command ?? "").trim().split(/\s+/)[0];
+        return { tool: "Bash", detail: head || null };
+    }
+    if (name === "WebFetch") return { tool: "WebFetch", detail: shortHost(ti.url), repeatable: true };
+    return { tool: name, detail: null };
+}
+
+// Codex function_call → same shape; `arguments` arrives as a JSON string.
+function codexToolLabel(name, rawArguments) {
+    if (!isNonEmptyString(name)) return { tool: "неизвестно", detail: null };
+    let args = {};
+    try {
+        const parsed = JSON.parse(rawArguments ?? "{}");
+        if (parsed && typeof parsed === "object") args = parsed;
+    } catch {
+        args = {};
+    }
+    if (name === "shell" || name === "exec_command" || name === "local_shell") {
+        const raw = Array.isArray(args.cmd) ? args.cmd.join(" ") : String(args.cmd ?? args.command ?? "");
+        const head = raw.trim().split(/\s+/)[0];
+        return { tool: "Shell", detail: head || null };
+    }
+    if (name === "apply_patch") return { tool: "apply_patch", detail: null };
+    if (name === "update_plan") return { tool: "update_plan", detail: null };
+    return { tool: name, detail: null };
+}
+
+// One unit (Codex thread or Claude agent file) walked in record order:
+// `points` holds each model request as {ctx, output}, `events` each tool
+// result as {tool, detail, size, isError, after} where `after` is how many
+// requests the unit had already made — so the event landed between request
+// after-1 and request after.
+function analyzeUnit(points, events) {
+    const total = points.length;
+    if (total === 0) return null;
+    // Where each step's context stops being re-sent: a reset ends the
+    // preceding segment, so chunks before it are never charged past it.
+    const segmentEnd = new Array(total);
+    let resets = 0;
+    let end = total - 1;
+    for (let i = total - 1; i >= 0; i -= 1) {
+        segmentEnd[i] = end;
+        if (i > 0 && points[i].ctx < points[i - 1].ctx * RESET_RATIO) {
+            resets += 1;
+            end = i - 1;
+        }
+    }
+
+    const byGap = new Map();
+    for (const event of events) {
+        if (event.after < 1 || event.after > total - 1) continue;
+        if (!byGap.has(event.after)) byGap.set(event.after, []);
+        byGap.get(event.after).push(event);
+    }
+
+    let growth = 0;
+    let attributed = 0;
+    for (let gap = 1; gap <= total - 1; gap += 1) {
+        const delta = points[gap].ctx - points[gap - 1].ctx;
+        if (delta > 0) growth += delta;
+        const list = byGap.get(gap);
+        if (!list || delta <= 0) continue;
+        // The step's own output also enters the next context; only the rest
+        // can belong to tool results.
+        const toolGrowth = Math.max(0, delta - (points[gap - 1].output ?? 0));
+        const weight = list.reduce((sum, event) => sum + Math.max(1, event.size), 0);
+        const multiplier = Math.max(0, segmentEnd[gap] - gap);
+        for (const event of list) {
+            event.injected = Math.round((toolGrowth * Math.max(1, event.size)) / weight);
+            event.resent = event.injected * multiplier;
+            attributed += event.injected;
+        }
+    }
+
+    return {
+        requests: total,
+        // The unit's opening context — system prompt, tool schemas, skill
+        // text, first message — re-sent by every later step and attributable
+        // to no tool at all.
+        base: points[0].ctx,
+        base_resent: points[0].ctx * (total - 1),
+        ctx_start: points[0].ctx,
+        ctx_peak: Math.max(...points.map((point) => point.ctx)),
+        ctx_end: points[total - 1].ctx,
+        growth,
+        attributed,
+        resets,
+        events
+    };
+}
+
+// Merges per-unit attribution into the report-level `analysis` object.
+function analysisTracker() {
+    const tools = new Map();
+    const details = new Map();
+    const errors = { calls: 0, injected: 0, resent: 0 };
+    let requests = 0;
+    let base = 0;
+    let baseResent = 0;
+    let growth = 0;
+    let attributed = 0;
+    let resets = 0;
+    let ctxStart;
+    let ctxPeak = 0;
+    let units = 0;
+    let cacheRead = 0;
+    let cacheWrite = 0;
+
+    const bump = (map, key, event) => {
+        if (!map.has(key)) map.set(key, { calls: 0, errors: 0, injected: 0, resent: 0, repeatable: false });
+        const entry = map.get(key);
+        if (event.repeatable) entry.repeatable = true;
+        entry.calls += 1;
+        entry.errors += event.isError ? 1 : 0;
+        entry.injected += event.injected ?? 0;
+        entry.resent += event.resent ?? 0;
+    };
+
+    return {
+        addCache(read, write) {
+            cacheRead += read;
+            cacheWrite += write;
+        },
+        addUnit(points, events) {
+            const unit = analyzeUnit(points, events);
+            if (!unit) return;
+            units += 1;
+            requests += unit.requests;
+            base += unit.base;
+            baseResent += unit.base_resent;
+            growth += unit.growth;
+            attributed += unit.attributed;
+            resets += unit.resets;
+            if (ctxStart === undefined) ctxStart = unit.ctx_start;
+            if (unit.ctx_peak > ctxPeak) ctxPeak = unit.ctx_peak;
+            for (const event of unit.events) {
+                bump(tools, event.tool, event);
+                if (isNonEmptyString(event.detail)) bump(details, `${event.tool} · ${event.detail}`, event);
+                if (event.isError) {
+                    errors.calls += 1;
+                    errors.injected += event.injected ?? 0;
+                    errors.resent += event.resent ?? 0;
+                }
+            }
+        },
+        result() {
+            if (requests === 0) return null;
+            const rank = (map) =>
+                [...map.entries()]
+                    .map(([key, entry]) => ({ key, ...entry }))
+                    .sort((a, b) => b.resent + b.injected - (a.resent + a.injected) || a.key.localeCompare(b.key));
+            const byTool = rank(tools);
+            const byDetail = rank(details).filter((entry) => entry.injected > 0);
+            // Only content-bearing sources: a second Read of one file re-injects
+            // the same bytes, a second `git` command does not.
+            const repeats = byDetail.filter((entry) => entry.calls > 1 && entry.repeatable).slice(0, ANALYSIS_TOP_REPEATS);
+            const toolTotal = byTool.reduce((sum, entry) => sum + entry.injected + entry.resent, 0);
+            const resendTotal = toolTotal + baseResent;
+            return {
+                units,
+                requests,
+                context: { start: ctxStart ?? 0, peak: ctxPeak, growth },
+                base: {
+                    tokens: base,
+                    per_unit: Math.round(base / units),
+                    resent: baseResent,
+                    share: resendTotal > 0 ? baseResent / resendTotal : 0
+                },
+                errors,
+                resends: { attributed_to_tools: toolTotal, total: resendTotal, measured_cache_read: cacheRead },
+                coverage: { attributed: attributed, growth, share: growth > 0 ? Math.min(1, attributed / growth) : 0 },
+                resets,
+                cache: { read: cacheRead, write: cacheWrite },
+                by_tool: byTool.map(({ key, repeatable, ...entry }) => ({ tool: key, ...entry })),
+                by_detail: byDetail.slice(0, ANALYSIS_TOP_DETAILS).map(({ key, repeatable, ...entry }) => ({ detail: key, ...entry })),
+                repeats: repeats.map(({ key, repeatable, ...entry }) => ({ detail: key, ...entry }))
+            };
+        }
+    };
+}
+
 // Launch-level wall accumulator. Units with exact turn intervals contribute
 // them directly; units without markers pour raw timestamps into one shared
 // fallback pool segmented by idle gaps (pooled so a parent waiting on its
@@ -518,7 +1096,7 @@ function wallTracker() {
     };
 }
 
-function emit(label, span, agents, models, ledger, source) {
+function emit(label, span, agents, models, ledger, source, analysis) {
     const { min, max, active_ms } = span.result();
     if (min === undefined || max === undefined || max < min) failWith("timestamps_missing");
     const result = {
@@ -532,10 +1110,18 @@ function emit(label, span, agents, models, ledger, source) {
         ...ledger.result(),
         source
     };
-    out({ ...result, ...renderUsage(result) });
+    const rendered = renderUsage(result);
+    // Analysis is opt-in and stays a separate field: existing callers paste
+    // rendered.block unchanged and never see it.
+    if (analysis) {
+        priceAnalysis(analysis, result);
+        result.analysis = analysis;
+        rendered.rendered.analysis_block = renderAnalysis(analysis);
+    }
+    out({ ...result, ...rendered });
 }
 
-async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexArchivedRoot }) {
+async function collectCodex({ sessionId, rootAgentRef, label, analyze, codexRoot, codexArchivedRoot }) {
     const sessionScope = rootAgentRef == null;
     const state = { files: [], seen: new Set() };
     await listJsonlFiles(codexRoot ?? join(homedir(), ".codex", "sessions"), state);
@@ -588,6 +1174,7 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
     const span = wallTracker();
     const models = new Set();
     const ledger = usageLedger();
+    const analysis = analyze ? analysisTracker() : null;
     for (const item of selected.values()) {
         // The root unit carries the launch label; each spawned thread rows
         // under its role name derived from agent_path (nickname, then id,
@@ -617,10 +1204,36 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
         // Per-model activity: every record's timestamp while that model was
         // the active turn_context model.
         const modelStamps = new Map();
+        // Analysis mode only: model requests in order, and each tool result
+        // tagged with how many requests preceded it.
+        const points = [];
+        const events = [];
+        const pendingCalls = new Map();
         for (const record of records) {
             span.stamp(record.timestamp);
             const ms = toMillis(record.timestamp);
             const payload = record?.payload;
+            if (analysis && record?.type === "response_item") {
+                if ((payload?.type === "function_call" || payload?.type === "custom_tool_call") && isNonEmptyString(payload.call_id)) {
+                    pendingCalls.set(
+                        payload.call_id,
+                        codexToolLabel(payload.name, payload.arguments ?? payload.input)
+                    );
+                } else if (payload?.type === "function_call_output" || payload?.type === "custom_tool_call_output") {
+                    const named = pendingCalls.get(payload.call_id) ?? { tool: "неизвестно", detail: null };
+                    const output = payload.output;
+                    const text = typeof output === "string" ? output : safeStringify(output);
+                    const exit = /"exit_code"\s*:\s*(\d+)|exited with code (\d+)/.exec(text);
+                    events.push({
+                        tool: named.tool,
+                        detail: named.detail,
+                        repeatable: named.repeatable === true,
+                        size: estimateSize(output),
+                        isError: Boolean(exit && (exit[1] ?? exit[2]) !== "0"),
+                        after: points.length
+                    });
+                }
+            }
             if (record?.type === "event_msg" && ms !== undefined) {
                 if (payload?.type === "task_started") {
                     if (openTurnStart !== undefined) turnBounds.push([openTurnStart, Math.max(openTurnStart, prevMs ?? openTurnStart)]);
@@ -644,6 +1257,15 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
                 modelStamps.get(activeModel).push(ms);
             }
             if (record?.type === "event_msg" && payload?.type === "token_count" && payload.info?.total_token_usage) {
+                if (analysis) {
+                    // last_token_usage.input_tokens is this request's whole
+                    // context; without it the step contributes no growth
+                    // point rather than a wrong one.
+                    const last = payload.info.last_token_usage;
+                    if (last && Number.isFinite(last.input_tokens)) {
+                        points.push({ ctx: last.input_tokens, output: last.output_tokens ?? 0 });
+                    }
+                }
                 const cur = payload.info.total_token_usage;
                 const now = {
                     input: cur.input_tokens ?? 0,
@@ -679,11 +1301,12 @@ async function collectCodex({ sessionId, rootAgentRef, label, codexRoot, codexAr
         for (const [model, stamps] of modelStamps) {
             ledger.addWall(unitLabel, model, intervalsLength(clipToIntervals(gapSegments(stamps), unitIntervals)));
         }
+        if (analysis) analysis.addUnit(points, events);
     }
-    emit(label, span, selected.size, models, ledger, "codex");
+    emit(label, span, selected.size, models, ledger, "codex", analysis?.result() ?? undefined);
 }
 
-async function collectClaude({ sessionId, rootAgentRef, label, claudeProjectsRoot }) {
+async function collectClaude({ sessionId, rootAgentRef, label, analyze, claudeProjectsRoot }) {
     // Subagent transcripts live at <projects>/<slug>/<sessionId>/subagents/agent-<agentId>.jsonl;
     // nested subagents are linked through toolUseResult.agentId in the parent's records.
     const sessionScope = rootAgentRef == null;
@@ -718,6 +1341,7 @@ async function collectClaude({ sessionId, rootAgentRef, label, claudeProjectsRoo
     const span = wallTracker();
     const models = new Set();
     const ledger = usageLedger();
+    const analysis = analyze ? analysisTracker() : null;
     // Subagent launch names come from the parent's Task/Agent tool_use
     // blocks (input.description, then subagent_type), matched to the child
     // through the tool_result's tool_use_id → toolUseResult.agentId pair.
@@ -758,6 +1382,13 @@ async function collectClaude({ sessionId, rootAgentRef, label, claudeProjectsRoo
         // Per-model activity: the model's own assistant records carrying
         // usage (streaming duplicates extend a segment naturally).
         const modelStamps = new Map();
+        // Analysis mode only: one point per API request in order (streaming
+        // records of the same request update the point in place), plus each
+        // tool result tagged with how many requests preceded it.
+        const points = [];
+        const pointIndex = new Map();
+        const events = [];
+        const analysisNames = new Map();
         for (const record of records) {
             span.stamp(record.timestamp);
             const ms = toMillis(record.timestamp);
@@ -768,7 +1399,22 @@ async function collectClaude({ sessionId, rootAgentRef, label, claudeProjectsRoo
                     if (block?.type === "tool_use" && isNonEmptyString(block.id)) {
                         const name = block.input?.description ?? block.input?.subagent_type;
                         if (isNonEmptyString(name)) toolUseNames.set(block.id, name);
+                        if (analysis) analysisNames.set(block.id, claudeToolLabel(block.name, block.input));
                     }
+                }
+            }
+            if (analysis && Array.isArray(content)) {
+                for (const block of content) {
+                    if (block?.type !== "tool_result") continue;
+                    const named = analysisNames.get(block.tool_use_id) ?? { tool: "неизвестно", detail: null };
+                    events.push({
+                        tool: named.tool,
+                        detail: named.detail,
+                        repeatable: named.repeatable === true,
+                        size: estimateSize(block.content ?? record.toolUseResult),
+                        isError: block.is_error === true,
+                        after: points.length
+                    });
                 }
             }
             const childId = record?.toolUseResult?.agentId;
@@ -795,7 +1441,23 @@ async function collectClaude({ sessionId, rootAgentRef, label, claudeProjectsRoo
             if (record?.type !== "assistant") continue;
             const usage = record?.message?.usage;
             const model = record?.message?.model;
-            if (usage) usageByRequest.set(record.requestId ?? record.uuid, { usage, model });
+            if (usage) {
+                const requestKey = record.requestId ?? record.uuid;
+                usageByRequest.set(requestKey, { usage, model });
+                if (analysis) {
+                    // The whole context this request carried; streaming
+                    // records repeat it and only grow the output.
+                    const point = {
+                        ctx: (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0),
+                        output: usage.output_tokens ?? 0
+                    };
+                    if (pointIndex.has(requestKey)) points[pointIndex.get(requestKey)] = point;
+                    else {
+                        pointIndex.set(requestKey, points.length);
+                        points.push(point);
+                    }
+                }
+            }
             if (isNonEmptyString(model) && model !== "<synthetic>") {
                 models.add(model);
                 if (usage && ms !== undefined) {
@@ -813,11 +1475,13 @@ async function collectClaude({ sessionId, rootAgentRef, label, claudeProjectsRoo
         for (const [model, stamps] of modelStamps) {
             ledger.addWall(unitLabel, model, intervalsLength(clipToIntervals(gapSegments(stamps), unitIntervals)));
         }
+        if (analysis) analysis.addUnit(points, events);
         for (const { usage, model } of usageByRequest.values()) {
             const input = usage.input_tokens ?? 0;
             const cacheCreate = usage.cache_creation_input_tokens ?? 0;
             const cacheRead = usage.cache_read_input_tokens ?? 0;
             const output = usage.output_tokens ?? 0;
+            if (analysis) analysis.addCache(cacheRead, cacheCreate);
             // Same shape as Codex: input is the full model input, cache reads included.
             ledger.add(
                 unitLabel,
@@ -828,7 +1492,7 @@ async function collectClaude({ sessionId, rootAgentRef, label, claudeProjectsRoo
             );
         }
     }
-    emit(label, span, selected.size, models, ledger, "claude");
+    emit(label, span, selected.size, models, ledger, "claude", analysis?.result() ?? undefined);
 }
 
 async function main() {
@@ -838,7 +1502,7 @@ async function main() {
     } catch {
         failWith("bad_args");
     }
-    const { runtime, sessionId, rootAgentRef, label } = args ?? {};
+    const { runtime, sessionId, rootAgentRef, label, analyze } = args ?? {};
     // rootAgentRef omitted/null → whole-session scope, where label may also
     // be omitted; an explicitly passed empty value stays a caller bug.
     const sessionScope = rootAgentRef == null;
@@ -846,10 +1510,12 @@ async function main() {
         !["codex", "claude"].includes(runtime) ||
         !isNonEmptyString(sessionId) ||
         (!sessionScope && !isNonEmptyString(rootAgentRef)) ||
-        !(isNonEmptyString(label) || (sessionScope && label == null))
+        !(isNonEmptyString(label) || (sessionScope && label == null)) ||
+        !(analyze === undefined || typeof analyze === "boolean")
     ) {
         failWith("bad_args");
     }
+    args.analyze = analyze === true;
     args.label = isNonEmptyString(label) ? label : "Основная сессия";
     launchLabel = args.label.trim();
     if (runtime === "codex") {
