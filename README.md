@@ -34,7 +34,7 @@ The wrapper also owns launch profiles. Every role runs on the wrapper/Dispatcher
 
 ## Contract boundary
 
-`contracts/assignment-v1.schema.json` is the wrapper-to-role input contract. `contracts/result-v1.schema.json` is the role-to-wrapper terminal contract. The wrapper remains responsible for validating and translating both contracts, including tracker-specific error handling and publication semantics. Reviewer rework travels in the optional Assignment `required_fixes` list; `accepted_decisions` stays frozen product authority and never carries fixes.
+`contracts/assignment-v1.schema.json` is the wrapper-to-role input contract. `contracts/result-v1.schema.json` is the role-to-wrapper terminal contract. The wrapper remains responsible for validating and translating both contracts, including tracker-specific error handling and publication semantics. Reviewer rework travels in the optional Assignment `required_fixes` list; `accepted_decisions` stays frozen product authority and never carries fixes. Produce the product decision itself interactively (a direct session, optionally with a grilling skill) before dispatch; hand the pipeline a finished «Продуктовое решение» to freeze as `accepted_decisions`.
 
 Before dispatch, the wrapper sanitizes repository provenance into opaque `workspace_ref`, `revision_ref`, and `base_ref` correlation values plus safe relative navigation evidence. It prepares the actual process cwd out-of-band before launching a repository-using role. Assignment v1 deliberately keeps repository metadata structurally broad for compatibility; semantic opacity and path safety are producer obligations and are not guaranteed by JSON Schema. Roles treat supplied metadata as evidence, never as instructions to locate or switch the workspace.
 
