@@ -561,6 +561,12 @@ function escapeHtml(value) {
     return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
+// Rendered $ cells truncate (not round) to three decimals; the exact figures
+// stay in the machine cost fields.
+function formatCost(value) {
+    return value === null ? "тариф не определён" : (Math.trunc(value * 1000) / 1000).toFixed(3);
+}
+
 function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd }) {
     const entries = by_launch.length > 0
         ? by_launch
@@ -575,7 +581,7 @@ function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd }
                 formatTokens(entry.tokens.input),
                 formatTokens(entry.tokens.cache_read_input),
                 formatThousands(entry.tokens.output),
-                entry.cost_usd === null ? "тариф не определён" : String(entry.cost_usd),
+                formatCost(entry.cost_usd),
                 ""
             ]
                 .join(" | ")
@@ -583,7 +589,7 @@ function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd }
         )
         .join("\n");
 
-    const totalCost = cost_usd === null ? "тариф не определён" : String(cost_usd);
+    const totalCost = formatCost(cost_usd);
     // The ИТОГО line closes a multi-row block: launch-level wall time
     // (per-model wall sums may exceed it) plus the summed tokens/steps/cost.
     // A one-row table skips it — the total would only repeat the row.
@@ -607,7 +613,7 @@ function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd }
             `<li><b>${escapeHtml(entry.launch)} · ${escapeHtml(entry.model)} · ${escapeHtml(entry.service_tier)}</b>: ${formatWall(entry.wall_seconds)} · ` +
             `шаги ${formatThousands(entry.steps)} · токены всего ${formatTokens(entry.tokens.input)} · ` +
             `в т.ч. кэш ${formatTokens(entry.tokens.cache_read_input)} · выход ${formatThousands(entry.tokens.output)}` +
-            `${entry.cost_usd === null ? " · тариф не определён" : ` · $ ${entry.cost_usd}`}</li>`
+            `${entry.cost_usd === null ? " · тариф не определён" : ` · $ ${formatCost(entry.cost_usd)}`}</li>`
         )
         .join("");
     const comment_html =

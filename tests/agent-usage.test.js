@@ -180,11 +180,11 @@ test('Codex sums the launched thread tree: last cumulative token_count per threa
     }
   ]);
   const rows =
-    '| Разработка<br>*gpt-5.6-terra · default* | 4м 59с | 2 | 1 000 | 400 | 50 | 0.00188 |\n' +
+    '| Разработка<br>*gpt-5.6-terra · default* | 4м 59с | 2 | 1 000 | 400 | 50 | 0.001 |\n' +
     '| Helper<br>*gpt-5.6-terra · default* | 1м 0с | 1 | 500 | 200 | 30 | 0.001 |';
   // The ИТОГО line uses the launch-level wall time (5м 0с), not the per-model
   // wall sum (5м 59с).
-  const totalRow = '| **ИТОГО** | 5м 0с | 3 | 1 500 | 600 | 80 | 0.00288 |';
+  const totalRow = '| **ИТОГО** | 5м 0с | 3 | 1 500 | 600 | 80 | 0.002 |';
   assert.deepEqual(result.rendered, {
     block: `Затрачено:\n\n${TABLE_HEADER}\n${rows}\n${totalRow}`,
     table_header: TABLE_HEADER,
@@ -193,8 +193,8 @@ test('Codex sums the launched thread tree: last cumulative token_count per threa
   });
   assert.equal(
     result.comment_html,
-    '<p>Метрики Разработка: 5м 0с · шаги 3 · $ 0.00288</p>' +
-      '<ul><li><b>Разработка · gpt-5.6-terra · default</b>: 4м 59с · шаги 2 · токены всего 1 000 · в т.ч. кэш 400 · выход 50 · $ 0.00188</li>' +
+    '<p>Метрики Разработка: 5м 0с · шаги 3 · $ 0.002</p>' +
+      '<ul><li><b>Разработка · gpt-5.6-terra · default</b>: 4м 59с · шаги 2 · токены всего 1 000 · в т.ч. кэш 400 · выход 50 · $ 0.001</li>' +
       '<li><b>Helper · gpt-5.6-terra · default</b>: 1м 0с · шаги 1 · токены всего 500 · в т.ч. кэш 200 · выход 30 · $ 0.001</li></ul>'
   );
 });
@@ -235,8 +235,8 @@ test('Codex splits a model switch inside one thread by token_count deltas', asyn
   assert.equal(result.cost_usd, 0.00115);
   assert.equal(
     result.rendered.rows,
-    '| Разработка<br>*gpt-5.6-sol · default* | 0м 50с | 1 | 100 | 0 | 10 | 0.0006 |\n' +
-      '| Разработка<br>*gpt-5.6-terra · default* | 1м 30с | 1 | 200 | 50 | 20 | 0.00055 |'
+    '| Разработка<br>*gpt-5.6-sol · default* | 0м 50с | 1 | 100 | 0 | 10 | 0.000 |\n' +
+      '| Разработка<br>*gpt-5.6-terra · default* | 1м 30с | 1 | 200 | 50 | 20 | 0.000 |'
   );
 });
 
@@ -400,8 +400,8 @@ test('Codex whole-session scope sums the session rollout and its spawned tree pe
   // The spawned thread rows under its role name (/root/development → Разработка), not the session label.
   assert.equal(
     result.rendered.rows,
-    '| Основная сессия<br>*gpt-5.6-sol · default* | 5м 55с | 1 | 1 000 | 100 | 100 | 0.00564 |\n' +
-      '| Разработка<br>*gpt-5.6-terra · default* | 1м 0с | 1 | 200 | 0 | 20 | 0.00064 |'
+    '| Основная сессия<br>*gpt-5.6-sol · default* | 5м 55с | 1 | 1 000 | 100 | 100 | 0.005 |\n' +
+      '| Разработка<br>*gpt-5.6-terra · default* | 1м 0с | 1 | 200 | 0 | 20 | 0.000 |'
   );
 });
 
@@ -469,8 +469,8 @@ test('Claude whole-session scope sums the transcript plus every subagent file pe
   // under the id-prefix placeholder.
   assert.equal(
     result.rendered.rows,
-    '| Основная сессия<br>*claude-fable-5 · standard* | 10м 0с | 2 | 1 300 | 200 | 110 | 0.0167 |\n' +
-      '| Сабагент orphan<br>*claude-sonnet-5 · standard* | 0м 0с | 1 | 50 | 0 | 5 | 0.00015 |'
+    '| Основная сессия<br>*claude-fable-5 · standard* | 10м 0с | 2 | 1 300 | 200 | 110 | 0.016 |\n' +
+      '| Сабагент orphan<br>*claude-sonnet-5 · standard* | 0м 0с | 1 | 50 | 0 | 5 | 0.000 |'
   );
 });
 
@@ -592,19 +592,19 @@ test('Claude splits the report per model with exact per-request attribution', as
   // One table row per model; each row carries that model's own working time.
   assert.equal(
     result.rendered.rows,
-    '| PRD<br>*claude-opus-5 · standard* | 0м 0с | 1 | 100 | 0 | 10 | 0.00075 |\n' +
-      '| PRD<br>*claude-sonnet-5 · standard* | 2м 0с | 2 | 1 010 | 0 | 105 | 0.00307 |'
+    '| PRD<br>*claude-opus-5 · standard* | 0м 0с | 1 | 100 | 0 | 10 | 0.000 |\n' +
+      '| PRD<br>*claude-sonnet-5 · standard* | 2м 0с | 2 | 1 010 | 0 | 105 | 0.003 |'
   );
   assert.equal(
     result.rendered.total_row,
-    '| **ИТОГО** | 2м 0с | 3 | 1 110 | 0 | 115 | 0.00382 |'
+    '| **ИТОГО** | 2м 0с | 3 | 1 110 | 0 | 115 | 0.003 |'
   );
   assert.equal(result.rendered.block, `Затрачено:\n\n${TABLE_HEADER}\n${result.rendered.rows}\n${result.rendered.total_row}`);
   assert.equal(
     result.comment_html,
-    '<p>Метрики PRD: 2м 0с · шаги 3 · $ 0.00382</p><ul>' +
-      '<li><b>PRD · claude-opus-5 · standard</b>: 0м 0с · шаги 1 · токены всего 100 · в т.ч. кэш 0 · выход 10 · $ 0.00075</li>' +
-      '<li><b>PRD · claude-sonnet-5 · standard</b>: 2м 0с · шаги 2 · токены всего 1 010 · в т.ч. кэш 0 · выход 105 · $ 0.00307</li></ul>'
+    '<p>Метрики PRD: 2м 0с · шаги 3 · $ 0.003</p><ul>' +
+      '<li><b>PRD · claude-opus-5 · standard</b>: 0м 0с · шаги 1 · токены всего 100 · в т.ч. кэш 0 · выход 10 · $ 0.000</li>' +
+      '<li><b>PRD · claude-sonnet-5 · standard</b>: 2м 0с · шаги 2 · токены всего 1 010 · в т.ч. кэш 0 · выход 105 · $ 0.003</li></ul>'
   );
 });
 
@@ -898,7 +898,7 @@ test('rendering switches to millions with two decimals at 1 000 000 tokens, outp
   assert.equal(result.steps, 2);
   assert.equal(
     result.rendered.rows,
-    `| Ревью<br>*claude-sonnet-5 · standard* | 12м 34с | 2 | 3.24М | 1.24М | 323 885 | ${result.cost_usd} |`
+    `| Ревью<br>*claude-sonnet-5 · standard* | 12м 34с | 2 | 3.24М | 1.24М | 323 885 | 7.486 |`
   );
   // A one-row table carries no ИТОГО: the total would only repeat the row.
   assert.equal('total_row' in result.rendered, false);
