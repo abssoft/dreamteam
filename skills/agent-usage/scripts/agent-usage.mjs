@@ -513,10 +513,12 @@ function out(value) {
 // «Затрачено» rendering lives here, not in caller prose: digit formatting is
 // deterministic script work — the caller pastes rendered.block (or
 // rendered.rows for a multi-launch table) and warning_line verbatim.
-// Cache writes have no column of their own (Codex logs report them as 0);
-// they stay inside «Всего» — the full total including all cache buckets —
-// and in the exact tokens.cache_write_input machine field.
-const TABLE_HEADER = "| Роль | Время | Без кэша | Из кэша | Выход | Всего | Шаги | $ токены |\n|---|---:|---:|---:|---:|---:|---:|---:|";
+// «Токены всего» is the full input (uncached + cache read + cache write —
+// writes have no column of their own: Codex logs report them as 0),
+// «В т.ч. кэш» its cache-read part, «Выход» separate. No input+output grand
+// total is rendered: the buckets carry different tariffs, so their sum
+// prices nothing. tokens.total in the machine fields still holds it.
+const TABLE_HEADER = "| Роль | Время | Шаги | Токены всего | В т.ч. кэш | Выход | $ |\n|---|---:|---:|---:|---:|---:|---:|";
 
 let launchLabel = "";
 
@@ -569,11 +571,10 @@ function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd }
                 "",
                 `${entry.launch}<br>*${entry.model} · ${entry.service_tier}*`,
                 formatWall(entry.wall_seconds),
-                formatTokens(entry.tokens.uncached_input),
+                formatThousands(entry.steps),
+                formatTokens(entry.tokens.input),
                 formatTokens(entry.tokens.cache_read_input),
                 formatThousands(entry.tokens.output),
-                formatTokens(entry.tokens.total),
-                formatThousands(entry.steps),
                 entry.cost_usd === null ? "тариф не определён" : String(entry.cost_usd),
                 ""
             ]
@@ -591,11 +592,10 @@ function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd }
             "",
             "**ИТОГО**",
             formatWall(wall_seconds),
-            formatTokens(tokens.uncached_input),
+            formatThousands(steps),
+            formatTokens(tokens.input),
             formatTokens(tokens.cache_read_input),
             formatThousands(tokens.output),
-            formatTokens(tokens.total),
-            formatThousands(steps),
             totalCost,
             ""
         ]
@@ -605,13 +605,13 @@ function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd }
     const items = entries
         .map((entry) =>
             `<li><b>${escapeHtml(entry.launch)} · ${escapeHtml(entry.model)} · ${escapeHtml(entry.service_tier)}</b>: ${formatWall(entry.wall_seconds)} · ` +
-            `без кэша ${formatTokens(entry.tokens.uncached_input)} · из кэша ${formatTokens(entry.tokens.cache_read_input)} · ` +
-            `выход ${formatThousands(entry.tokens.output)} · всего ${formatTokens(entry.tokens.total)} · шаги ${formatThousands(entry.steps)}` +
-            `${entry.cost_usd === null ? " · тариф не определён" : ` · $ токены ${entry.cost_usd}`}</li>`
+            `шаги ${formatThousands(entry.steps)} · токены всего ${formatTokens(entry.tokens.input)} · ` +
+            `в т.ч. кэш ${formatTokens(entry.tokens.cache_read_input)} · выход ${formatThousands(entry.tokens.output)}` +
+            `${entry.cost_usd === null ? " · тариф не определён" : ` · $ ${entry.cost_usd}`}</li>`
         )
         .join("");
     const comment_html =
-        `<p>Метрики ${escapeHtml(label)}: ${formatWall(wall_seconds)} · шаги ${formatThousands(steps)} · $ токены ${totalCost}</p><ul>${items}</ul>`;
+        `<p>Метрики ${escapeHtml(label)}: ${formatWall(wall_seconds)} · шаги ${formatThousands(steps)} · ${cost_usd === null ? "тариф не определён" : `$ ${totalCost}`}</p><ul>${items}</ul>`;
 
     return {
         rendered: {

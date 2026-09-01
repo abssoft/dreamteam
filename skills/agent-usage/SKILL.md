@@ -60,7 +60,7 @@ cached_input = cache_read_input
 
 `by_launch` is keyed by launch × model × service tier; `by_model` aggregates rows for the same model and lists its `service_tiers`. Both carry the same token and nullable cost fields. `steps` counts distinct model requests, not log notifications.
 
-The Markdown and HTML tables use `Без кэша | Из кэша | Выход`; cache writes carry no column and stay inside `Всего` — the full total including all cache — and in the exact `tokens` fields. The money column is `$ токены`, because this is model-token tariff cost rather than a subscription invoice.
+The Markdown and HTML tables show `Время | Шаги | Токены всего | В т.ч. кэш | Выход | $`: `Токены всего` is the full input including all cache (writes carry no column and stay in the exact `tokens` fields), `В т.ч. кэш` its cache-read part, `Выход` separate — no input+output sum is rendered, because the buckets carry different tariffs. The money column is `$` and holds model-token tariff cost rather than a subscription invoice.
 
 ## Pricing rules
 
