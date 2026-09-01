@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { appendFile, mkdir, mkdtemp } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -10,6 +10,7 @@ process.env.TZ = 'UTC';
 
 const execFileAsync = promisify(execFile);
 const scriptPath = join(process.cwd(), 'skills', 'agent-usage', 'scripts', 'agent-usage.mjs');
+const fixturesRoot = join(process.cwd(), 'tests', 'fixtures');
 
 async function makeLogs(files) {
   const root = await mkdtemp(join(tmpdir(), 'agent-usage-'));
@@ -23,6 +24,10 @@ async function makeLogs(files) {
 
 async function emptyDir() {
   return mkdtemp(join(tmpdir(), 'agent-usage-empty-'));
+}
+
+async function loadFixture(name) {
+  return JSON.parse(await readFile(join(fixturesRoot, name), 'utf8'));
 }
 
 async function runCollector(args) {
@@ -41,8 +46,8 @@ function codexMeta(id, parentId, agentPath) {
   };
 }
 
-function codexTurnContext(model, at = '2026-01-01T10:00:01.000Z') {
-  return { timestamp: at, type: 'turn_context', payload: { model } };
+function codexTurnContext(model, at = '2026-01-01T10:00:01.000Z', serviceTier = 'default') {
+  return { timestamp: at, type: 'turn_context', payload: { model, service_tier: serviceTier } };
 }
 
 function codexTokenCount(usage, at) {
@@ -55,7 +60,19 @@ function claudeAssistant({ requestId, model, usage, at }) {
 
 const round4 = (value) => Math.round(value * 10_000) / 10_000;
 
-const TABLE_HEADER = '| Роль | Время | Вход | Выход | Всего | Шаги | $ |\n|---|---:|---:|---:|---:|---:|---:|';
+function tokenBreakdown(input, cachedInput, output, cacheWriteInput = 0) {
+  return {
+    input,
+    uncached_input: input - cachedInput - cacheWriteInput,
+    cache_read_input: cachedInput,
+    cache_write_input: cacheWriteInput,
+    cached_input: cachedInput,
+    output,
+    total: input + output
+  };
+}
+
+const TABLE_HEADER = '| Роль | Время | Без кэша | Из кэша | В кэш | Выход | Всего | Шаги | $ токены |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|';
 
 // --- argument validation ----------------------------------------------------
 
@@ -69,7 +86,8 @@ test('collector rejects malformed arguments with bad_args and exit 0', async () 
     { runtime: 'claude', sessionId: 's', rootAgentRef: 'r', label: '' },
     { runtime: 'claude', sessionId: 's', rootAgentRef: 'r' },
     { runtime: 'claude', sessionId: 's', label: '' },
-    { runtime: 'codex', label: 'Основная сессия' }
+    { runtime: 'codex', label: 'Основная сессия' },
+    { runtime: 'claude', sessionId: 's', full: 'yes' }
   ]) {
     assert.deepEqual(await runCollector(args), {
       ok: false,
@@ -114,7 +132,7 @@ test('Codex sums the launched thread tree: last cumulative token_count per threa
   });
 
   const result = await runCollector({
-    runtime: 'codex', sessionId: 'sess-1', rootAgentRef: '/root/development', label: 'Разработка',
+    runtime: 'codex', sessionId: 'sess-1', rootAgentRef: '/root/development', label: 'Разработка', full: true,
     codexRoot: sessionsRoot, codexArchivedRoot: archivedRoot
   });
 
@@ -123,35 +141,50 @@ test('Codex sums the launched thread tree: last cumulative token_count per threa
   assert.equal(result.source, 'codex');
   assert.equal(result.agents, 2);
   assert.deepEqual(result.models, ['gpt-5.6-terra']);
-  assert.deepEqual(result.tokens, { input: 1500, cached_input: 600, output: 80, total: 1580 });
+  assert.deepEqual(result.tokens, tokenBreakdown(1500, 600, 80));
   assert.equal(result.started_at, '2026-01-01T10:00:00.000Z');
   assert.equal(result.ended_at, '2026-01-01T10:05:00.000Z');
   assert.equal(result.wall_seconds, 300);
   // Steps = API model requests: one per token_count event (2 root + 1 child).
   assert.equal(result.steps, 3);
-  // gpt-5.6-terra: ((1500-600)*2 + 600*0.2 + 80*12) / 1e6, rounded to 4 decimals.
-  assert.equal(result.cost_usd, 0.0029);
+  // gpt-5.6-terra: ((1500-600)*2 + 600*0.2 + 80*12) / 1e6.
+  assert.equal(result.cost_usd, 0.00288);
+  assert.equal(result.token_cost_usd, 0.00288);
+  assert.deepEqual(result.cost_breakdown_usd, {
+    uncached_input: 0.0018, cache_read_input: 0.00012, cache_write_input: 0, output: 0.00096, total: 0.00288
+  });
+  assert.equal(result.pricing.status, 'priced');
+  assert.deepEqual(result.pricing.service_tiers, ['default']);
   assert.deepEqual(result.unpriced_models, []);
   // Per-model wall time sums the spans while the model was active: root
   // 10:00:01 (turn_context) → 10:05:00 (299s) + child 10:02:00→10:03:00 (60s).
-  assert.deepEqual(result.by_model, [
-    { model: 'gpt-5.6-terra', wall_seconds: 359, steps: 3, tokens: { input: 1500, cached_input: 600, output: 80, total: 1580 }, cost_usd: 0.0029 }
+  assert.deepEqual(result.by_model.map(({ cost_breakdown_usd, ...row }) => row), [
+    {
+      model: 'gpt-5.6-terra', service_tiers: ['default'], wall_seconds: 359, steps: 3,
+      tokens: tokenBreakdown(1500, 600, 80), token_cost_usd: 0.00288, cost_usd: 0.00288
+    }
   ]);
 
   // The collector renders the «Затрачено» block itself: caller-side digit
   // formatting is banned, the caller pastes rendered.block verbatim. One
   // row per launch × model: the root under the report label, the spawned
   // thread under its role name derived from agent_path.
-  assert.deepEqual(result.by_launch, [
-    { launch: 'Разработка', model: 'gpt-5.6-terra', wall_seconds: 299, steps: 2, tokens: { input: 1000, cached_input: 400, output: 50, total: 1050 }, cost_usd: 0.0019 },
-    { launch: 'Helper', model: 'gpt-5.6-terra', wall_seconds: 60, steps: 1, tokens: { input: 500, cached_input: 200, output: 30, total: 530 }, cost_usd: 0.001 }
+  assert.deepEqual(result.by_launch.map(({ cost_breakdown_usd, ...row }) => row), [
+    {
+      launch: 'Разработка', model: 'gpt-5.6-terra', service_tier: 'default', wall_seconds: 299,
+      steps: 2, tokens: tokenBreakdown(1000, 400, 50), token_cost_usd: 0.00188, cost_usd: 0.00188
+    },
+    {
+      launch: 'Helper', model: 'gpt-5.6-terra', service_tier: 'default', wall_seconds: 60,
+      steps: 1, tokens: tokenBreakdown(500, 200, 30), token_cost_usd: 0.001, cost_usd: 0.001
+    }
   ]);
   const rows =
-    '| Разработка<br>*gpt-5.6-terra* | 4м 59с | 1 000<br>*кэш 400* | 50 | 1 050 | 2 | 0.0019 |\n' +
-    '| Helper<br>*gpt-5.6-terra* | 1м 0с | 500<br>*кэш 200* | 30 | 530 | 1 | 0.001 |';
+    '| Разработка<br>*gpt-5.6-terra · default* | 4м 59с | 600 | 400 | 0 | 50 | 1 050 | 2 | 0.00188 |\n' +
+    '| Helper<br>*gpt-5.6-terra · default* | 1м 0с | 300 | 200 | 0 | 30 | 530 | 1 | 0.001 |';
   // The ИТОГО line uses the launch-level wall time (5м 0с), not the per-model
   // wall sum (5м 59с).
-  const totalRow = '| **ИТОГО** | 5м 0с | 1 500<br>*кэш 600* | 80 | 1 580 | 3 | 0.0029 |';
+  const totalRow = '| **ИТОГО** | 5м 0с | 900 | 600 | 0 | 80 | 1 580 | 3 | 0.00288 |';
   assert.deepEqual(result.rendered, {
     block: `Затрачено:\n\n${TABLE_HEADER}\n${rows}\n${totalRow}`,
     table_header: TABLE_HEADER,
@@ -160,9 +193,9 @@ test('Codex sums the launched thread tree: last cumulative token_count per threa
   });
   assert.equal(
     result.comment_html,
-    '<p>Метрики Разработка: 5м 0с · шаги 3 · $0.0029</p>' +
-      '<ul><li><b>Разработка · gpt-5.6-terra</b>: 4м 59с · вход 1 000 (кэш 400) · выход 50 · всего 1 050 · шаги 2 · $0.0019</li>' +
-      '<li><b>Helper · gpt-5.6-terra</b>: 1м 0с · вход 500 (кэш 200) · выход 30 · всего 530 · шаги 1 · $0.001</li></ul>'
+    '<p>Метрики Разработка: 5м 0с · шаги 3 · $ токены 0.00288</p>' +
+      '<ul><li><b>Разработка · gpt-5.6-terra · default</b>: 4м 59с · без кэша 600 · из кэша 400 · в кэш 0 · выход 50 · всего 1 050 · шаги 2 · $ токены 0.00188</li>' +
+      '<li><b>Helper · gpt-5.6-terra · default</b>: 1м 0с · без кэша 300 · из кэша 200 · в кэш 0 · выход 30 · всего 530 · шаги 1 · $ токены 0.001</li></ul>'
   );
 });
 
@@ -179,26 +212,31 @@ test('Codex splits a model switch inside one thread by token_count deltas', asyn
   const empty = await emptyDir();
 
   const result = await runCollector({
-    runtime: 'codex', sessionId: 'sess-1', rootAgentRef: '/root/development', label: 'Разработка',
+    runtime: 'codex', sessionId: 'sess-1', rootAgentRef: '/root/development', label: 'Разработка', full: true,
     codexRoot: sessionsRoot, codexArchivedRoot: empty
   });
 
   assert.equal(result.ok, true);
   assert.deepEqual(result.models, ['gpt-5.6-sol', 'gpt-5.6-terra']);
-  assert.deepEqual(result.tokens, { input: 300, cached_input: 50, output: 30, total: 330 });
+  assert.deepEqual(result.tokens, tokenBreakdown(300, 50, 30));
   assert.equal(result.steps, 2);
   // sol: the first cumulative event (100/0/10); terra: the delta of the second
   // (200/50/20). Wall: sol active 10:00:10→10:01:00, terra 10:01:30→10:03:00.
-  assert.deepEqual(result.by_model, [
-    { model: 'gpt-5.6-sol', wall_seconds: 50, steps: 1, tokens: { input: 100, cached_input: 0, output: 10, total: 110 }, cost_usd: 0.0008 },
-    { model: 'gpt-5.6-terra', wall_seconds: 90, steps: 1, tokens: { input: 200, cached_input: 50, output: 20, total: 220 }, cost_usd: 0.0006 }
+  assert.deepEqual(result.by_model.map(({ cost_breakdown_usd, ...row }) => row), [
+    {
+      model: 'gpt-5.6-sol', service_tiers: ['default'], wall_seconds: 50, steps: 1,
+      tokens: tokenBreakdown(100, 0, 10), token_cost_usd: 0.0006, cost_usd: 0.0006
+    },
+    {
+      model: 'gpt-5.6-terra', service_tiers: ['default'], wall_seconds: 90, steps: 1,
+      tokens: tokenBreakdown(200, 50, 20), token_cost_usd: 0.00055, cost_usd: 0.00055
+    }
   ]);
-  // Raw sums before rounding: sol 0.0008 + terra 0.00055.
-  assert.equal(result.cost_usd, 0.0014);
+  assert.equal(result.cost_usd, 0.00115);
   assert.equal(
     result.rendered.rows,
-    '| Разработка<br>*gpt-5.6-sol* | 0м 50с | 100<br>*кэш 0* | 10 | 110 | 1 | 0.0008 |\n' +
-      '| Разработка<br>*gpt-5.6-terra* | 1м 30с | 200<br>*кэш 50* | 20 | 220 | 1 | 0.0006 |'
+    '| Разработка<br>*gpt-5.6-sol · default* | 0м 50с | 100 | 0 | 0 | 10 | 110 | 1 | 0.0006 |\n' +
+      '| Разработка<br>*gpt-5.6-terra · default* | 1м 30с | 150 | 50 | 0 | 20 | 220 | 1 | 0.00055 |'
   );
 });
 
@@ -265,12 +303,12 @@ test('Codex resolves a multi_agent_v1 root by thread id when agent_path is null'
   });
   const empty = await emptyDir();
   const result = await runCollector({
-    runtime: 'codex', sessionId: 'sess-1', rootAgentRef: '01a0-root-thread', label: 'Разработка',
+    runtime: 'codex', sessionId: 'sess-1', rootAgentRef: '01a0-root-thread', label: 'Разработка', full: true,
     codexRoot: root, codexArchivedRoot: empty
   });
   assert.equal(result.ok, true);
   assert.equal(result.agents, 1);
-  assert.deepEqual(result.tokens, { input: 100, cached_input: 0, output: 10, total: 110 });
+  assert.deepEqual(result.tokens, tokenBreakdown(100, 0, 10));
   assert.equal(result.wall_seconds, 420);
 });
 
@@ -294,12 +332,12 @@ test('Codex multi_agent_v1 children need the parent log to mention their thread 
     'child.jsonl': childRecords
   });
   const empty = await emptyDir();
-  const args = { runtime: 'codex', sessionId: 'sess-1', rootAgentRef: 'root-thread', label: 'Разработка', codexArchivedRoot: empty };
+  const args = { runtime: 'codex', sessionId: 'sess-1', rootAgentRef: 'root-thread', label: 'Разработка', full: true, codexArchivedRoot: empty };
 
   const result = await runCollector({ ...args, codexRoot: evidenced });
   assert.equal(result.ok, true);
   assert.equal(result.agents, 2);
-  assert.deepEqual(result.tokens, { input: 150, cached_input: 0, output: 15, total: 165 });
+  assert.deepEqual(result.tokens, tokenBreakdown(150, 0, 15));
 
   assert.deepEqual(await runCollector({ ...args, codexRoot: unevidenced }), failure('workflow_run_incomplete', 'Разработка'));
 });
@@ -338,26 +376,32 @@ test('Codex whole-session scope sums the session rollout and its spawned tree pe
   });
   const empty = await emptyDir();
 
-  const result = await runCollector({ runtime: 'codex', sessionId: 'sess-1', codexRoot: sessionsRoot, codexArchivedRoot: empty });
+  const result = await runCollector({ runtime: 'codex', sessionId: 'sess-1', full: true, codexRoot: sessionsRoot, codexArchivedRoot: empty });
 
   assert.equal(result.ok, true);
   assert.equal(result.label, 'Основная сессия');
   assert.equal(result.agents, 2, 'the session itself plus its spawned thread; the foreign session stays out');
   assert.deepEqual(result.models, ['gpt-5.6-sol', 'gpt-5.6-terra']);
-  assert.deepEqual(result.tokens, { input: 1200, cached_input: 100, output: 120, total: 1320 });
+  assert.deepEqual(result.tokens, tokenBreakdown(1200, 100, 120));
   assert.equal(result.steps, 2);
   assert.equal(result.wall_seconds, 360);
-  // sol: ((1000-100)*5 + 100*0.5 + 100*30) / 1e6; terra: (200*2 + 20*12) / 1e6.
-  assert.deepEqual(result.by_model, [
-    { model: 'gpt-5.6-sol', wall_seconds: 355, steps: 1, tokens: { input: 1000, cached_input: 100, output: 100, total: 1100 }, cost_usd: 0.0076 },
-    { model: 'gpt-5.6-terra', wall_seconds: 60, steps: 1, tokens: { input: 200, cached_input: 0, output: 20, total: 220 }, cost_usd: 0.0006 }
+  // sol: ((1000-100)*4 + 100*0.4 + 100*20) / 1e6; terra: (200*2 + 20*12) / 1e6.
+  assert.deepEqual(result.by_model.map(({ cost_breakdown_usd, ...row }) => row), [
+    {
+      model: 'gpt-5.6-sol', service_tiers: ['default'], wall_seconds: 355, steps: 1,
+      tokens: tokenBreakdown(1000, 100, 100), token_cost_usd: 0.00564, cost_usd: 0.00564
+    },
+    {
+      model: 'gpt-5.6-terra', service_tiers: ['default'], wall_seconds: 60, steps: 1,
+      tokens: tokenBreakdown(200, 0, 20), token_cost_usd: 0.00064, cost_usd: 0.00064
+    }
   ]);
-  assert.equal(result.cost_usd, 0.0082);
+  assert.equal(result.cost_usd, 0.00628);
   // The spawned thread rows under its role name (/root/development → Разработка), not the session label.
   assert.equal(
     result.rendered.rows,
-    '| Основная сессия<br>*gpt-5.6-sol* | 5м 55с | 1 000<br>*кэш 100* | 100 | 1 100 | 1 | 0.0076 |\n' +
-      '| Разработка<br>*gpt-5.6-terra* | 1м 0с | 200<br>*кэш 0* | 20 | 220 | 1 | 0.0006 |'
+    '| Основная сессия<br>*gpt-5.6-sol · default* | 5м 55с | 900 | 100 | 0 | 100 | 1 100 | 1 | 0.00564 |\n' +
+      '| Разработка<br>*gpt-5.6-terra · default* | 1м 0с | 200 | 0 | 0 | 20 | 220 | 1 | 0.00064 |'
   );
 });
 
@@ -400,27 +444,33 @@ test('Claude whole-session scope sums the transcript plus every subagent file pe
     ]
   });
 
-  const result = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', claudeProjectsRoot: projectsRoot });
+  const result = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', full: true, claudeProjectsRoot: projectsRoot });
 
   assert.equal(result.ok, true);
   assert.equal(result.label, 'Основная сессия');
   assert.equal(result.agents, 2, 'the session transcript plus one subagent file; other sessions stay out');
   assert.deepEqual(result.models, ['claude-fable-5', 'claude-sonnet-5']);
-  assert.deepEqual(result.tokens, { input: 1350, cached_input: 200, output: 115, total: 1465 });
+  assert.deepEqual(result.tokens, tokenBreakdown(1350, 200, 115));
   assert.equal(result.steps, 3);
   assert.equal(result.wall_seconds, 600);
   // fable: (1000*10 + 200*1 + 100*50 + 100*10 + 10*50) / 1e6; sonnet: (50*2 + 5*10) / 1e6.
-  assert.deepEqual(result.by_model, [
-    { model: 'claude-fable-5', wall_seconds: 600, steps: 2, tokens: { input: 1300, cached_input: 200, output: 110, total: 1410 }, cost_usd: 0.0167 },
-    { model: 'claude-sonnet-5', wall_seconds: 0, steps: 1, tokens: { input: 50, cached_input: 0, output: 5, total: 55 }, cost_usd: 0.0001 }
+  assert.deepEqual(result.by_model.map(({ cost_breakdown_usd, ...row }) => row), [
+    {
+      model: 'claude-fable-5', service_tiers: ['standard'], wall_seconds: 600, steps: 2,
+      tokens: tokenBreakdown(1300, 200, 110), token_cost_usd: 0.0167, cost_usd: 0.0167
+    },
+    {
+      model: 'claude-sonnet-5', service_tiers: ['standard'], wall_seconds: 0, steps: 1,
+      tokens: tokenBreakdown(50, 0, 5), token_cost_usd: 0.00015, cost_usd: 0.00015
+    }
   ]);
-  assert.equal(result.cost_usd, 0.0169);
+  assert.equal(result.cost_usd, 0.01685);
   // The unlinked subagent has no Task tool_use name to inherit, so it rows
   // under the id-prefix placeholder.
   assert.equal(
     result.rendered.rows,
-    '| Основная сессия<br>*claude-fable-5* | 10м 0с | 1 300<br>*кэш 200* | 110 | 1 410 | 2 | 0.0167 |\n' +
-      '| Сабагент orphan<br>*claude-sonnet-5* | 0м 0с | 50<br>*кэш 0* | 5 | 55 | 1 | 0.0001 |'
+    '| Основная сессия<br>*claude-fable-5 · standard* | 10м 0с | 1 100 | 200 | 0 | 110 | 1 410 | 2 | 0.0167 |\n' +
+      '| Сабагент orphan<br>*claude-sonnet-5 · standard* | 0м 0с | 50 | 0 | 0 | 5 | 55 | 1 | 0.00015 |'
   );
 });
 
@@ -473,7 +523,7 @@ test('Claude sums root and nested subagents with per-request dedup and full inpu
   });
 
   const result = await runCollector({
-    runtime: 'claude', sessionId: 'sess-uuid', rootAgentRef: 'root1', label: 'Ревью',
+    runtime: 'claude', sessionId: 'sess-uuid', rootAgentRef: 'root1', label: 'Ревью', full: true,
     claudeProjectsRoot: projectsRoot
   });
 
@@ -483,14 +533,16 @@ test('Claude sums root and nested subagents with per-request dedup and full inpu
   assert.equal(result.agents, 2);
   assert.deepEqual(result.models, ['claude-sonnet-5'], '<synthetic> never reaches the model list');
   // input = input_tokens + cache_creation + cache_read; req1 keeps only the last record.
-  assert.deepEqual(result.tokens, { input: 610, cached_input: 300, output: 45, total: 655 });
+  assert.deepEqual(result.tokens, tokenBreakdown(610, 300, 45, 200));
   // Steps = distinct API requests with usage: req1 (deduped) + req3; the
   // usage-less <synthetic> req2 does not count.
   assert.equal(result.steps, 2);
   assert.equal(result.wall_seconds, 120);
-  // claude-sonnet-5: (100*2 + 200*2.5 + 300*0.2 + 40*10 + 10*2 + 5*10) / 1e6, rounded to 4 decimals.
-  assert.equal(result.cost_usd, 0.0012);
-  assert.deepEqual(result.unpriced_models, []);
+  // Generic cache_creation_input_tokens does not prove whether the write used
+  // the 5m or 1h tariff, so token totals stay exact and pricing fails closed.
+  assert.equal(result.cost_usd, null);
+  assert.deepEqual(result.unpriced_models, ['claude-sonnet-5']);
+  assert.deepEqual(result.pricing.issues.map((issue) => issue.code), ['tariff_not_found']);
   // The nested subagent rows under the parent's tool_use description.
   assert.deepEqual(result.by_launch.map((row) => row.launch), ['Ревью', 'Помощник ревью']);
 });
@@ -514,39 +566,45 @@ test('Claude splits the report per model with exact per-request attribution', as
   });
 
   const result = await runCollector({
-    runtime: 'claude', sessionId: 'sess-uuid', rootAgentRef: 'root1', label: 'PRD',
+    runtime: 'claude', sessionId: 'sess-uuid', rootAgentRef: 'root1', label: 'PRD', full: true,
     claudeProjectsRoot: projectsRoot
   });
 
   assert.equal(result.ok, true);
   assert.deepEqual(result.models, ['claude-opus-5', 'claude-sonnet-5']);
-  assert.deepEqual(result.tokens, { input: 1110, cached_input: 0, output: 115, total: 1225 });
+  assert.deepEqual(result.tokens, tokenBreakdown(1110, 0, 115));
   assert.equal(result.steps, 3);
   // opus: (100*5 + 10*25) / 1e6; sonnet: (1010*2 + 105*10) / 1e6; total from raw sums.
   // Per-model wall time spans the model's own records: sonnet 10:00:00→10:02:00,
   // opus has a single record → 0s.
-  assert.deepEqual(result.by_model, [
-    { model: 'claude-opus-5', wall_seconds: 0, steps: 1, tokens: { input: 100, cached_input: 0, output: 10, total: 110 }, cost_usd: 0.0008 },
-    { model: 'claude-sonnet-5', wall_seconds: 120, steps: 2, tokens: { input: 1010, cached_input: 0, output: 105, total: 1115 }, cost_usd: 0.0031 }
+  assert.deepEqual(result.by_model.map(({ cost_breakdown_usd, ...row }) => row), [
+    {
+      model: 'claude-opus-5', service_tiers: ['standard'], wall_seconds: 0, steps: 1,
+      tokens: tokenBreakdown(100, 0, 10), token_cost_usd: 0.00075, cost_usd: 0.00075
+    },
+    {
+      model: 'claude-sonnet-5', service_tiers: ['standard'], wall_seconds: 120, steps: 2,
+      tokens: tokenBreakdown(1010, 0, 105), token_cost_usd: 0.00307, cost_usd: 0.00307
+    }
   ]);
-  assert.equal(result.cost_usd, 0.0038);
+  assert.equal(result.cost_usd, 0.00382);
 
   // One table row per model; each row carries that model's own working time.
   assert.equal(
     result.rendered.rows,
-    '| PRD<br>*claude-opus-5* | 0м 0с | 100<br>*кэш 0* | 10 | 110 | 1 | 0.0008 |\n' +
-      '| PRD<br>*claude-sonnet-5* | 2м 0с | 1 010<br>*кэш 0* | 105 | 1 115 | 2 | 0.0031 |'
+    '| PRD<br>*claude-opus-5 · standard* | 0м 0с | 100 | 0 | 0 | 10 | 110 | 1 | 0.00075 |\n' +
+      '| PRD<br>*claude-sonnet-5 · standard* | 2м 0с | 1 010 | 0 | 0 | 105 | 1 115 | 2 | 0.00307 |'
   );
   assert.equal(
     result.rendered.total_row,
-    '| **ИТОГО** | 2м 0с | 1 110<br>*кэш 0* | 115 | 1 225 | 3 | 0.0038 |'
+    '| **ИТОГО** | 2м 0с | 1 110 | 0 | 0 | 115 | 1 225 | 3 | 0.00382 |'
   );
   assert.equal(result.rendered.block, `Затрачено:\n\n${TABLE_HEADER}\n${result.rendered.rows}\n${result.rendered.total_row}`);
   assert.equal(
     result.comment_html,
-    '<p>Метрики PRD: 2м 0с · шаги 3 · $0.0038</p><ul>' +
-      '<li><b>PRD · claude-opus-5</b>: 0м 0с · вход 100 (кэш 0) · выход 10 · всего 110 · шаги 1 · $0.0008</li>' +
-      '<li><b>PRD · claude-sonnet-5</b>: 2м 0с · вход 1 010 (кэш 0) · выход 105 · всего 1 115 · шаги 2 · $0.0031</li></ul>'
+    '<p>Метрики PRD: 2м 0с · шаги 3 · $ токены 0.00382</p><ul>' +
+      '<li><b>PRD · claude-opus-5 · standard</b>: 0м 0с · без кэша 100 · из кэша 0 · в кэш 0 · выход 10 · всего 110 · шаги 1 · $ токены 0.00075</li>' +
+      '<li><b>PRD · claude-sonnet-5 · standard</b>: 2м 0с · без кэша 1 010 · из кэша 0 · в кэш 0 · выход 105 · всего 1 115 · шаги 2 · $ токены 0.00307</li></ul>'
   );
 });
 
@@ -568,7 +626,210 @@ test('Claude failure codes: root_not_found beside the session transcript, logs_n
 
 // --- pricing ----------------------------------------------------------------
 
-test('pricing matches model prefixes and quarantines unknown models without dropping their tokens', async () => {
+test('Codex modern last_token_usage prices uncached, cache read, cache write, and output exactly', async () => {
+  const sessionsRoot = await makeLogs({
+    'modern.jsonl': await loadFixture('codex-token-count-modern.json')
+  });
+  const empty = await emptyDir();
+
+  const result = await runCollector({
+    runtime: 'codex', sessionId: 'sanitized-modern-codex', analyze: true, full: true,
+    codexRoot: sessionsRoot, codexArchivedRoot: empty
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.tokens, tokenBreakdown(100000, 80000, 1000, 10000));
+  assert.equal(result.token_cost_usd, 0.142);
+  assert.equal(result.cost_usd, 0.142);
+  assert.deepEqual(result.cost_breakdown_usd, {
+    uncached_input: 0.04,
+    cache_read_input: 0.032,
+    cache_write_input: 0.05,
+    output: 0.02,
+    total: 0.142
+  });
+  assert.equal(result.pricing.status, 'priced');
+  assert.deepEqual(result.pricing.service_tiers, ['default']);
+  assert.deepEqual(result.pricing.issues, []);
+  assert.equal(result.analysis.cache.read, result.tokens.cache_read_input);
+  assert.equal(result.analysis.cache.write, result.tokens.cache_write_input);
+});
+
+test('Codex long-context pricing switches only above 272000 input tokens', async () => {
+  const collectAt = async (input, id) => {
+    const usage = { input_tokens: input, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 100, total_tokens: input + 100 };
+    const sessionsRoot = await makeLogs({
+      [`${id}.jsonl`]: [
+        { timestamp: '2026-01-01T10:00:00.000Z', type: 'session_meta', payload: { id } },
+        codexTurnContext('gpt-5.6-sol'),
+        codexStep(usage, usage, '2026-01-01T10:00:02.000Z')
+      ]
+    });
+    return runCollector({ runtime: 'codex', sessionId: id, full: true, codexRoot: sessionsRoot, codexArchivedRoot: await emptyDir() });
+  };
+
+  const threshold = await collectAt(272000, 'at-threshold');
+  const above = await collectAt(272001, 'above-threshold');
+
+  assert.equal(threshold.cost_usd, 1.09);
+  assert.equal(threshold.pricing.long_context_steps, 0);
+  assert.equal(above.cost_usd, 2.179008);
+  assert.deepEqual(above.cost_breakdown_usd, {
+    uncached_input: 2.176008,
+    cache_read_input: 0,
+    cache_write_input: 0,
+    output: 0.003,
+    total: 2.179008
+  });
+  assert.equal(above.pricing.long_context_steps, 1);
+});
+
+test('Codex ignores repeated cumulative events and starts a new segment after a counter reset', async () => {
+  const first = { input_tokens: 100, cached_input_tokens: 20, cache_write_input_tokens: 10, output_tokens: 10, total_tokens: 110 };
+  const reset = { input_tokens: 50, cached_input_tokens: 10, cache_write_input_tokens: 5, output_tokens: 5, total_tokens: 55 };
+  const sessionsRoot = await makeLogs({
+    'main.jsonl': [
+      { timestamp: '2026-01-01T10:00:00.000Z', type: 'session_meta', payload: { id: 'dedup-reset' } },
+      codexTurnContext('gpt-5.6-terra'),
+      codexStep(first, first, '2026-01-01T10:00:02.000Z'),
+      codexStep(first, first, '2026-01-01T10:00:03.000Z'),
+      codexStep(reset, reset, '2026-01-01T10:00:04.000Z')
+    ]
+  });
+
+  const result = await runCollector({
+    runtime: 'codex', sessionId: 'dedup-reset', full: true, codexRoot: sessionsRoot, codexArchivedRoot: await emptyDir()
+  });
+
+  assert.equal(result.steps, 2);
+  assert.deepEqual(result.tokens, tokenBreakdown(150, 30, 15, 15));
+  assert.equal(result.pricing.status, 'priced');
+});
+
+test('Codex keeps cumulative tokens but fails pricing closed on last/delta mismatch or invalid breakdown', async () => {
+  const mismatchTotal = { input_tokens: 100, cached_input_tokens: 20, cache_write_input_tokens: 10, output_tokens: 10, total_tokens: 110 };
+  const mismatchLast = { input_tokens: 90, cached_input_tokens: 20, cache_write_input_tokens: 10, output_tokens: 10, total_tokens: 100 };
+  const mismatchRoot = await makeLogs({
+    'mismatch.jsonl': [
+      { timestamp: '2026-01-01T10:00:00.000Z', type: 'session_meta', payload: { id: 'mismatch' } },
+      codexTurnContext('gpt-5.6-sol'),
+      codexStep(mismatchLast, mismatchTotal, '2026-01-01T10:00:02.000Z')
+    ]
+  });
+  const mismatch = await runCollector({
+    runtime: 'codex', sessionId: 'mismatch', full: true, codexRoot: mismatchRoot, codexArchivedRoot: await emptyDir()
+  });
+
+  assert.deepEqual(mismatch.tokens, tokenBreakdown(100, 20, 10, 10));
+  assert.equal(mismatch.cost_usd, null);
+  assert.deepEqual(mismatch.pricing.issues.map((issue) => issue.code), ['usage_mismatch']);
+
+  const invalidUsage = { input_tokens: 100, cached_input_tokens: 80, cache_write_input_tokens: 30, output_tokens: 10, total_tokens: 110 };
+  const invalidRoot = await makeLogs({
+    'invalid.jsonl': [
+      { timestamp: '2026-01-01T10:00:00.000Z', type: 'session_meta', payload: { id: 'invalid' } },
+      codexTurnContext('gpt-5.6-sol'),
+      codexStep(invalidUsage, invalidUsage, '2026-01-01T10:00:02.000Z')
+    ]
+  });
+  const invalid = await runCollector({
+    runtime: 'codex', sessionId: 'invalid', full: true, codexRoot: invalidRoot, codexArchivedRoot: await emptyDir()
+  });
+
+  assert.deepEqual(invalid.tokens, tokenBreakdown(100, 80, 10, 20));
+  assert.equal(invalid.cost_usd, null);
+  assert.deepEqual(invalid.pricing.issues.map((issue) => issue.code), ['invalid_token_breakdown']);
+});
+
+test('Codex separates service tiers, requires actual Fast evidence, and honors reroutes', async () => {
+  const first = { input_tokens: 100, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 10, total_tokens: 110 };
+  const cumulative = { input_tokens: 200, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 20, total_tokens: 220 };
+  const fastStep = codexStep(first, cumulative, '2026-01-01T10:00:04.000Z');
+  fastStep.payload.info.actual_service_tier = 'fast';
+  const sessionsRoot = await makeLogs({
+    'tiers.jsonl': [
+      { timestamp: '2026-01-01T10:00:00.000Z', type: 'session_meta', payload: { id: 'tier-split' } },
+      codexTurnContext('gpt-5.6-sol'),
+      codexStep(first, first, '2026-01-01T10:00:02.000Z'),
+      { timestamp: '2026-01-01T10:00:03.000Z', type: 'event_msg', payload: { type: 'thread_settings_applied', thread_settings: { service_tier: 'fast' } } },
+      fastStep
+    ],
+    'reroute.jsonl': [
+      { timestamp: '2026-01-01T11:00:00.000Z', type: 'session_meta', payload: { id: 'reroute' } },
+      codexTurnContext('gpt-5.6-sol', '2026-01-01T11:00:01.000Z'),
+      { timestamp: '2026-01-01T11:00:02.000Z', type: 'event_msg', payload: { type: 'model/rerouted', toModel: 'gpt-5.6-terra' } },
+      codexStep(first, first, '2026-01-01T11:00:03.000Z')
+    ]
+  });
+  const empty = await emptyDir();
+
+  const split = await runCollector({ runtime: 'codex', sessionId: 'tier-split', full: true, codexRoot: sessionsRoot, codexArchivedRoot: empty });
+  assert.deepEqual(split.by_launch.map((row) => row.service_tier), ['default', 'fast']);
+  assert.deepEqual(split.by_launch.map((row) => row.cost_usd), [0.0006, 0.0012]);
+  assert.equal(split.cost_usd, 0.0018);
+
+  const rerouted = await runCollector({ runtime: 'codex', sessionId: 'reroute', full: true, codexRoot: sessionsRoot, codexArchivedRoot: empty });
+  assert.deepEqual(rerouted.by_launch.filter((row) => row.steps > 0).map((row) => row.model), ['gpt-5.6-terra']);
+  assert.equal(rerouted.cost_usd, 0.00032);
+
+  const unprovenRoot = await makeLogs({
+    'unproven.jsonl': [
+      { timestamp: '2026-01-01T10:00:00.000Z', type: 'session_meta', payload: { id: 'unproven-fast' } },
+      codexTurnContext('gpt-5.6-sol', '2026-01-01T10:00:01.000Z', 'fast'),
+      codexStep(first, first, '2026-01-01T10:00:02.000Z')
+    ]
+  });
+  const unproven = await runCollector({ runtime: 'codex', sessionId: 'unproven-fast', full: true, codexRoot: unprovenRoot, codexArchivedRoot: empty });
+  assert.equal(unproven.cost_usd, null);
+  assert.deepEqual(unproven.pricing.issues.map((issue) => issue.code), ['actual_service_tier_unknown']);
+
+  const missingTierRoot = await makeLogs({
+    'missing-tier.jsonl': [
+      { timestamp: '2026-01-01T10:00:00.000Z', type: 'session_meta', payload: { id: 'missing-tier' } },
+      { timestamp: '2026-01-01T10:00:01.000Z', type: 'turn_context', payload: { model: 'gpt-5.6-sol' } },
+      codexStep(first, first, '2026-01-01T10:00:02.000Z')
+    ]
+  });
+  const missingTier = await runCollector({ runtime: 'codex', sessionId: 'missing-tier', full: true, codexRoot: missingTierRoot, codexArchivedRoot: empty });
+  assert.equal(missingTier.cost_usd, null);
+  assert.deepEqual(missingTier.pricing.issues.map((issue) => issue.code), ['missing_service_tier']);
+});
+
+test('Claude normalizes cache reads and exact mixed 5m/1h cache writes', async () => {
+  const projectsRoot = await makeLogs({
+    'proj/sess-uuid/subagents/agent-root1.jsonl': [
+      claudeAssistant({
+        requestId: 'req1', model: 'claude-sonnet-5', at: '2026-01-01T10:00:00.000Z',
+        usage: {
+          input_tokens: 100,
+          cache_creation_input_tokens: 300,
+          cache_read_input_tokens: 200,
+          output_tokens: 10,
+          cache_creation: { ephemeral_5m_input_tokens: 100, ephemeral_1h_input_tokens: 200 }
+        }
+      })
+    ]
+  });
+
+  const result = await runCollector({
+    runtime: 'claude', sessionId: 'sess-uuid', rootAgentRef: 'root1', label: 'Ревью', analyze: true, full: true,
+    claudeProjectsRoot: projectsRoot
+  });
+
+  assert.deepEqual(result.tokens, tokenBreakdown(600, 200, 10, 300));
+  assert.equal(result.cost_usd, 0.00139);
+  assert.deepEqual(result.cost_breakdown_usd, {
+    uncached_input: 0.0002,
+    cache_read_input: 0.00004,
+    cache_write_input: 0.00105,
+    output: 0.0001,
+    total: 0.00139
+  });
+  assert.equal(result.analysis.cache.read, result.tokens.cache_read_input);
+  assert.equal(result.analysis.cache.write, result.tokens.cache_write_input);
+});
+
+test('pricing matches documented snapshots and fails the report closed on an unknown model', async () => {
   const projectsRoot = await makeLogs({
     'proj/sess-uuid/subagents/agent-root1.jsonl': [
       claudeAssistant({
@@ -583,27 +844,26 @@ test('pricing matches model prefixes and quarantines unknown models without drop
   });
 
   const result = await runCollector({
-    runtime: 'claude', sessionId: 'sess-uuid', rootAgentRef: 'root1', label: 'PRD',
+    runtime: 'claude', sessionId: 'sess-uuid', rootAgentRef: 'root1', label: 'PRD', full: true,
     claudeProjectsRoot: projectsRoot
   });
 
   assert.equal(result.ok, true);
   assert.deepEqual(result.models, ['claude-sonnet-5-20260101', 'mystery-9']);
-  assert.deepEqual(result.tokens, { input: 1050, cached_input: 0, output: 105, total: 1155 });
+  assert.deepEqual(result.tokens, tokenBreakdown(1050, 0, 105));
   assert.equal(result.steps, 2);
-  // Only the prefix-priced claude-sonnet-5-20260101 is billed: (1000*2 + 100*10) / 1e6.
-  assert.equal(result.cost_usd, 0.003);
+  assert.equal(result.cost_usd, null);
   assert.deepEqual(result.unpriced_models, ['mystery-9']);
+  assert.deepEqual(result.pricing.issues.map((issue) => issue.code), ['unknown_model']);
   const [priced, unpriced] = result.by_model;
   assert.equal(priced.cost_usd, 0.003);
   assert.equal(unpriced.cost_usd, null);
   const [first, second] = result.rendered.rows.split('\n');
-  assert.match(first, /^\| PRD<br>\*claude-sonnet-5-20260101\* \| 0м 0с \| /);
+  assert.match(first, /^\| PRD<br>\*claude-sonnet-5-20260101 · standard\* \| 0м 0с \| /);
   assert.match(first, /\| 1 \| 0\.003 \|$/);
-  assert.match(second, /^\| PRD<br>\*mystery-9\* \| 0м 0с \| /);
-  assert.match(second, /\| 1 \| без тарифа \|$/);
-  // The ИТОГО $ cell carries the unpriced note, same as comment_html.
-  assert.match(result.rendered.total_row, /^\| \*\*ИТОГО\*\* \| .* \| 2 \| 0\.003 \(без тарифа: mystery-9\) \|$/);
+  assert.match(second, /^\| PRD<br>\*mystery-9 · standard\* \| 0м 0с \| /);
+  assert.match(second, /\| 1 \| тариф не определён \|$/);
+  assert.match(result.rendered.total_row, /^\| \*\*ИТОГО\*\* \| .* \| 2 \| тариф не определён \|$/);
 });
 
 // --- rendering ----------------------------------------------------------------
@@ -623,18 +883,21 @@ test('rendering switches to millions with two decimals at 1 000 000 tokens, outp
   });
 
   const result = await runCollector({
-    runtime: 'claude', sessionId: 'sess-uuid', rootAgentRef: 'root1', label: 'Ревью',
+    runtime: 'claude', sessionId: 'sess-uuid', rootAgentRef: 'root1', label: 'Ревью', full: true,
     claudeProjectsRoot: projectsRoot
   });
 
   assert.equal(result.ok, true);
-  assert.deepEqual(result.tokens, { input: 3238493, cached_input: 1238493, output: 323885, total: 3562378 });
+  assert.deepEqual(result.tokens, tokenBreakdown(3238493, 1238493, 323885));
   assert.equal(result.wall_seconds, 754);
   assert.equal(result.steps, 2);
   assert.equal(
     result.rendered.rows,
-    `| Ревью<br>*claude-sonnet-5* | 12м 34с | 3.24М<br>*кэш 1.24М* | 323 885 | 3.56М | 2 | ${result.cost_usd} |`
+    `| Ревью<br>*claude-sonnet-5 · standard* | 12м 34с | 2.00М | 1.24М | 0 | 323 885 | 3.56М | 2 | ${result.cost_usd} |`
   );
+  // A one-row table carries no ИТОГО: the total would only repeat the row.
+  assert.equal('total_row' in result.rendered, false);
+  assert.equal(result.rendered.block, `Затрачено:\n\n${TABLE_HEADER}\n${result.rendered.rows}`);
 });
 
 test('idle gaps over 30 minutes are excluded from wall time; started/ended keep the calendar span', async () => {
@@ -651,14 +914,14 @@ test('idle gaps over 30 minutes are excluded from wall time; started/ended keep 
   });
   const empty = await emptyDir();
 
-  const result = await runCollector({ runtime: 'codex', sessionId: 'sess-1', codexRoot: sessionsRoot, codexArchivedRoot: empty });
+  const result = await runCollector({ runtime: 'codex', sessionId: 'sess-1', full: true, codexRoot: sessionsRoot, codexArchivedRoot: empty });
 
   assert.equal(result.ok, true);
   assert.equal(result.started_at, '2026-01-01T10:00:00.000Z');
   assert.equal(result.ended_at, '2026-01-02T09:10:00.000Z');
   assert.equal(result.wall_seconds, 900, '5 minutes on day one plus 10 on day two; the overnight gap does not count');
   assert.equal(result.by_model[0].wall_seconds, 900);
-  assert.match(result.rendered.total_row, /^\| \*\*ИТОГО\*\* \| 15м 0с \| /);
+  assert.match(result.rendered.rows, /^\| Основная сессия<br>\*gpt-5\.6-terra · default\* \| 15м 0с \| /);
 });
 
 test('Codex wall time is the union of task_started→task_complete turns; pauses between turns never count', async () => {
@@ -688,7 +951,7 @@ test('Codex wall time is the union of task_started→task_complete turns; pauses
   });
   const empty = await emptyDir();
 
-  const result = await runCollector({ runtime: 'codex', sessionId: 'sess-1', codexRoot: sessionsRoot, codexArchivedRoot: empty });
+  const result = await runCollector({ runtime: 'codex', sessionId: 'sess-1', full: true, codexRoot: sessionsRoot, codexArchivedRoot: empty });
 
   assert.equal(result.ok, true);
   // Turn one 10:00:00→10:04:00 (240s, subagent inside), turn two
@@ -727,7 +990,7 @@ test('Claude wall time runs from each real user message to the last record befor
     ]
   });
 
-  const result = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', claudeProjectsRoot: projectsRoot });
+  const result = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', full: true, claudeProjectsRoot: projectsRoot });
 
   assert.equal(result.ok, true);
   // Turn one 10:00:00→10:02:00 (120s), turn two 10:17:00→10:18:00 (60s).
@@ -760,7 +1023,7 @@ test('Codex dangling turn closes at the last record before the resume, and turn_
   });
   const empty = await emptyDir();
 
-  const result = await runCollector({ runtime: 'codex', sessionId: 'sess-1', codexRoot: sessionsRoot, codexArchivedRoot: empty });
+  const result = await runCollector({ runtime: 'codex', sessionId: 'sess-1', full: true, codexRoot: sessionsRoot, codexArchivedRoot: empty });
 
   assert.equal(result.ok, true);
   // 240s (crashed turn, closed at its own last record) + 120s (aborted)
@@ -790,7 +1053,7 @@ test('Claude non-work records stamped at user-return time never extend a turn', 
     ]
   });
 
-  const result = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', claudeProjectsRoot: projectsRoot });
+  const result = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', full: true, claudeProjectsRoot: projectsRoot });
 
   assert.equal(result.ok, true);
   // Turn one 10:00:00→10:02:00 (120s), turn two 12:00:10→12:01:10 (60s).
@@ -818,7 +1081,7 @@ test('Claude subagent tool results without the toolUseResult side-field are work
   });
 
   const result = await runCollector({
-    runtime: 'claude', sessionId: 'sess-uuid', rootAgentRef: 'root1', label: 'Разработка',
+    runtime: 'claude', sessionId: 'sess-uuid', rootAgentRef: 'root1', label: 'Разработка', full: true,
     claudeProjectsRoot: projectsRoot
   });
 
@@ -854,7 +1117,7 @@ test('per-model wall time sums the model span across separate agent files', asyn
   });
 
   const result = await runCollector({
-    runtime: 'claude', sessionId: 'sess-uuid', rootAgentRef: 'root1', label: 'Ревью',
+    runtime: 'claude', sessionId: 'sess-uuid', rootAgentRef: 'root1', label: 'Ревью', full: true,
     claudeProjectsRoot: projectsRoot
   });
 
@@ -928,6 +1191,15 @@ test('analysis is opt-in: absent by default, non-boolean analyze is a caller bug
   assert.equal(plain.ok, true);
   assert.equal('analysis' in plain, false, 'existing callers never see the analysis payload');
   assert.equal('analysis_block' in plain.rendered, false, 'rendered.block stays the only launch table');
+  // Default output is the caller contract: rendered strings only — the
+  // machine fields (tokens, by_launch, pricing, …) appear with full:true.
+  assert.deepEqual(Object.keys(plain).sort(), ['comment_html', 'label', 'ok', 'rendered']);
+
+  // analyze without full: the rendered analysis block is there, the raw
+  // attribution object still is not.
+  const analyzed = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', analyze: true, claudeProjectsRoot: projectsRoot });
+  assert.match(analyzed.rendered.analysis_block, /^Анализ контекста:/);
+  assert.deepEqual(Object.keys(analyzed).sort(), ['comment_html', 'label', 'ok', 'rendered']);
 
   assert.equal(
     (await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', analyze: 'yes', claudeProjectsRoot: projectsRoot })).code,
@@ -938,7 +1210,7 @@ test('analysis is opt-in: absent by default, non-boolean analyze is a caller bug
 test('Claude attribution splits the measured context growth and charges each chunk for later steps', async () => {
   const projectsRoot = await makeLogs(claudeAnalysisLog(2500));
 
-  const result = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', analyze: true, claudeProjectsRoot: projectsRoot });
+  const result = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', analyze: true, full: true, claudeProjectsRoot: projectsRoot });
 
   assert.equal(result.ok, true);
   const { analysis } = result;
@@ -948,24 +1220,25 @@ test('Claude attribution splits the measured context growth and charges each chu
   assert.deepEqual(analysis.by_detail, [
     // /a.txt is re-sent by steps 3, 4 and 5: 890 × 3. Priced as one cache
     // write plus three cache reads on opus-5 (6.25 / 0.5 per 1M).
-    { detail: 'Read · /a.txt', calls: 1, errors: 0, injected: 890, resent: 2670, usd: 0.0069 },
+    { detail: 'Read · /a.txt', calls: 1, errors: 0, injected: 890, resent: 2670, estimated_cost_usd: 0.0069 },
     // /b.txt lands one step later, so it is re-sent twice.
-    { detail: 'Read · /b.txt', calls: 1, errors: 0, injected: 490, resent: 980, usd: 0.0036 }
+    { detail: 'Read · /b.txt', calls: 1, errors: 0, injected: 490, resent: 980, estimated_cost_usd: 0.0036 }
   ]);
-  assert.deepEqual(analysis.by_tool, [{ tool: 'Read', calls: 2, errors: 0, injected: 1380, resent: 3650, usd: 0.0104 }]);
+  assert.deepEqual(analysis.by_tool, [{ tool: 'Read', calls: 2, errors: 0, injected: 1380, resent: 3650, estimated_cost_usd: 0.0104 }]);
   // The opening context belongs to no tool and is re-sent by every later step.
-  assert.deepEqual(analysis.base, { tokens: 100, per_unit: 100, resent: 400, share: analysis.base.share, usd: 0.0008 });
+  assert.deepEqual(analysis.base, { tokens: 100, per_unit: 100, resent: 400, share: analysis.base.share, estimated_cost_usd: 0.0008 });
   assert.equal(analysis.context.growth, 2400);
   assert.equal(analysis.coverage.attributed, 1380);
   assert.equal(analysis.resets, 0);
   assert.equal(analysis.per_step.growth, 480, 'context gained per model request');
-  assert.equal(analysis.per_step.usd, round4(result.cost_usd / 5));
+  assert.equal(analysis.accuracy, 'inferred');
+  assert.equal(analysis.per_step.estimated_cost_usd, round4(result.cost_usd / 5));
   assert.match(result.rendered.analysis_block, /^Анализ контекста:/);
-  assert.match(result.rendered.analysis_block, /\| Read \| 2 \| 1 380 \| 3 650 \| — \| \$0\.01 \|/);
+  assert.match(result.rendered.analysis_block, /\| Read \| 2 \| 1 380 \| 3 650 \| — \| ≈\$0\.01 \|/);
   // The verdict is prose with the same figures, never a second table.
   assert.match(result.rendered.analysis_block, /\*\*Куда ушло больше всего\.\*\*/);
-  assert.match(result.rendered.analysis_block, /\*\*Read\*\* — \$0\.01\. 2 вызова/);
-  assert.match(result.rendered.analysis_block, /\*\*На будущее\.\*\* Запуск стоил \$[\d.]+ за шаг на 5 шагах\./);
+  assert.match(result.rendered.analysis_block, /\*\*Read\*\* — ≈\$0\.01\. 2 вызова/);
+  assert.match(result.rendered.analysis_block, /\*\*На будущее\.\*\* Оценка составила ≈\$[\d.]+ за шаг на 5 шагах\./);
 });
 
 test('a context reset ends the segment so earlier chunks stop being charged', async () => {
@@ -973,13 +1246,13 @@ test('a context reset ends the segment so earlier chunks stop being charged', as
   // before it survives into the steps that follow.
   const projectsRoot = await makeLogs(claudeAnalysisLog(400));
 
-  const { analysis } = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', analyze: true, claudeProjectsRoot: projectsRoot });
+  const { analysis } = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', analyze: true, full: true, claudeProjectsRoot: projectsRoot });
 
   assert.equal(analysis.resets, 1);
   // /a.txt is now re-sent by steps 3 and 4 only: 890 × 2, not × 3.
   assert.deepEqual(analysis.by_detail, [
-    { detail: 'Read · /a.txt', calls: 1, errors: 0, injected: 890, resent: 1780, usd: 0.0065 },
-    { detail: 'Read · /b.txt', calls: 1, errors: 0, injected: 490, resent: 490, usd: 0.0033 }
+    { detail: 'Read · /a.txt', calls: 1, errors: 0, injected: 890, resent: 1780, estimated_cost_usd: 0.0065 },
+    { detail: 'Read · /b.txt', calls: 1, errors: 0, injected: 490, resent: 490, estimated_cost_usd: 0.0033 }
   ]);
 });
 
@@ -999,7 +1272,7 @@ test('repeats list only content-bearing sources, not repeated command words', as
     ]
   });
 
-  const { analysis } = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', analyze: true, claudeProjectsRoot: projectsRoot });
+  const { analysis } = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', analyze: true, full: true, claudeProjectsRoot: projectsRoot });
 
   // Both /a.txt and `git` were hit twice; only the re-read re-injects the same bytes.
   assert.deepEqual(analysis.repeats.map((entry) => entry.detail), ['Read · /a.txt']);
@@ -1023,16 +1296,16 @@ test('Codex attribution reads context from last_token_usage and flags non-zero e
   const empty = await emptyDir();
 
   const { analysis } = await runCollector({
-    runtime: 'codex', sessionId: 'sess-1', analyze: true, codexRoot: sessionsRoot, codexArchivedRoot: empty
+    runtime: 'codex', sessionId: 'sess-1', analyze: true, full: true, codexRoot: sessionsRoot, codexArchivedRoot: empty
   });
 
   assert.equal(analysis.requests, 3);
-  assert.deepEqual(analysis.by_tool, [{ tool: 'Shell', calls: 2, errors: 1, injected: 4950, resent: 3980, usd: 0.0267 }]);
+  assert.deepEqual(analysis.by_tool, [{ tool: 'Shell', calls: 2, errors: 1, injected: 4950, resent: 3980, estimated_cost_usd: 0.0263 }]);
   assert.deepEqual(analysis.by_detail, [
-    { detail: 'Shell · rg', calls: 1, errors: 0, injected: 3980, resent: 3980, usd: 0.0219 },
-    { detail: 'Shell · cat', calls: 1, errors: 1, injected: 970, resent: 0, usd: 0.0049 }
+    { detail: 'Shell · rg', calls: 1, errors: 0, injected: 3980, resent: 3980, estimated_cost_usd: 0.0215 },
+    { detail: 'Shell · cat', calls: 1, errors: 1, injected: 970, resent: 0, estimated_cost_usd: 0.0049 }
   ]);
-  assert.deepEqual(analysis.base, { tokens: 1000, per_unit: 1000, resent: 2000, share: analysis.base.share, usd: 0.0060 });
+  assert.deepEqual(analysis.base, { tokens: 1000, per_unit: 1000, resent: 2000, share: analysis.base.share, estimated_cost_usd: 0.0058 });
   // The failed call is charged exactly, not by proportion of the tool's total.
-  assert.deepEqual(analysis.errors, { calls: 1, injected: 970, resent: 0, usd: 0.0049 });
+  assert.deepEqual(analysis.errors, { calls: 1, injected: 970, resent: 0, estimated_cost_usd: 0.0049 });
 });

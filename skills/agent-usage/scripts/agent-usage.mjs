@@ -3,12 +3,12 @@
 // only: the hosting workflow (a project Dispatcher or a human) runs it once
 // per launch after the terminal result; roles never run it.
 // Input: single CLI arg — JSON {runtime:"codex"|"claude", sessionId,
-//   rootAgentRef?, label?, analyze?, codexRoot?, codexArchivedRoot?,
+//   rootAgentRef?, label?, analyze?, full?, codexRoot?, codexArchivedRoot?,
 //   claudeProjectsRoot?} (the three optional roots override the default log
 //   locations; used by tests). `label` is the caller-owned display name of
 //   the launch (stage, role, or task name) — this script embeds it verbatim.
-// analyze:true adds the context-attribution pass (see `analysis` below); it
-//   is off by default and adds fields only, so existing callers are unchanged.
+// analyze:true adds the inferred context-attribution pass (see `analysis`
+//   below); it is off by default and never changes exact usage or pricing.
 // rootAgentRef targets one finished launch. Omitted (or null) it switches to
 //   whole-session scope: everything the current chat spent — the session's
 //   own log plus every launch it spawned — split per model as usual; label
@@ -16,11 +16,15 @@
 //   report already contains every launch, so never sum its rows with
 //   per-launch rows in one table.
 // Output: one JSON line on stdout; always exit 0.
-//   ok:true  → {ok, label, wall_seconds, started_at, ended_at, agents,
-//               steps, models, tokens: {input, cached_input, output, total},
-//               cost_usd, unpriced_models, by_launch, by_model, source,
-//               rendered: {block, table_header, rows, total_row,
-//               analysis_block?}, comment_html, analysis?}
+//   ok:true  → {ok, label, rendered: {block, table_header, rows, total_row?,
+//               analysis_block?}, comment_html} — callers only ever paste
+//               the rendered strings, so nothing else is printed by default.
+//               full:true (tests/debugging only) adds the machine fields:
+//               {wall_seconds, started_at, ended_at, agents, steps, models,
+//               tokens: {input, uncached_input, cache_read_input,
+//               cache_write_input, cached_input, output, total},
+//               token_cost_usd, cost_usd, cost_breakdown_usd, pricing,
+//               unpriced_models, by_launch, by_model, source, analysis?}
 //   ok:false → {ok, code, warning_line}: bad_args | logs_not_found |
 //               root_not_found | ambiguous_root | workflow_run_incomplete |
 //               timestamps_missing | log_limit_exceeded | collector_error
@@ -43,8 +47,10 @@
 // record timestamps (pooled across such units). started_at/ended_at still
 // bound the full calendar span, so ended-started may far exceed
 // wall_seconds.
-// by_launch splits the same figures per (launch, model) so subagents stay
-//   visible: [{launch, model, wall_seconds, steps, tokens, cost_usd|null}].
+// by_launch splits the same figures per (launch, model, service tier) so
+//   subagents and actual billing buckets stay visible: [{launch, model,
+//   service_tier, wall_seconds, steps, tokens, token_cost_usd|null,
+//   cost_usd|null, cost_breakdown_usd|null}].
 //   The root unit carries the report label; each spawned unit rows under
 //   its own name — Codex: the agent_path's last segment through
 //   ROLE_LABELS (known roles get the dispatcher's Russian stage names,
@@ -53,14 +59,11 @@
 //   tool_use input.description (then subagent_type; «Сабагент
 //   <id-prefix>» when unlinked). Launches keep processing order (root
 //   first), models sort inside a launch.
-// by_model splits wall time/steps/tokens/cost per model: [{model,
-//   wall_seconds, steps, tokens: {input, cached_input, output, total},
-//   cost_usd|null}] sorted by model name; cost_usd is null for models
-//   without a PRICING entry. Claude token/step attribution is exact per
-//   request; Codex attributes the delta between consecutive cumulative
-//   token_count events to the model active at that event (turn_context), so
-//   a thread that switches models splits correctly; a negative delta means
-//   the counter reset and the event becomes a fresh baseline. Per-model
+// by_model splits wall time/steps/tokens/cost per model and lists the tiers
+//   it used. Cost fields are null if any request in the row is unpriceable.
+//   Claude token/step attribution is exact per request. Codex validates
+//   last_token_usage against the cumulative delta, deduplicates repeated
+//   counters, and starts a new segment after a counter reset. Per-model
 //   wall_seconds is that model's own working time: its activity segments
 //   (records while the model was active — Codex per thread; its own
 //   assistant records — Claude per agent file; 30-minute idle gaps split
@@ -71,12 +74,14 @@
 // caller copies them verbatim and never re-formats numbers: rendered.block
 // is the standalone «Затрачено» table for one launch; rendered.rows is the
 // same data rows (one Markdown table line per by_launch entry —
-// launch × model — newline-joined, each carrying that model's own working
-// time inside that launch) for assembling a multi-launch table over
+// launch × model × service tier — newline-joined, each carrying that bucket's
+// own working time inside that launch) for assembling a multi-launch table over
 // rendered.table_header; rendered.total_row is the «ИТОГО» line
 // closing rendered.block (launch-level wall time, summed tokens/steps/cost —
-// per-model wall sums may exceed its time; on unpriced models the $ cell
-// carries the «без тарифа» note). In a multi-launch table the caller keeps
+// per-model wall sums may exceed its time; when any request is unpriceable
+// the $ cell says «тариф не определён»). A one-row table carries no ИТОГО —
+// total_row is omitted and the block ends at its single data row, since the
+// total would only repeat it. In a multi-launch table the caller keeps
 // per-launch total_rows out and cannot total across launches itself (digit
 // formatting is script-only). comment_html is the same breakdown as
 // one HTML fragment for trackers that take HTML comments.
@@ -100,22 +105,23 @@
 //   (Read, WebFetch, MCP) hit more than once, where a second call re-injects
 //   the same bytes. Everything is then priced with rates blended across the
 //   models the launch actually used (re-sends bill as cache reads, a chunk's
-//   first appearance as a cache write), giving per_step cost, the cold-start
-//   cost of a multi-unit launch, and cache.rebuilt — writes beyond the
+//   first appearance as a cache write), giving estimated per_step cost, the
+//   cold-start cost of a multi-unit launch, and estimated cache rebuilds — writes beyond the
 //   context actually gained, i.e. content cached twice. verdict ranks it into
 //   `largest` (where the money went; overhead is not automatically waste) and
 //   `waste` (redundant re-reads, failed calls, cache rebuilt for nothing),
-//   each item carrying the figure it rests on and one concrete action.
+//   each item carrying the inferred figure it rests on and one concrete action.
 //   rendered.analysis_block is the ready-to-paste Russian block: the tables
 //   followed by that verdict in prose, printed AFTER rendered.block and never
 //   merged into it.
 // Token cells: >=1 000 000 → millions with two decimals and «М» (3238493 →
 // 3.24М), below → space-separated thousands (323885 → 323 885); the Выход
 // cell always uses the space form.
-// tokens.input is the full model input; tokens.cached_input is its cache-read
-// subset (both runtimes), so total = input + output.
-// cost_usd sums only usage whose model has a PRICING entry; models without
-// one are listed in unpriced_models (their tokens still count in `tokens`).
+// Token invariants: input = uncached_input + cache_read_input +
+// cache_write_input; total = input + output; deprecated cached_input is an
+// alias of cache_read_input. Exact request prices use the versioned catalog
+// below. If any request cannot be priced, report-level token_cost_usd and its
+// cost_usd compatibility alias are null; no partial subtotal is emitted.
 // Codex: rollout files under ~/.codex/{sessions,archived_sessions}; the root
 // thread is the one whose session_meta thread_spawn has
 // parent_thread_id === sessionId and agent_path === rootAgentRef; for
@@ -125,11 +131,14 @@
 // parent's log, otherwise workflow_run_incomplete. In whole-session scope the
 // root is the rollout whose session_meta id equals sessionId (its spawn
 // source is irrelevant; missing → logs_not_found) and descendants attach as
-// usual. Token totals sum the per-event deltas of the cumulative token_count
-// counters; models come from turn_context records.
+// usual. Each non-duplicate token_count is a request: last_token_usage is
+// accepted only when it matches the cumulative delta; counters and model
+// reroutes remain the fallback authority. Models originate in turn_context.
 // Claude Code: ~/.claude/projects/**/<sessionId>/subagents/agent-<id>.jsonl;
 // the launched Task's file carries agentId === rootAgentRef; usage and models
-// are summed over its assistant messages. In whole-session scope the root is
+// are summed over its assistant messages. Cache reads/writes share the Codex
+// token contract; an ambiguous cache-write duration makes only price unknown.
+// In whole-session scope the root is
 // <projects>/<slug>/<sessionId>.jsonl and every *.jsonl directly under its
 // subagents dir joins even without a toolUseResult link.
 
@@ -145,23 +154,57 @@ const LIMITS = Object.freeze({
     maxCandidateFiles: 10_000
 });
 
-// Official USD prices per 1M tokens, checked 2026-08-15.
-// Claude: https://platform.claude.com/docs/en/about-claude/pricing
-//   (Sonnet 5: the $2/$10 launch pricing is now standard — the September 1,
-//   2026 increase to $3/$15 was canceled.)
-//   cache_write_5m = 5-minute cache write (1.25x input); cache reads bill at
-//   0.1x input (cached_input). 1h cache writes (2x input) are not
-//   distinguishable in the logs and are priced as 5m writes here.
-// OpenAI: https://developers.openai.com/api/docs/pricing
-//   (standard tier; long-context rates for requests over 272K input tokens
-//   are higher but not recoverable from cumulative session totals.)
-const PRICING = Object.freeze({
-    "claude-fable-5": { input: 10, cached_input: 1, cache_write_5m: 12.5, output: 50 },
-    "claude-opus-5": { input: 5, cached_input: 0.5, cache_write_5m: 6.25, output: 25 },
-    "claude-sonnet-5": { input: 2, cached_input: 0.2, cache_write_5m: 2.5, output: 10 },
-    "gpt-5.6-sol": { input: 5, cached_input: 0.5, output: 30 },
-    "gpt-5.6-terra": { input: 2, cached_input: 0.2, output: 12 },
-    "gpt-5.6-luna": { input: 0.2, cached_input: 0.02, output: 1.2 }
+// Versioned official model-token tariffs. Rates are integer nano-USD per
+// token so request pricing and aggregation never round intermediate values.
+// Tool-call fees and ChatGPT/Codex subscription billing are deliberately out
+// of scope; the rendered column is therefore named "$ токены".
+const PRICING_CATALOG = Object.freeze({
+    version: "2026-08-29",
+    checked_at: "2026-08-29",
+    basis: "official_api_model_token_rates",
+    sources: Object.freeze([
+        "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+        "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+        "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+        "https://developers.openai.com/api/docs/guides/fast-mode",
+        "https://platform.claude.com/docs/en/about-claude/pricing"
+    ]),
+    models: Object.freeze([
+        {
+            key: "gpt-5.6-sol", provider: "openai", ids: Object.freeze(["gpt-5.6-sol", "gpt-5.6"]),
+            snapshot: /^gpt-5\.6-sol-\d{4}-\d{2}-\d{2}$/,
+            standard: Object.freeze({ uncached_input: 4_000, cache_read_input: 400, cache_write_input: 5_000, output: 20_000 }),
+            fast_multiplier: 2,
+            long_context: Object.freeze({ threshold: 272_000, input_multiplier: 2, output_multiplier: 1.5 })
+        },
+        {
+            key: "gpt-5.6-terra", provider: "openai", ids: Object.freeze(["gpt-5.6-terra"]),
+            snapshot: /^gpt-5\.6-terra-\d{4}-\d{2}-\d{2}$/,
+            standard: Object.freeze({ uncached_input: 2_000, cache_read_input: 200, cache_write_input: 2_500, output: 12_000 }),
+            long_context: Object.freeze({ threshold: 272_000, input_multiplier: 2, output_multiplier: 1.5 })
+        },
+        {
+            key: "gpt-5.6-luna", provider: "openai", ids: Object.freeze(["gpt-5.6-luna"]),
+            snapshot: /^gpt-5\.6-luna-\d{4}-\d{2}-\d{2}$/,
+            standard: Object.freeze({ uncached_input: 200, cache_read_input: 20, cache_write_input: 250, output: 1_200 }),
+            long_context: Object.freeze({ threshold: 272_000, input_multiplier: 2, output_multiplier: 1.5 })
+        },
+        {
+            key: "claude-fable-5", provider: "claude", ids: Object.freeze(["claude-fable-5"]),
+            snapshot: /^claude-fable-5-\d{8}$/,
+            standard: Object.freeze({ uncached_input: 10_000, cache_read_input: 1_000, cache_write_5m: 12_500, cache_write_1h: 20_000, output: 50_000 })
+        },
+        {
+            key: "claude-opus-5", provider: "claude", ids: Object.freeze(["claude-opus-5"]),
+            snapshot: /^claude-opus-5-\d{8}$/,
+            standard: Object.freeze({ uncached_input: 5_000, cache_read_input: 500, cache_write_5m: 6_250, cache_write_1h: 10_000, output: 25_000 })
+        },
+        {
+            key: "claude-sonnet-5", provider: "claude", ids: Object.freeze(["claude-sonnet-5"]),
+            snapshot: /^claude-sonnet-5-\d{8}$/,
+            standard: Object.freeze({ uncached_input: 2_000, cache_read_input: 200, cache_write_5m: 2_500, cache_write_1h: 4_000, output: 10_000 })
+        }
+    ])
 });
 
 // Subagent display names for Codex agent_path values: known role segments
@@ -185,14 +228,139 @@ function labelForAgentPath(path) {
     return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-function rateFor(model) {
+function catalogEntryFor(model) {
     if (!isNonEmptyString(model)) return undefined;
-    if (PRICING[model]) return PRICING[model];
-    const key = Object.keys(PRICING).find((k) => model.startsWith(`${k}-`));
-    return key ? PRICING[key] : undefined;
+    return PRICING_CATALOG.models.find((entry) => entry.ids.includes(model) || entry.snapshot.test(model));
 }
 
-// Usage accumulator keyed by (launch, model): the hosting session and each
+// Analysis uses approximate blended standard rates only. Exact request cost
+// never calls this helper and lives entirely in priceRequest().
+function rateFor(model) {
+    const entry = catalogEntryFor(model);
+    if (!entry) return undefined;
+    const rates = entry.standard;
+    return {
+        input: rates.uncached_input / 1_000,
+        cached_input: rates.cache_read_input / 1_000,
+        cache_write_5m: (rates.cache_write_5m ?? rates.cache_write_input) / 1_000,
+        output: rates.output / 1_000
+    };
+}
+
+function emptyTokens() {
+    return {
+        input: 0,
+        uncached_input: 0,
+        cache_read_input: 0,
+        cache_write_input: 0,
+        cached_input: 0,
+        output: 0,
+        total: 0
+    };
+}
+
+function addTokens(target, source) {
+    for (const key of Object.keys(target)) target[key] += source[key] ?? 0;
+}
+
+function normalizeUsage(raw) {
+    const input = raw?.input_tokens ?? 0;
+    const cacheRead = raw?.cached_input_tokens ?? raw?.cache_read_input_tokens ?? 0;
+    const cacheWrite = raw?.cache_write_input_tokens ?? 0;
+    const output = raw?.output_tokens ?? 0;
+    const total = raw?.total_tokens ?? input + output;
+    const numbers = [input, cacheRead, cacheWrite, output, total];
+    const validNumbers = numbers.every((value) => Number.isSafeInteger(value) && value >= 0);
+    const safeInput = Number.isSafeInteger(input) && input >= 0 ? input : 0;
+    const safeOutput = Number.isSafeInteger(output) && output >= 0 ? output : 0;
+    const safeCacheRead = Number.isSafeInteger(cacheRead) && cacheRead >= 0
+        ? Math.min(cacheRead, safeInput)
+        : 0;
+    const safeCacheWrite = Number.isSafeInteger(cacheWrite) && cacheWrite >= 0
+        ? Math.min(cacheWrite, safeInput - safeCacheRead)
+        : 0;
+    const uncached = safeInput - safeCacheRead - safeCacheWrite;
+    const valid = validNumbers && cacheRead + cacheWrite <= input && total === input + output;
+    return {
+        valid,
+        tokens: {
+            input: safeInput,
+            uncached_input: uncached,
+            cache_read_input: safeCacheRead,
+            cache_write_input: safeCacheWrite,
+            cached_input: safeCacheRead,
+            output: safeOutput,
+            total: safeInput + safeOutput
+        }
+    };
+}
+
+function usageEquals(a, b) {
+    return ["input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "total_tokens"]
+        .every((key) => (a?.[key] ?? 0) === (b?.[key] ?? 0));
+}
+
+function priceRequest({ model, serviceTier, actualTierProven, tokens, cacheWriteKind, cacheWriteBreakdown, issues = [] }) {
+    const issueCodes = [...issues];
+    const catalog = catalogEntryFor(model);
+    if (!catalog) issueCodes.push("unknown_model");
+    if (!tokens || tokens.input !== tokens.uncached_input + tokens.cache_read_input + tokens.cache_write_input || tokens.total !== tokens.input + tokens.output) {
+        issueCodes.push("invalid_token_breakdown");
+    }
+
+    let tier = serviceTier;
+    if (catalog?.provider === "openai") {
+        if (!isNonEmptyString(tier)) issueCodes.push("missing_service_tier");
+        else if (["fast", "priority"].includes(tier) && !actualTierProven) issueCodes.push("actual_service_tier_unknown");
+        else if (!["default", "fast", "priority"].includes(tier)) issueCodes.push("tariff_not_found");
+        if (["fast", "priority"].includes(tier) && catalog?.fast_multiplier === undefined) issueCodes.push("tariff_not_found");
+    } else if (catalog?.provider === "claude") {
+        tier = "standard";
+        const exactWrite = ["5m", "1h"].includes(cacheWriteKind) ||
+            (cacheWriteKind === "mixed" &&
+                cacheWriteBreakdown?.fiveMinute + cacheWriteBreakdown?.oneHour === tokens.cache_write_input);
+        if (tokens.cache_write_input > 0 && !exactWrite) issueCodes.push("tariff_not_found");
+    }
+
+    const uniqueIssues = [...new Set(issueCodes)];
+    if (uniqueIssues.length > 0 || !catalog) return { priced: false, tier: tier ?? "unknown", issues: uniqueIssues };
+
+    const rates = catalog.standard;
+    const fastMultiplier = ["fast", "priority"].includes(tier) ? catalog.fast_multiplier : 1;
+    const isLong = Boolean(catalog.long_context && tokens.input > catalog.long_context.threshold);
+    const inputMultiplier = fastMultiplier * (isLong ? catalog.long_context.input_multiplier : 1);
+    const outputMultiplier = fastMultiplier * (isLong ? catalog.long_context.output_multiplier : 1);
+    const cacheWriteNano = catalog.provider === "claude" && cacheWriteKind === "mixed"
+        ? (cacheWriteBreakdown.fiveMinute * rates.cache_write_5m + cacheWriteBreakdown.oneHour * rates.cache_write_1h) * inputMultiplier
+        : tokens.cache_write_input * (catalog.provider === "claude"
+            ? cacheWriteKind === "1h" ? rates.cache_write_1h : rates.cache_write_5m
+            : rates.cache_write_input) * inputMultiplier;
+    const nano = {
+        uncached_input: tokens.uncached_input * rates.uncached_input * inputMultiplier,
+        cache_read_input: tokens.cache_read_input * rates.cache_read_input * inputMultiplier,
+        cache_write_input: cacheWriteNano,
+        output: tokens.output * rates.output * outputMultiplier
+    };
+    nano.total = nano.uncached_input + nano.cache_read_input + nano.cache_write_input + nano.output;
+    return { priced: true, tier, issues: [], nano, isLong };
+}
+
+function nanoToUsd(value) {
+    return value / 1_000_000_000;
+}
+
+function costBreakdown(nano) {
+    if (!nano) return null;
+    return {
+        uncached_input: nanoToUsd(nano.uncached_input),
+        cache_read_input: nanoToUsd(nano.cache_read_input),
+        cache_write_input: nanoToUsd(nano.cache_write_input),
+        output: nanoToUsd(nano.output),
+        total: nanoToUsd(nano.total)
+    };
+}
+
+// Usage accumulator keyed by (launch, model, service tier): the hosting session and each
 // subagent launch stay separate rows instead of dissolving into per-model
 // totals. Launches keep first-seen order (the root unit is processed
 // first); models sort alphabetically inside a launch. Codex adds one entry
@@ -200,53 +368,65 @@ function rateFor(model) {
 // API request.
 function usageLedger() {
     const perLaunch = new Map();
-    const bucket = (launch, model) => {
+    const pricingIssues = new Map();
+    let longContextSteps = 0;
+    const bucket = (launch, model, serviceTier = "unknown") => {
         const modelKey = isNonEmptyString(model) && model !== "<synthetic>" ? model : "неизвестно";
         if (!perLaunch.has(launch)) perLaunch.set(launch, new Map());
         const models = perLaunch.get(launch);
-        if (!models.has(modelKey)) {
-            models.set(modelKey, { wall_ms: 0, steps: 0, input: 0, cached_input: 0, output: 0, total: 0, usd: 0 });
+        const key = `${modelKey}\u0000${serviceTier}`;
+        if (!models.has(key)) {
+            models.set(key, {
+                model: modelKey,
+                service_tier: serviceTier,
+                wall_ms: 0,
+                steps: 0,
+                tokens: emptyTokens(),
+                nano: { uncached_input: 0, cache_read_input: 0, cache_write_input: 0, output: 0, total: 0 },
+                unpriced: false
+            });
         }
-        return models.get(modelKey);
+        return models.get(key);
+    };
+    const addIssue = (launch, model, serviceTier, code) => {
+        const key = `${launch}\u0000${model}\u0000${serviceTier}\u0000${code}`;
+        if (!pricingIssues.has(key)) pricingIssues.set(key, { code, launch, model, service_tier: serviceTier, requests: 0 });
+        pricingIssues.get(key).requests += 1;
     };
     return {
         // Milliseconds of this model's own active time (one thread or one
         // agent file at a time); summed across units into wall_seconds.
-        addWall(launch, model, ms) {
-            bucket(launch, model).wall_ms += ms;
+        addWall(launch, model, serviceTier, ms) {
+            bucket(launch, model, serviceTier).wall_ms += ms;
         },
-        // totals: {input, cached_input, output, total} — log-shaped counts.
-        // priced: {input, cache_write, cached_input, output} — raw slices.
-        add(launch, model, steps, totals, priced) {
-            const entry = bucket(launch, model);
-            const rate = rateFor(model);
-            entry.steps += steps;
-            entry.input += totals.input;
-            entry.cached_input += totals.cached_input;
-            entry.output += totals.output;
-            entry.total += totals.total;
-            if (rate) {
-                entry.usd +=
-                    ((priced.input ?? 0) * rate.input +
-                        (priced.cache_write ?? 0) * (rate.cache_write_5m ?? rate.input) +
-                        (priced.cached_input ?? 0) * rate.cached_input +
-                        (priced.output ?? 0) * rate.output) /
-                    1_000_000;
+        addRequest(launch, model, serviceTier, tokens, pricingContext = {}) {
+            const priced = priceRequest({ model, serviceTier, tokens, ...pricingContext });
+            const entry = bucket(launch, model, priced.tier);
+            entry.steps += 1;
+            addTokens(entry.tokens, tokens);
+            if (priced.priced) {
+                for (const key of Object.keys(entry.nano)) entry.nano[key] += priced.nano[key];
+                if (priced.isLong) longContextSteps += 1;
             } else {
                 entry.unpriced = true;
+                for (const code of priced.issues) addIssue(launch, entry.model, entry.service_tier, code);
             }
         },
         result() {
             const by_launch = [];
             for (const [launch, models] of perLaunch) {
-                for (const [model, entry] of [...models.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+                for (const [, entry] of [...models.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+                    const cost = entry.unpriced ? null : nanoToUsd(entry.nano.total);
                     by_launch.push({
                         launch,
-                        model,
+                        model: entry.model,
+                        service_tier: entry.service_tier,
                         wall_seconds: Math.round(entry.wall_ms / 1000),
                         steps: entry.steps,
-                        tokens: { input: entry.input, cached_input: entry.cached_input, output: entry.output, total: entry.total },
-                        cost_usd: entry.unpriced ? null : Math.round(entry.usd * 10_000) / 10_000,
+                        tokens: entry.tokens,
+                        token_cost_usd: cost,
+                        cost_usd: cost,
+                        cost_breakdown_usd: entry.unpriced ? null : costBreakdown(entry.nano),
                         unpriced: Boolean(entry.unpriced)
                     });
                 }
@@ -255,49 +435,65 @@ function usageLedger() {
             // per-launch split; sums run over raw (unrounded) USD.
             const aggregate = new Map();
             for (const [, models] of perLaunch) {
-                for (const [model, entry] of models) {
-                    if (!aggregate.has(model)) {
-                        aggregate.set(model, {
-                            model, wall_seconds: 0, steps: 0,
-                            tokens: { input: 0, cached_input: 0, output: 0, total: 0 }, usd: 0, unpriced: false
+                for (const [, entry] of models) {
+                    if (!aggregate.has(entry.model)) {
+                        aggregate.set(entry.model, {
+                            model: entry.model, service_tiers: new Set(), wall_seconds: 0, steps: 0,
+                            tokens: emptyTokens(),
+                            nano: { uncached_input: 0, cache_read_input: 0, cache_write_input: 0, output: 0, total: 0 },
+                            unpriced: false
                         });
                     }
-                    const agg = aggregate.get(model);
+                    const agg = aggregate.get(entry.model);
+                    agg.service_tiers.add(entry.service_tier);
                     agg.wall_seconds += Math.round(entry.wall_ms / 1000);
                     agg.steps += entry.steps;
-                    agg.tokens.input += entry.input;
-                    agg.tokens.cached_input += entry.cached_input;
-                    agg.tokens.output += entry.output;
-                    agg.tokens.total += entry.total;
+                    addTokens(agg.tokens, entry.tokens);
                     if (entry.unpriced) agg.unpriced = true;
-                    else agg.usd += entry.usd;
+                    else for (const key of Object.keys(agg.nano)) agg.nano[key] += entry.nano[key];
                 }
             }
             const sorted = [...aggregate.values()].sort((a, b) => a.model.localeCompare(b.model));
-            const tokens = { input: 0, cached_input: 0, output: 0, total: 0 };
+            const tokens = emptyTokens();
             let steps = 0;
-            let usd = 0;
+            const nano = { uncached_input: 0, cache_read_input: 0, cache_write_input: 0, output: 0, total: 0 };
+            let anyUnpriced = false;
             for (const entry of sorted) {
-                tokens.input += entry.tokens.input;
-                tokens.cached_input += entry.tokens.cached_input;
-                tokens.output += entry.tokens.output;
-                tokens.total += entry.tokens.total;
+                addTokens(tokens, entry.tokens);
                 steps += entry.steps;
-                if (!entry.unpriced) usd += entry.usd;
+                if (entry.unpriced) anyUnpriced = true;
+                else for (const key of Object.keys(nano)) nano[key] += entry.nano[key];
             }
+            const totalCost = anyUnpriced ? null : nanoToUsd(nano.total);
             return {
                 by_launch: by_launch.map(({ unpriced, ...row }) => row),
                 by_model: sorted.map((entry) => ({
                     model: entry.model,
+                    service_tiers: [...entry.service_tiers].sort(),
                     wall_seconds: entry.wall_seconds,
                     steps: entry.steps,
                     tokens: entry.tokens,
-                    cost_usd: entry.unpriced ? null : Math.round(entry.usd * 10_000) / 10_000,
+                    token_cost_usd: entry.unpriced ? null : nanoToUsd(entry.nano.total),
+                    cost_usd: entry.unpriced ? null : nanoToUsd(entry.nano.total),
+                    cost_breakdown_usd: entry.unpriced ? null : costBreakdown(entry.nano)
                 })),
                 tokens,
                 steps,
-                cost_usd: Math.round(usd * 10_000) / 10_000,
-                unpriced_models: sorted.filter((entry) => entry.unpriced).map((entry) => entry.model)
+                token_cost_usd: totalCost,
+                cost_usd: totalCost,
+                cost_breakdown_usd: anyUnpriced ? null : costBreakdown(nano),
+                unpriced_models: sorted.filter((entry) => entry.unpriced).map((entry) => entry.model),
+                pricing: {
+                    status: anyUnpriced ? "unpriced" : "priced",
+                    basis: PRICING_CATALOG.basis,
+                    catalog_version: PRICING_CATALOG.version,
+                    checked_at: PRICING_CATALOG.checked_at,
+                    sources: [...PRICING_CATALOG.sources],
+                    service_tiers: [...new Set(by_launch.map((entry) => entry.service_tier))].sort(),
+                    long_context_steps: longContextSteps,
+                    issues: [...pricingIssues.values()],
+                    excluded: ["tool_call_fees", "chatgpt_codex_subscription_billing"]
+                }
             };
         }
     };
@@ -311,7 +507,7 @@ function out(value) {
 // «Затрачено» rendering lives here, not in caller prose: digit formatting is
 // deterministic script work — the caller pastes rendered.block (or
 // rendered.rows for a multi-launch table) and warning_line verbatim.
-const TABLE_HEADER = "| Роль | Время | Вход | Выход | Всего | Шаги | $ |\n|---|---:|---:|---:|---:|---:|---:|";
+const TABLE_HEADER = "| Роль | Время | Без кэша | Из кэша | В кэш | Выход | Всего | Шаги | $ токены |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|";
 
 let launchLabel = "";
 
@@ -341,6 +537,11 @@ function formatUsd(value) {
     return `$${value >= 0.01 ? value.toFixed(2) : String(round4(value))}`;
 }
 
+function formatEstimatedUsd(value) {
+    const formatted = formatUsd(value);
+    return formatted === "—" ? formatted : `≈${formatted}`;
+}
+
 function formatWall(wallSeconds) {
     return `${Math.floor(wallSeconds / 60)}м ${wallSeconds % 60}с`;
 }
@@ -349,21 +550,23 @@ function escapeHtml(value) {
     return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
-function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd, unpriced_models }) {
+function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd }) {
     const entries = by_launch.length > 0
         ? by_launch
-        : [{ launch: label, model: "неизвестно", wall_seconds, steps: 0, tokens: { input: 0, cached_input: 0, output: 0, total: 0 }, cost_usd: 0 }];
+        : [{ launch: label, model: "неизвестно", service_tier: "unknown", wall_seconds, steps: 0, tokens: emptyTokens(), cost_usd: null }];
     const rows = entries
         .map((entry) =>
             [
                 "",
-                `${entry.launch}<br>*${entry.model}*`,
+                `${entry.launch}<br>*${entry.model} · ${entry.service_tier}*`,
                 formatWall(entry.wall_seconds),
-                `${formatTokens(entry.tokens.input)}<br>*кэш ${formatTokens(entry.tokens.cached_input)}*`,
+                formatTokens(entry.tokens.uncached_input),
+                formatTokens(entry.tokens.cache_read_input),
+                formatTokens(entry.tokens.cache_write_input),
                 formatThousands(entry.tokens.output),
                 formatTokens(entry.tokens.total),
                 formatThousands(entry.steps),
-                entry.cost_usd === null ? "без тарифа" : String(entry.cost_usd),
+                entry.cost_usd === null ? "тариф не определён" : String(entry.cost_usd),
                 ""
             ]
                 .join(" | ")
@@ -371,41 +574,45 @@ function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd, 
         )
         .join("\n");
 
-    const totalCost = unpriced_models.length > 0
-        ? `${cost_usd} (без тарифа: ${unpriced_models.join(", ")})`
-        : String(cost_usd);
-    // The ИТОГО line closes the single-launch block: launch-level wall time
+    const totalCost = cost_usd === null ? "тариф не определён" : String(cost_usd);
+    // The ИТОГО line closes a multi-row block: launch-level wall time
     // (per-model wall sums may exceed it) plus the summed tokens/steps/cost.
-    const total_row = [
-        "",
-        "**ИТОГО**",
-        formatWall(wall_seconds),
-        `${formatTokens(tokens.input)}<br>*кэш ${formatTokens(tokens.cached_input)}*`,
-        formatThousands(tokens.output),
-        formatTokens(tokens.total),
-        formatThousands(steps),
-        totalCost,
-        ""
-    ]
-        .join(" | ")
-        .trim();
+    // A one-row table skips it — the total would only repeat the row.
+    const total_row = entries.length > 1
+        ? [
+            "",
+            "**ИТОГО**",
+            formatWall(wall_seconds),
+            formatTokens(tokens.uncached_input),
+            formatTokens(tokens.cache_read_input),
+            formatTokens(tokens.cache_write_input),
+            formatThousands(tokens.output),
+            formatTokens(tokens.total),
+            formatThousands(steps),
+            totalCost,
+            ""
+        ]
+            .join(" | ")
+            .trim()
+        : undefined;
     const items = entries
         .map((entry) =>
-            `<li><b>${escapeHtml(entry.launch)} · ${escapeHtml(entry.model)}</b>: ${formatWall(entry.wall_seconds)} · ` +
-            `вход ${formatTokens(entry.tokens.input)} (кэш ${formatTokens(entry.tokens.cached_input)}) · ` +
+            `<li><b>${escapeHtml(entry.launch)} · ${escapeHtml(entry.model)} · ${escapeHtml(entry.service_tier)}</b>: ${formatWall(entry.wall_seconds)} · ` +
+            `без кэша ${formatTokens(entry.tokens.uncached_input)} · из кэша ${formatTokens(entry.tokens.cache_read_input)} · ` +
+            `в кэш ${formatTokens(entry.tokens.cache_write_input)} · ` +
             `выход ${formatThousands(entry.tokens.output)} · всего ${formatTokens(entry.tokens.total)} · шаги ${formatThousands(entry.steps)}` +
-            `${entry.cost_usd === null ? " · без тарифа" : ` · $${entry.cost_usd}`}</li>`
+            `${entry.cost_usd === null ? " · тариф не определён" : ` · $ токены ${entry.cost_usd}`}</li>`
         )
         .join("");
     const comment_html =
-        `<p>Метрики ${escapeHtml(label)}: ${formatWall(wall_seconds)} · шаги ${formatThousands(steps)} · $${totalCost}</p><ul>${items}</ul>`;
+        `<p>Метрики ${escapeHtml(label)}: ${formatWall(wall_seconds)} · шаги ${formatThousands(steps)} · $ токены ${totalCost}</p><ul>${items}</ul>`;
 
     return {
         rendered: {
-            block: `Затрачено:\n\n${TABLE_HEADER}\n${rows}\n${total_row}`,
+            block: `Затрачено:\n\n${TABLE_HEADER}\n${rows}${total_row === undefined ? "" : `\n${total_row}`}`,
             table_header: TABLE_HEADER,
             rows,
-            total_row
+            ...(total_row === undefined ? {} : { total_row })
         },
         comment_html
     };
@@ -419,7 +626,9 @@ function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd, 
 // rests on, then the action.
 function renderVerdict(analysis) {
     const lines = ["Выводы:"];
-    const cost = (item) => (item.usd === null ? formatTokens(item.tokens) : formatUsd(item.usd));
+    const cost = (item) => item.estimated_cost_usd === null
+        ? formatTokens(item.tokens)
+        : formatEstimatedUsd(item.estimated_cost_usd);
     // Facts are written as clause fragments so they can also read inline;
     // here each opens its own sentence.
     const sentence = (text) => text.charAt(0).toUpperCase() + text.slice(1);
@@ -440,8 +649,10 @@ function renderVerdict(analysis) {
         lines.push("", "**Потрачено впустую.** Повторных чтений, ошибочных вызовов и лишней перестройки кэша не найдено.");
     }
 
-    const perStep = analysis.priced ? `${formatUsd(analysis.per_step.usd)} за шаг` : `+${formatTokens(analysis.per_step.growth)} контекста за шаг`;
-    const closing = [`**На будущее.** Запуск стоил ${perStep} на ${formatThousands(analysis.requests)} ${plural(analysis.requests, "шаге", "шагах", "шагах")}.`];
+    const perStep = analysis.estimated_priced
+        ? `${formatEstimatedUsd(analysis.per_step.estimated_cost_usd)} за шаг`
+        : `+${formatTokens(analysis.per_step.growth)} контекста за шаг`;
+    const closing = [`**На будущее.** Оценка составила ${perStep} на ${formatThousands(analysis.requests)} ${plural(analysis.requests, "шаге", "шагах", "шагах")}.`];
     if (analysis.units > 1) {
         closing.push(
             `Холодный старт ${formatThousands(analysis.units)} ${plural(analysis.units, "юнита", "юнитов", "юнитов")} стоил ${formatTokens(analysis.base.tokens)} ещё до первого полезного действия — дробить задачу на новые запуски выгодно только когда каждый экономит больше шагов, чем стоит его старт.`
@@ -467,7 +678,7 @@ function renderAnalysis(analysis) {
         .slice(0, ANALYSIS_TOP_TOOLS)
         .map((entry) =>
             `| ${entry.tool} | ${formatThousands(entry.calls)} | ${formatTokens(entry.injected)} | ` +
-            `${formatTokens(entry.resent)} | ${entry.errors === 0 ? "—" : formatThousands(entry.errors)} | ${formatUsd(entry.usd)} |`
+            `${formatTokens(entry.resent)} | ${entry.errors === 0 ? "—" : formatThousands(entry.errors)} | ${formatEstimatedUsd(entry.estimated_cost_usd)} |`
         );
     const hidden = analysis.by_tool.length - Math.min(analysis.by_tool.length, ANALYSIS_TOP_TOOLS);
     if (hidden > 0) {
@@ -478,7 +689,7 @@ function renderAnalysis(analysis) {
             `${formatTokens(rest.reduce((sum, entry) => sum + entry.injected, 0))} | ` +
             `${formatTokens(rest.reduce((sum, entry) => sum + entry.resent, 0))} | ` +
             `${restErrors === 0 ? "—" : formatThousands(restErrors)} | ` +
-            `${formatUsd(rest.reduce((sum, entry) => sum + (entry.usd ?? 0), 0) || null)} |`
+            `${formatEstimatedUsd(rest.reduce((sum, entry) => sum + (entry.estimated_cost_usd ?? 0), 0) || null)} |`
         );
     }
 
@@ -493,21 +704,21 @@ function renderAnalysis(analysis) {
         `| Базовый контекст, переслан | ${formatTokens(analysis.base.tokens)} × ${formatThousands(Math.max(0, analysis.requests - analysis.units))} = ${formatTokens(analysis.base.resent)} (${percent(analysis.base.share)}) |`,
         `| Пересылок всего | ${formatTokens(analysis.resends.total)} |`,
         `| Прирост объяснён | ${percent(analysis.coverage.share)} |`,
-        `| Цена шага | ${analysis.priced ? formatUsd(analysis.per_step.usd) : "—"} · +${formatTokens(analysis.per_step.growth)} контекста |`
+        `| Оценка цены шага | ${analysis.estimated_priced ? formatEstimatedUsd(analysis.per_step.estimated_cost_usd) : "—"} · +${formatTokens(analysis.per_step.growth)} контекста |`
     ];
     if (analysis.units > 1) {
         sections.push(
             `| Холодный старт | ${formatThousands(analysis.units)} ${plural(analysis.units, "юнит", "юнита", "юнитов")} × ~${formatTokens(analysis.base.per_unit)} = ${formatTokens(analysis.base.tokens)} |`
         );
     }
-    if (analysis.priced && (analysis.cache.rebuild_overpay_usd ?? 0) > 0) {
+    if (analysis.estimated_priced && (analysis.cache.estimated_rebuild_overpay_usd ?? 0) > 0) {
         sections.push(
-            `| Кэш переписан заново | ${formatTokens(analysis.cache.rebuilt)} = переплата ${formatUsd(analysis.cache.rebuild_overpay_usd)} |`
+            `| Кэш предположительно переписан | ${formatTokens(analysis.cache.estimated_rebuilt)} = ${formatEstimatedUsd(analysis.cache.estimated_rebuild_overpay_usd)} |`
         );
     }
     if (analysis.per_step.by_launch.length > 1) {
         const worst = analysis.per_step.by_launch[0];
-        sections.push(`| Дороже всех на шаг | ${worst.launch} — ${formatUsd(worst.per_step)} × ${formatThousands(worst.steps)} |`);
+        sections.push(`| Дороже всех на шаг | ${worst.launch} — ${formatEstimatedUsd(worst.estimated_per_step)} × ${formatThousands(worst.steps)} |`);
     }
     if (analysis.resets > 0) sections.push(`| Сбросов контекста (компакция) | ${formatThousands(analysis.resets)} |`);
     if (analysis.cache.read > 0 || analysis.cache.write > 0) {
@@ -517,7 +728,7 @@ function renderAnalysis(analysis) {
     if (toolRows.length > 0) {
         sections.push(
             "",
-            "| Инструмент | Вызовов | Влил | Пересылок | Ошибок | $ |",
+            "| Инструмент | Вызовов | Влил | Пересылок | Ошибок | ≈$ |",
             "|---|---:|---:|---:|---:|---:|",
             ...toolRows
         );
@@ -525,10 +736,10 @@ function renderAnalysis(analysis) {
     if (analysis.by_detail.length > 0) {
         sections.push(
             "",
-            "| Конкретный источник | Вызовов | Влил | Пересылок | $ |",
+            "| Конкретный источник | Вызовов | Влил | Пересылок | ≈$ |",
             "|---|---:|---:|---:|---:|",
             ...analysis.by_detail.map((entry) =>
-                `| ${entry.detail} | ${formatThousands(entry.calls)} | ${formatTokens(entry.injected)} | ${formatTokens(entry.resent)} | ${formatUsd(entry.usd)} |`
+                `| ${entry.detail} | ${formatThousands(entry.calls)} | ${formatTokens(entry.injected)} | ${formatTokens(entry.resent)} | ${formatEstimatedUsd(entry.estimated_cost_usd)} |`
             )
         );
     }
@@ -537,7 +748,7 @@ function renderAnalysis(analysis) {
         "",
         "*«Влил» — сколько токенов результат добавил в контекст (из измеренного прироста шага). " +
         "«Пересылок» — сколько токенов ушло на повторную отправку этого куска на следующих шагах. " +
-        "Суммы токенов в основной таблице точные; здесь точен и прирост, оценочно только деление прироста между несколькими результатами одного шага.*"
+        "Суммы токенов и кэш в основной таблице точные; вся атрибуция причин и денег в этом блоке эвристическая.*"
     );
     return sections.join("\n");
 }
@@ -545,7 +756,7 @@ function renderAnalysis(analysis) {
 // Token-weighted rates across the models this launch actually used, so the
 // analysis can price re-sends without pretending they all ran on one model.
 // Re-sent context bills as a cache read; a chunk's first appearance bills as
-// a cache write. Null when no model in the launch has a PRICING entry.
+// a cache write. Null when no model in the launch has a catalog entry.
 function blendedRates(byModel) {
     let weight = 0;
     const blend = { input: 0, cached_input: 0, cache_write: 0, output: 0 };
@@ -590,46 +801,49 @@ function adviceForTool(tool) {
     return "Проверить, нужен ли полный ответ этого инструмента — в контексте он останется до конца запуска.";
 }
 
-// Prices the attribution and builds the verdict: where the money went, what
-// of it was pure loss, and one concrete action per item. Every figure here is
-// derived from the same measured tokens as the tables above — nothing is
-// re-estimated at this stage.
+// Estimates attribution cost with blended standard rates. The exact request
+// ledger above is authoritative; causal attribution remains heuristic.
 function priceAnalysis(analysis, result) {
     const rates = blendedRates(result.by_model ?? []);
-    analysis.priced = rates !== null;
+    analysis.accuracy = "inferred";
+    analysis.estimated_priced = rates !== null;
     const charge = (injected, resent) =>
         rates === null ? null : round4((injected * rates.cache_write + resent * rates.cached_input) / 1_000_000);
 
     analysis.per_step = {
-        usd: analysis.requests > 0 ? round4((result.cost_usd ?? 0) / analysis.requests) : 0,
+        estimated_cost_usd: result.cost_usd !== null && analysis.requests > 0
+            ? round4(result.cost_usd / analysis.requests)
+            : null,
         growth: analysis.requests > 0 ? Math.round(analysis.context.growth / analysis.requests) : 0
     };
-    analysis.base.usd = charge(analysis.base.tokens, analysis.base.resent);
-    for (const entry of analysis.by_tool) entry.usd = charge(entry.injected, entry.resent);
-    for (const entry of analysis.by_detail) entry.usd = charge(entry.injected, entry.resent);
-    for (const entry of analysis.repeats) entry.usd = charge(entry.injected, entry.resent);
-    analysis.errors.usd = charge(analysis.errors.injected, analysis.errors.resent);
+    analysis.base.estimated_cost_usd = charge(analysis.base.tokens, analysis.base.resent);
+    for (const entry of analysis.by_tool) entry.estimated_cost_usd = charge(entry.injected, entry.resent);
+    for (const entry of analysis.by_detail) entry.estimated_cost_usd = charge(entry.injected, entry.resent);
+    for (const entry of analysis.repeats) entry.estimated_cost_usd = charge(entry.injected, entry.resent);
+    analysis.errors.estimated_cost_usd = charge(analysis.errors.injected, analysis.errors.resent);
     // Caching new content is unavoidable and costs the write rate once. Only
     // the writes beyond the context the launch actually gained are rebuilds
     // of content that had been cached already; the overpay is that excess at
     // the gap between the write and the read rate. A conservative floor: the
     // baseline charges every new token as if it were cached perfectly.
-    analysis.cache.rebuilt = Math.max(0, analysis.cache.write - analysis.context.growth);
-    analysis.cache.rebuild_overpay_usd =
-        rates === null ? null : round4((analysis.cache.rebuilt * (rates.cache_write - rates.cached_input)) / 1_000_000);
+    analysis.cache.estimated_rebuilt = Math.max(0, analysis.cache.write - analysis.context.growth);
+    analysis.cache.estimated_rebuild_overpay_usd = rates === null
+        ? null
+        : round4((analysis.cache.estimated_rebuilt * (rates.cache_write - rates.cached_input)) / 1_000_000);
 
     // The launch paying most per step, over enough steps to mean something.
     const perLaunch = new Map();
     for (const row of result.by_launch ?? []) {
-        if (!perLaunch.has(row.launch)) perLaunch.set(row.launch, { launch: row.launch, steps: 0, usd: 0 });
+        if (!perLaunch.has(row.launch)) perLaunch.set(row.launch, { launch: row.launch, steps: 0, estimated_cost_usd: 0, unpriced: false });
         const entry = perLaunch.get(row.launch);
         entry.steps += row.steps;
-        entry.usd += row.cost_usd ?? 0;
+        if (row.cost_usd === null) entry.unpriced = true;
+        else entry.estimated_cost_usd += row.cost_usd;
     }
     const ranked = [...perLaunch.values()]
-        .filter((entry) => entry.steps >= 3)
-        .map((entry) => ({ ...entry, per_step: round4(entry.usd / entry.steps) }))
-        .sort((a, b) => b.per_step - a.per_step);
+        .filter((entry) => entry.steps >= 3 && !entry.unpriced)
+        .map((entry) => ({ ...entry, estimated_per_step: round4(entry.estimated_cost_usd / entry.steps) }))
+        .sort((a, b) => b.estimated_per_step - a.estimated_per_step);
     analysis.per_step.by_launch = ranked;
 
     analysis.verdict = buildVerdict(analysis);
@@ -640,13 +854,13 @@ function priceAnalysis(analysis, result) {
 // rebuilt for nothing). Ordered by money where prices exist, by tokens where
 // they do not.
 function buildVerdict(analysis) {
-    const size = (usd, tokens) => (usd === null ? tokens : usd);
+    const size = (estimatedCost, tokens) => (estimatedCost === null ? tokens : estimatedCost);
     const largest = [];
     if (analysis.base.share > 0.15) {
         largest.push({
             key: "base",
             title: "Базовый контекст",
-            usd: analysis.base.usd,
+            estimated_cost_usd: analysis.base.estimated_cost_usd,
             tokens: analysis.base.tokens + analysis.base.resent,
             fact:
                 `${formatTokens(analysis.base.tokens)} на старте` +
@@ -664,7 +878,7 @@ function buildVerdict(analysis) {
         largest.push({
             key: `tool:${entry.tool}`,
             title: entry.tool,
-            usd: entry.usd,
+            estimated_cost_usd: entry.estimated_cost_usd,
             tokens: entry.injected + entry.resent,
             fact:
                 `${formatThousands(entry.calls)} ${plural(entry.calls, "вызов", "вызова", "вызовов")}, ` +
@@ -672,7 +886,7 @@ function buildVerdict(analysis) {
             advice: adviceForTool(entry.tool)
         });
     }
-    largest.sort((a, b) => size(b.usd, b.tokens) - size(a.usd, a.tokens));
+    largest.sort((a, b) => size(b.estimated_cost_usd, b.tokens) - size(a.estimated_cost_usd, a.tokens));
 
     const waste = [];
     for (const entry of analysis.repeats) {
@@ -680,7 +894,7 @@ function buildVerdict(analysis) {
         const share = (entry.calls - 1) / entry.calls;
         waste.push({
             title: entry.detail,
-            usd: entry.usd === null ? null : round4(entry.usd * share),
+            estimated_cost_usd: entry.estimated_cost_usd === null ? null : round4(entry.estimated_cost_usd * share),
             tokens: Math.round((entry.injected + entry.resent) * share),
             fact: `запрошен ${formatThousands(entry.calls)} ${plural(entry.calls, "раз", "раза", "раз")} — лишние ${formatThousands(entry.calls - 1)} вернули то же содержимое`,
             advice: "Держать прочитанное в рабочих заметках вместо повторного чтения."
@@ -689,24 +903,24 @@ function buildVerdict(analysis) {
     if (analysis.errors.calls > 0 && analysis.errors.injected + analysis.errors.resent > 0) {
         waste.push({
             title: "Неудачные вызовы инструментов",
-            usd: analysis.errors.usd,
+            estimated_cost_usd: analysis.errors.estimated_cost_usd,
             tokens: analysis.errors.injected + analysis.errors.resent,
             fact: `${formatThousands(analysis.errors.calls)} ${plural(analysis.errors.calls, "вызов", "вызова", "вызовов")} вернули ошибку, их вывод всё равно осел в контексте`,
             advice: "Ошибка стоит полный шаг и обычно повторяется с ещё большим контекстом — чинить причину, а не повторять вызов."
         });
     }
-    if (analysis.cache.rebuilt > 0 && (analysis.cache.rebuild_overpay_usd ?? 0) > 0) {
+    if (analysis.cache.estimated_rebuilt > 0 && (analysis.cache.estimated_rebuild_overpay_usd ?? 0) > 0) {
         waste.push({
             title: "Перестройка кэша",
-            usd: analysis.cache.rebuild_overpay_usd,
-            tokens: analysis.cache.rebuilt,
+            estimated_cost_usd: analysis.cache.estimated_rebuild_overpay_usd,
+            tokens: analysis.cache.estimated_rebuilt,
             fact:
                 `записей в кэш ${formatTokens(analysis.cache.write)} при приросте контекста ${formatTokens(analysis.context.growth)} — ` +
-                `${formatTokens(analysis.cache.rebuilt)} сверх нового содержимого записаны повторно`,
+                `${formatTokens(analysis.cache.estimated_rebuilt)} сверх нового содержимого записаны повторно`,
             advice: "Кэш перестраивается из-за пауз дольше его TTL между шагами или правок в начале контекста; плотнее идущие шаги платят меньше."
         });
     }
-    waste.sort((a, b) => size(b.usd, b.tokens) - size(a.usd, a.tokens));
+    waste.sort((a, b) => size(b.estimated_cost_usd, b.tokens) - size(a.estimated_cost_usd, a.tokens));
 
     return { largest: largest.slice(0, 4), waste: waste.slice(0, 4) };
 }
@@ -1096,7 +1310,7 @@ function wallTracker() {
     };
 }
 
-function emit(label, span, agents, models, ledger, source, analysis) {
+function emit(label, span, agents, models, ledger, source, analysis, full) {
     const { min, max, active_ms } = span.result();
     if (min === undefined || max === undefined || max < min) failWith("timestamps_missing");
     const result = {
@@ -1118,10 +1332,13 @@ function emit(label, span, agents, models, ledger, source, analysis) {
         result.analysis = analysis;
         rendered.rendered.analysis_block = renderAnalysis(analysis);
     }
-    out({ ...result, ...rendered });
+    // Callers paste rendered strings and comment_html verbatim; the machine
+    // fields have no readers outside tests, so by default they stay out of
+    // the caller's context. full:true (tests/debugging) prints everything.
+    out(full ? { ...result, ...rendered } : { ok: true, label, ...rendered });
 }
 
-async function collectCodex({ sessionId, rootAgentRef, label, analyze, codexRoot, codexArchivedRoot }) {
+async function collectCodex({ sessionId, rootAgentRef, label, analyze, full, codexRoot, codexArchivedRoot }) {
     const sessionScope = rootAgentRef == null;
     const state = { files: [], seen: new Set() };
     await listJsonlFiles(codexRoot ?? join(homedir(), ".codex", "sessions"), state);
@@ -1189,6 +1406,8 @@ async function collectCodex({ sessionId, rootAgentRef, label, analyze, codexRoot
             if (!records.some((record) => JSON.stringify(record).includes(child.id))) failWith("workflow_run_incomplete");
         }
         let activeModel;
+        let reroutedModel;
+        let configuredTier;
         let prev;
         // Exact working time per thread: task_started→task_complete (or
         // turn_aborted) event pairs — the same spans the UI shows as
@@ -1234,6 +1453,17 @@ async function collectCodex({ sessionId, rootAgentRef, label, analyze, codexRoot
                     });
                 }
             }
+            if (record?.type === "event_msg" && payload?.type === "thread_settings_applied") {
+                const appliedTier = payload?.thread_settings?.service_tier;
+                if (isNonEmptyString(appliedTier)) configuredTier = appliedTier;
+            }
+            if (record?.type === "event_msg" && ["model_rerouted", "model/rerouted"].includes(payload?.type)) {
+                const toModel = payload?.to_model ?? payload?.toModel;
+                if (isNonEmptyString(toModel)) {
+                    reroutedModel = toModel;
+                    models.add(toModel);
+                }
+            }
             if (record?.type === "event_msg" && ms !== undefined) {
                 if (payload?.type === "task_started") {
                     if (openTurnStart !== undefined) turnBounds.push([openTurnStart, Math.max(openTurnStart, prevMs ?? openTurnStart)]);
@@ -1251,10 +1481,14 @@ async function collectCodex({ sessionId, rootAgentRef, label, analyze, codexRoot
             if (record?.type === "turn_context" && isNonEmptyString(payload?.model)) {
                 models.add(payload.model);
                 activeModel = payload.model;
+                reroutedModel = undefined;
+                if (isNonEmptyString(payload?.service_tier)) configuredTier = payload.service_tier;
             }
-            if (activeModel !== undefined && ms !== undefined) {
-                if (!modelStamps.has(activeModel)) modelStamps.set(activeModel, []);
-                modelStamps.get(activeModel).push(ms);
+            const requestModel = reroutedModel ?? activeModel;
+            if (requestModel !== undefined && ms !== undefined) {
+                const activityKey = JSON.stringify([requestModel, configuredTier ?? "unknown"]);
+                if (!modelStamps.has(activityKey)) modelStamps.set(activityKey, []);
+                modelStamps.get(activityKey).push(ms);
             }
             if (record?.type === "event_msg" && payload?.type === "token_count" && payload.info?.total_token_usage) {
                 if (analysis) {
@@ -1268,28 +1502,38 @@ async function collectCodex({ sessionId, rootAgentRef, label, analyze, codexRoot
                 }
                 const cur = payload.info.total_token_usage;
                 const now = {
-                    input: cur.input_tokens ?? 0,
-                    cached: cur.cached_input_tokens ?? 0,
-                    output: cur.output_tokens ?? 0
+                    input_tokens: cur.input_tokens ?? 0,
+                    cached_input_tokens: cur.cached_input_tokens ?? 0,
+                    cache_write_input_tokens: cur.cache_write_input_tokens ?? 0,
+                    output_tokens: cur.output_tokens ?? 0
                 };
-                now.total = cur.total_tokens ?? now.input + now.output;
-                // token_count is cumulative per thread: the delta since the
-                // previous event is this request's usage and belongs to the
-                // model active right now. A negative delta means the counter
-                // reset — take the event as a fresh baseline.
+                now.total_tokens = cur.total_tokens ?? now.input_tokens + now.output_tokens;
                 let delta = prev
-                    ? { input: now.input - prev.input, cached: now.cached - prev.cached, output: now.output - prev.output, total: now.total - prev.total }
-                    : now;
-                if (delta.input < 0 || delta.cached < 0 || delta.output < 0 || delta.total < 0) delta = now;
+                    ? Object.fromEntries(Object.keys(now).map((key) => [key, now[key] - prev[key]]))
+                    : { ...now };
+                const reset = Object.values(delta).some((value) => value < 0);
+                if (reset) delta = { ...now };
                 prev = now;
-                // Codex input_tokens include the cached subset; price the two slices apart.
-                ledger.add(
-                    unitLabel,
-                    activeModel,
-                    1,
-                    { input: delta.input, cached_input: delta.cached, output: delta.output, total: delta.total },
-                    { input: Math.max(0, delta.input - delta.cached), cached_input: delta.cached, output: delta.output }
-                );
+                // Repeated cumulative notifications carry no new request.
+                if (Object.values(delta).every((value) => value === 0)) continue;
+
+                const last = payload.info.last_token_usage;
+                const pricingIssues = [];
+                let requestUsage = delta;
+                if (last) {
+                    if (usageEquals(last, delta)) requestUsage = last;
+                    else pricingIssues.push("usage_mismatch");
+                }
+                const normalized = normalizeUsage(requestUsage);
+                if (!normalized.valid) pricingIssues.push("invalid_token_breakdown");
+                if (analysis) analysis.addCache(normalized.tokens.cache_read_input, normalized.tokens.cache_write_input);
+
+                const actualTier = payload.info.actual_service_tier ?? payload.info.service_tier;
+                const serviceTier = isNonEmptyString(actualTier) ? actualTier : configuredTier;
+                ledger.addRequest(unitLabel, requestModel, serviceTier, normalized.tokens, {
+                    actualTierProven: isNonEmptyString(actualTier) || serviceTier === "default",
+                    issues: pricingIssues
+                });
             }
         }
         if (openTurnStart !== undefined && unitMax !== undefined) turnBounds.push([openTurnStart, unitMax]);
@@ -1298,15 +1542,16 @@ async function collectCodex({ sessionId, rootAgentRef, label, analyze, codexRoot
         const unitIntervals = turnBounds.length > 0 ? mergeIntervals(turnBounds) : gapSegments(unitStamps);
         if (turnBounds.length > 0) span.addIntervals(unitIntervals);
         else span.addFallbackStamps(unitStamps);
-        for (const [model, stamps] of modelStamps) {
-            ledger.addWall(unitLabel, model, intervalsLength(clipToIntervals(gapSegments(stamps), unitIntervals)));
+        for (const [activityKey, stamps] of modelStamps) {
+            const [model, serviceTier] = JSON.parse(activityKey);
+            ledger.addWall(unitLabel, model, serviceTier, intervalsLength(clipToIntervals(gapSegments(stamps), unitIntervals)));
         }
         if (analysis) analysis.addUnit(points, events);
     }
-    emit(label, span, selected.size, models, ledger, "codex", analysis?.result() ?? undefined);
+    emit(label, span, selected.size, models, ledger, "codex", analysis?.result() ?? undefined, full);
 }
 
-async function collectClaude({ sessionId, rootAgentRef, label, analyze, claudeProjectsRoot }) {
+async function collectClaude({ sessionId, rootAgentRef, label, analyze, full, claudeProjectsRoot }) {
     // Subagent transcripts live at <projects>/<slug>/<sessionId>/subagents/agent-<agentId>.jsonl;
     // nested subagents are linked through toolUseResult.agentId in the parent's records.
     const sessionScope = rootAgentRef == null;
@@ -1473,7 +1718,7 @@ async function collectClaude({ sessionId, rootAgentRef, label, analyze, claudePr
         if (turnBounds.length > 0) span.addIntervals(unitIntervals);
         else span.addFallbackStamps(unitStamps);
         for (const [model, stamps] of modelStamps) {
-            ledger.addWall(unitLabel, model, intervalsLength(clipToIntervals(gapSegments(stamps), unitIntervals)));
+            ledger.addWall(unitLabel, model, "standard", intervalsLength(clipToIntervals(gapSegments(stamps), unitIntervals)));
         }
         if (analysis) analysis.addUnit(points, events);
         for (const { usage, model } of usageByRequest.values()) {
@@ -1481,18 +1726,30 @@ async function collectClaude({ sessionId, rootAgentRef, label, analyze, claudePr
             const cacheCreate = usage.cache_creation_input_tokens ?? 0;
             const cacheRead = usage.cache_read_input_tokens ?? 0;
             const output = usage.output_tokens ?? 0;
+            const details = usage.cache_creation ?? usage.cache_creation_details ?? {};
+            const fiveMinute = details.ephemeral_5m_input_tokens ?? usage.cache_creation_5m_input_tokens ?? 0;
+            const oneHour = details.ephemeral_1h_input_tokens ?? usage.cache_creation_1h_input_tokens ?? 0;
+            let cacheWriteKind;
+            if (cacheCreate > 0 && fiveMinute + oneHour === cacheCreate) {
+                cacheWriteKind = fiveMinute > 0 && oneHour > 0 ? "mixed" : oneHour > 0 ? "1h" : "5m";
+            }
             if (analysis) analysis.addCache(cacheRead, cacheCreate);
-            // Same shape as Codex: input is the full model input, cache reads included.
-            ledger.add(
-                unitLabel,
-                model,
-                1,
-                { input: input + cacheCreate + cacheRead, cached_input: cacheRead, output, total: input + cacheCreate + cacheRead + output },
-                { input, cache_write: cacheCreate, cached_input: cacheRead, output }
-            );
+            const normalized = normalizeUsage({
+                input_tokens: input + cacheCreate + cacheRead,
+                cached_input_tokens: cacheRead,
+                cache_write_input_tokens: cacheCreate,
+                output_tokens: output,
+                total_tokens: input + cacheCreate + cacheRead + output
+            });
+            ledger.addRequest(unitLabel, model, "standard", normalized.tokens, {
+                actualTierProven: true,
+                cacheWriteKind,
+                cacheWriteBreakdown: { fiveMinute, oneHour },
+                issues: normalized.valid ? [] : ["invalid_token_breakdown"]
+            });
         }
     }
-    emit(label, span, selected.size, models, ledger, "claude", analysis?.result() ?? undefined);
+    emit(label, span, selected.size, models, ledger, "claude", analysis?.result() ?? undefined, full);
 }
 
 async function main() {
@@ -1502,7 +1759,7 @@ async function main() {
     } catch {
         failWith("bad_args");
     }
-    const { runtime, sessionId, rootAgentRef, label, analyze } = args ?? {};
+    const { runtime, sessionId, rootAgentRef, label, analyze, full } = args ?? {};
     // rootAgentRef omitted/null → whole-session scope, where label may also
     // be omitted; an explicitly passed empty value stays a caller bug.
     const sessionScope = rootAgentRef == null;
@@ -1511,11 +1768,13 @@ async function main() {
         !isNonEmptyString(sessionId) ||
         (!sessionScope && !isNonEmptyString(rootAgentRef)) ||
         !(isNonEmptyString(label) || (sessionScope && label == null)) ||
-        !(analyze === undefined || typeof analyze === "boolean")
+        !(analyze === undefined || typeof analyze === "boolean") ||
+        !(full === undefined || typeof full === "boolean")
     ) {
         failWith("bad_args");
     }
     args.analyze = analyze === true;
+    args.full = full === true;
     args.label = isNonEmptyString(label) ? label : "Основная сессия";
     launchLabel = args.label.trim();
     if (runtime === "codex") {
