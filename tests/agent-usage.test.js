@@ -72,7 +72,7 @@ function tokenBreakdown(input, cachedInput, output, cacheWriteInput = 0) {
   };
 }
 
-const TABLE_HEADER = '| Роль | Время | Без кэша | Из кэша | В кэш | Выход | Всего | Шаги | $ токены |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|';
+const TABLE_HEADER = '| Роль | Время | Без кэша | Из кэша | Выход | Всего | Шаги | $ токены |\n|---|---:|---:|---:|---:|---:|---:|---:|';
 
 // --- argument validation ----------------------------------------------------
 
@@ -180,11 +180,11 @@ test('Codex sums the launched thread tree: last cumulative token_count per threa
     }
   ]);
   const rows =
-    '| Разработка<br>*gpt-5.6-terra · default* | 4м 59с | 600 | 400 | 0 | 50 | 1 050 | 2 | 0.00188 |\n' +
-    '| Helper<br>*gpt-5.6-terra · default* | 1м 0с | 300 | 200 | 0 | 30 | 530 | 1 | 0.001 |';
+    '| Разработка<br>*gpt-5.6-terra · default* | 4м 59с | 600 | 400 | 50 | 1 050 | 2 | 0.00188 |\n' +
+    '| Helper<br>*gpt-5.6-terra · default* | 1м 0с | 300 | 200 | 30 | 530 | 1 | 0.001 |';
   // The ИТОГО line uses the launch-level wall time (5м 0с), not the per-model
   // wall sum (5м 59с).
-  const totalRow = '| **ИТОГО** | 5м 0с | 900 | 600 | 0 | 80 | 1 580 | 3 | 0.00288 |';
+  const totalRow = '| **ИТОГО** | 5м 0с | 900 | 600 | 80 | 1 580 | 3 | 0.00288 |';
   assert.deepEqual(result.rendered, {
     block: `Затрачено:\n\n${TABLE_HEADER}\n${rows}\n${totalRow}`,
     table_header: TABLE_HEADER,
@@ -194,8 +194,8 @@ test('Codex sums the launched thread tree: last cumulative token_count per threa
   assert.equal(
     result.comment_html,
     '<p>Метрики Разработка: 5м 0с · шаги 3 · $ токены 0.00288</p>' +
-      '<ul><li><b>Разработка · gpt-5.6-terra · default</b>: 4м 59с · без кэша 600 · из кэша 400 · в кэш 0 · выход 50 · всего 1 050 · шаги 2 · $ токены 0.00188</li>' +
-      '<li><b>Helper · gpt-5.6-terra · default</b>: 1м 0с · без кэша 300 · из кэша 200 · в кэш 0 · выход 30 · всего 530 · шаги 1 · $ токены 0.001</li></ul>'
+      '<ul><li><b>Разработка · gpt-5.6-terra · default</b>: 4м 59с · без кэша 600 · из кэша 400 · выход 50 · всего 1 050 · шаги 2 · $ токены 0.00188</li>' +
+      '<li><b>Helper · gpt-5.6-terra · default</b>: 1м 0с · без кэша 300 · из кэша 200 · выход 30 · всего 530 · шаги 1 · $ токены 0.001</li></ul>'
   );
 });
 
@@ -235,8 +235,8 @@ test('Codex splits a model switch inside one thread by token_count deltas', asyn
   assert.equal(result.cost_usd, 0.00115);
   assert.equal(
     result.rendered.rows,
-    '| Разработка<br>*gpt-5.6-sol · default* | 0м 50с | 100 | 0 | 0 | 10 | 110 | 1 | 0.0006 |\n' +
-      '| Разработка<br>*gpt-5.6-terra · default* | 1м 30с | 150 | 50 | 0 | 20 | 220 | 1 | 0.00055 |'
+    '| Разработка<br>*gpt-5.6-sol · default* | 0м 50с | 100 | 0 | 10 | 110 | 1 | 0.0006 |\n' +
+      '| Разработка<br>*gpt-5.6-terra · default* | 1м 30с | 150 | 50 | 20 | 220 | 1 | 0.00055 |'
   );
 });
 
@@ -400,8 +400,8 @@ test('Codex whole-session scope sums the session rollout and its spawned tree pe
   // The spawned thread rows under its role name (/root/development → Разработка), not the session label.
   assert.equal(
     result.rendered.rows,
-    '| Основная сессия<br>*gpt-5.6-sol · default* | 5м 55с | 900 | 100 | 0 | 100 | 1 100 | 1 | 0.00564 |\n' +
-      '| Разработка<br>*gpt-5.6-terra · default* | 1м 0с | 200 | 0 | 0 | 20 | 220 | 1 | 0.00064 |'
+    '| Основная сессия<br>*gpt-5.6-sol · default* | 5м 55с | 900 | 100 | 100 | 1 100 | 1 | 0.00564 |\n' +
+      '| Разработка<br>*gpt-5.6-terra · default* | 1м 0с | 200 | 0 | 20 | 220 | 1 | 0.00064 |'
   );
 });
 
@@ -469,8 +469,8 @@ test('Claude whole-session scope sums the transcript plus every subagent file pe
   // under the id-prefix placeholder.
   assert.equal(
     result.rendered.rows,
-    '| Основная сессия<br>*claude-fable-5 · standard* | 10м 0с | 1 100 | 200 | 0 | 110 | 1 410 | 2 | 0.0167 |\n' +
-      '| Сабагент orphan<br>*claude-sonnet-5 · standard* | 0м 0с | 50 | 0 | 0 | 5 | 55 | 1 | 0.00015 |'
+    '| Основная сессия<br>*claude-fable-5 · standard* | 10м 0с | 1 100 | 200 | 110 | 1 410 | 2 | 0.0167 |\n' +
+      '| Сабагент orphan<br>*claude-sonnet-5 · standard* | 0м 0с | 50 | 0 | 5 | 55 | 1 | 0.00015 |'
   );
 });
 
@@ -592,19 +592,19 @@ test('Claude splits the report per model with exact per-request attribution', as
   // One table row per model; each row carries that model's own working time.
   assert.equal(
     result.rendered.rows,
-    '| PRD<br>*claude-opus-5 · standard* | 0м 0с | 100 | 0 | 0 | 10 | 110 | 1 | 0.00075 |\n' +
-      '| PRD<br>*claude-sonnet-5 · standard* | 2м 0с | 1 010 | 0 | 0 | 105 | 1 115 | 2 | 0.00307 |'
+    '| PRD<br>*claude-opus-5 · standard* | 0м 0с | 100 | 0 | 10 | 110 | 1 | 0.00075 |\n' +
+      '| PRD<br>*claude-sonnet-5 · standard* | 2м 0с | 1 010 | 0 | 105 | 1 115 | 2 | 0.00307 |'
   );
   assert.equal(
     result.rendered.total_row,
-    '| **ИТОГО** | 2м 0с | 1 110 | 0 | 0 | 115 | 1 225 | 3 | 0.00382 |'
+    '| **ИТОГО** | 2м 0с | 1 110 | 0 | 115 | 1 225 | 3 | 0.00382 |'
   );
   assert.equal(result.rendered.block, `Затрачено:\n\n${TABLE_HEADER}\n${result.rendered.rows}\n${result.rendered.total_row}`);
   assert.equal(
     result.comment_html,
     '<p>Метрики PRD: 2м 0с · шаги 3 · $ токены 0.00382</p><ul>' +
-      '<li><b>PRD · claude-opus-5 · standard</b>: 0м 0с · без кэша 100 · из кэша 0 · в кэш 0 · выход 10 · всего 110 · шаги 1 · $ токены 0.00075</li>' +
-      '<li><b>PRD · claude-sonnet-5 · standard</b>: 2м 0с · без кэша 1 010 · из кэша 0 · в кэш 0 · выход 105 · всего 1 115 · шаги 2 · $ токены 0.00307</li></ul>'
+      '<li><b>PRD · claude-opus-5 · standard</b>: 0м 0с · без кэша 100 · из кэша 0 · выход 10 · всего 110 · шаги 1 · $ токены 0.00075</li>' +
+      '<li><b>PRD · claude-sonnet-5 · standard</b>: 2м 0с · без кэша 1 010 · из кэша 0 · выход 105 · всего 1 115 · шаги 2 · $ токены 0.00307</li></ul>'
   );
 });
 
@@ -741,7 +741,7 @@ test('Codex keeps cumulative tokens but fails pricing closed on last/delta misma
   assert.deepEqual(invalid.pricing.issues.map((issue) => issue.code), ['invalid_token_breakdown']);
 });
 
-test('Codex separates service tiers, requires actual Fast evidence, and honors reroutes', async () => {
+test('Codex separates service tiers, requires actual Fast evidence, prices an unrecorded tier as Standard, and honors reroutes', async () => {
   const first = { input_tokens: 100, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 10, total_tokens: 110 };
   const cumulative = { input_tokens: 200, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 20, total_tokens: 220 };
   const fastStep = codexStep(first, cumulative, '2026-01-01T10:00:04.000Z');
@@ -769,7 +769,8 @@ test('Codex separates service tiers, requires actual Fast evidence, and honors r
   assert.equal(split.cost_usd, 0.0018);
 
   const rerouted = await runCollector({ runtime: 'codex', sessionId: 'reroute', full: true, codexRoot: sessionsRoot, codexArchivedRoot: empty });
-  assert.deepEqual(rerouted.by_launch.filter((row) => row.steps > 0).map((row) => row.model), ['gpt-5.6-terra']);
+  // The pre-reroute model bucket saw wall stamps but no request: dropped.
+  assert.deepEqual(rerouted.by_launch.map((row) => row.model), ['gpt-5.6-terra']);
   assert.equal(rerouted.cost_usd, 0.00032);
 
   const unprovenRoot = await makeLogs({
@@ -790,9 +791,13 @@ test('Codex separates service tiers, requires actual Fast evidence, and honors r
       codexStep(first, first, '2026-01-01T10:00:02.000Z')
     ]
   });
+  // Spawned subagent threads never record a service tier: absence is the
+  // unset default and prices as Standard, not as an unknown override.
   const missingTier = await runCollector({ runtime: 'codex', sessionId: 'missing-tier', full: true, codexRoot: missingTierRoot, codexArchivedRoot: empty });
-  assert.equal(missingTier.cost_usd, null);
-  assert.deepEqual(missingTier.pricing.issues.map((issue) => issue.code), ['missing_service_tier']);
+  assert.equal(missingTier.cost_usd, 0.0006);
+  assert.deepEqual(missingTier.pricing.issues, []);
+  assert.equal(missingTier.pricing.status, 'priced');
+  assert.deepEqual(missingTier.by_launch.map((row) => row.service_tier), ['default']);
 });
 
 test('Claude normalizes cache reads and exact mixed 5m/1h cache writes', async () => {
@@ -893,7 +898,7 @@ test('rendering switches to millions with two decimals at 1 000 000 tokens, outp
   assert.equal(result.steps, 2);
   assert.equal(
     result.rendered.rows,
-    `| Ревью<br>*claude-sonnet-5 · standard* | 12м 34с | 2.00М | 1.24М | 0 | 323 885 | 3.56М | 2 | ${result.cost_usd} |`
+    `| Ревью<br>*claude-sonnet-5 · standard* | 12м 34с | 2.00М | 1.24М | 323 885 | 3.56М | 2 | ${result.cost_usd} |`
   );
   // A one-row table carries no ИТОГО: the total would only repeat the row.
   assert.equal('total_row' in result.rendered, false);

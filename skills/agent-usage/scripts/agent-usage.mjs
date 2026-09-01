@@ -413,9 +413,14 @@ function usageLedger() {
             }
         },
         result() {
+            // A bucket can exist from wall stamps alone (a configured tier or
+            // model stretch that issued no request); without a single request
+            // it is attribution noise, not usage, and never becomes a row.
+            const isEmpty = (entry) => entry.steps === 0 && entry.tokens.total === 0;
             const by_launch = [];
             for (const [launch, models] of perLaunch) {
                 for (const [, entry] of [...models.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+                    if (isEmpty(entry)) continue;
                     const cost = entry.unpriced ? null : nanoToUsd(entry.nano.total);
                     by_launch.push({
                         launch,
@@ -436,6 +441,7 @@ function usageLedger() {
             const aggregate = new Map();
             for (const [, models] of perLaunch) {
                 for (const [, entry] of models) {
+                    if (isEmpty(entry)) continue;
                     if (!aggregate.has(entry.model)) {
                         aggregate.set(entry.model, {
                             model: entry.model, service_tiers: new Set(), wall_seconds: 0, steps: 0,
@@ -507,7 +513,10 @@ function out(value) {
 // «Затрачено» rendering lives here, not in caller prose: digit formatting is
 // deterministic script work — the caller pastes rendered.block (or
 // rendered.rows for a multi-launch table) and warning_line verbatim.
-const TABLE_HEADER = "| Роль | Время | Без кэша | Из кэша | В кэш | Выход | Всего | Шаги | $ токены |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|";
+// Cache writes have no column of their own (Codex logs report them as 0);
+// they stay inside «Всего» — the full total including all cache buckets —
+// and in the exact tokens.cache_write_input machine field.
+const TABLE_HEADER = "| Роль | Время | Без кэша | Из кэша | Выход | Всего | Шаги | $ токены |\n|---|---:|---:|---:|---:|---:|---:|---:|";
 
 let launchLabel = "";
 
@@ -562,7 +571,6 @@ function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd }
                 formatWall(entry.wall_seconds),
                 formatTokens(entry.tokens.uncached_input),
                 formatTokens(entry.tokens.cache_read_input),
-                formatTokens(entry.tokens.cache_write_input),
                 formatThousands(entry.tokens.output),
                 formatTokens(entry.tokens.total),
                 formatThousands(entry.steps),
@@ -585,7 +593,6 @@ function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd }
             formatWall(wall_seconds),
             formatTokens(tokens.uncached_input),
             formatTokens(tokens.cache_read_input),
-            formatTokens(tokens.cache_write_input),
             formatThousands(tokens.output),
             formatTokens(tokens.total),
             formatThousands(steps),
@@ -599,7 +606,6 @@ function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd }
         .map((entry) =>
             `<li><b>${escapeHtml(entry.launch)} · ${escapeHtml(entry.model)} · ${escapeHtml(entry.service_tier)}</b>: ${formatWall(entry.wall_seconds)} · ` +
             `без кэша ${formatTokens(entry.tokens.uncached_input)} · из кэша ${formatTokens(entry.tokens.cache_read_input)} · ` +
-            `в кэш ${formatTokens(entry.tokens.cache_write_input)} · ` +
             `выход ${formatThousands(entry.tokens.output)} · всего ${formatTokens(entry.tokens.total)} · шаги ${formatThousands(entry.steps)}` +
             `${entry.cost_usd === null ? " · тариф не определён" : ` · $ токены ${entry.cost_usd}`}</li>`
         )
@@ -1486,7 +1492,7 @@ async function collectCodex({ sessionId, rootAgentRef, label, analyze, full, cod
             }
             const requestModel = reroutedModel ?? activeModel;
             if (requestModel !== undefined && ms !== undefined) {
-                const activityKey = JSON.stringify([requestModel, configuredTier ?? "unknown"]);
+                const activityKey = JSON.stringify([requestModel, configuredTier ?? "default"]);
                 if (!modelStamps.has(activityKey)) modelStamps.set(activityKey, []);
                 modelStamps.get(activityKey).push(ms);
             }
@@ -1529,7 +1535,11 @@ async function collectCodex({ sessionId, rootAgentRef, label, analyze, full, cod
                 if (analysis) analysis.addCache(normalized.tokens.cache_read_input, normalized.tokens.cache_write_input);
 
                 const actualTier = payload.info.actual_service_tier ?? payload.info.service_tier;
-                const serviceTier = isNonEmptyString(actualTier) ? actualTier : configuredTier;
+                // A thread that never records a tier runs Standard: user
+                // rollouts write service_tier explicitly (even "default"),
+                // while spawned subagent threads omit the field entirely —
+                // absence is the unset default, not an unknown override.
+                const serviceTier = isNonEmptyString(actualTier) ? actualTier : configuredTier ?? "default";
                 ledger.addRequest(unitLabel, requestModel, serviceTier, normalized.tokens, {
                     actualTierProven: isNonEmptyString(actualTier) || serviceTier === "default",
                     issues: pricingIssues

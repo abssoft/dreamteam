@@ -60,7 +60,7 @@ cached_input = cache_read_input
 
 `by_launch` is keyed by launch × model × service tier; `by_model` aggregates rows for the same model and lists its `service_tiers`. Both carry the same token and nullable cost fields. `steps` counts distinct model requests, not log notifications.
 
-The Markdown and HTML tables use `Без кэша | Из кэша | В кэш | Выход`. Their money column is `$ токены`, because this is model-token tariff cost rather than a subscription invoice.
+The Markdown and HTML tables use `Без кэша | Из кэша | Выход`; cache writes carry no column and stay inside `Всего` — the full total including all cache — and in the exact `tokens` fields. The money column is `$ токены`, because this is model-token tariff cost rather than a subscription invoice.
 
 ## Pricing rules
 
@@ -68,7 +68,7 @@ The script contains a versioned, offline catalog with checked-at dates, official
 
 Each request is priced before aggregation using integer nano-USD. Serialization is the first point where values become USD. For OpenAI requests above 272,000 input tokens, the configured long-context multipliers apply to that whole request. Cache write is its own input bucket and is never also counted as uncached input.
 
-Codex tier evidence comes from the latest `thread_settings_applied` before the request. `default` means Standard. A configured `fast`/`priority` request is unpriced unless the usage event proves the actual tier, because Fast may downgrade to Standard. `model_rerouted` and `model/rerouted` move the next request to the reported target model.
+Codex tier evidence comes from the latest `thread_settings_applied` before the request. `default` means Standard, and a thread that never records a tier prices as `default` too — user rollouts write `service_tier` explicitly while spawned subagent threads omit the field, so absence is the unset default, not an unknown override. A configured `fast`/`priority` request is unpriced unless the usage event proves the actual tier, because Fast may downgrade to Standard. `model_rerouted` and `model/rerouted` move the next request to the reported target model.
 
 Pricing is fail-closed. If any request lacks a provable model/tier/tariff, or its usage conflicts, the report-level `token_cost_usd`, `cost_usd`, and `cost_breakdown_usd` are `null`; no partial total is emitted. `pricing.issues` contains machine-readable entries whose `code` is one of `unknown_model`, `missing_service_tier`, `actual_service_tier_unknown`, `tariff_not_found`, `usage_mismatch`, or `invalid_token_breakdown`.
 
