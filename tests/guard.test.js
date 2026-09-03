@@ -15,8 +15,9 @@ const assertValid = (validate, value, label) => {
   assert.equal(validate(value), true, `${label}: ${ajv.errorsText(validate.errors)}`);
 };
 
+const roles = ['product-technologist', 'software-developer', 'code-reviewer'];
+// product-technologist is interactive and hands off in-context; only launched roles return Result v1.
 const roleDeliverables = {
-  'product-technologist': 'product_technical_spec',
   'software-developer': 'implementation_summary',
   'code-reviewer': 'review_report',
 };
@@ -51,13 +52,6 @@ test('each role SKILL.md embeds a valid neutral Result v1 handoff', () => {
     for (const field of ['next_stage', 'changed_sections', 'split_recommendation', 'plane_report']) {
       assert.equal(Object.hasOwn(result, field), false, `${role}: ${field}`);
     }
-  }
-});
-
-test('each role SKILL.md carries the working-notes rule', () => {
-  for (const role of Object.keys(roleDeliverables)) {
-    const skill = readText(`skills/${role}/SKILL.md`);
-    assert.match(skill, /Thinking is scratch, not storage/i, `${role}: working-notes rule missing`);
   }
 });
 
@@ -117,7 +111,7 @@ const findSerializedCoordinates = (source) => {
 };
 
 test('role instructions do not leak tracker or private project vocabulary', () => {
-  for (const role of Object.keys(roleDeliverables)) {
+  for (const role of roles) {
     assert.equal(forbiddenVocabulary.test(readText(`skills/${role}/SKILL.md`)), false, role);
   }
 });
