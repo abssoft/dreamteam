@@ -1,4 +1,4 @@
 interface:
   display_name: "Product Technologist"
-  short_description: "Shape product and technical decisions"
-  default_prompt: "Use $product-technologist for an atomic product and technical assignment."
+  short_description: "Grill the product owner into a PRD"
+  default_prompt: "Use $product-technologist for a PRD interview on the loaded issue."
