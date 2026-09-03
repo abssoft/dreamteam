@@ -8,7 +8,7 @@ It provides three authoritative professional roles:
 - `software-developer`
 - `code-reviewer`
 
-Plus two utility skills roles and wrappers share: `env-snapshot` (one-call workspace environment baseline) and `agent-usage` (manual-only per-launch usage/cost collector for hosting workflows).
+Plus three utility skills roles and wrappers share: `env-snapshot` (one-call workspace environment baseline), `agent-usage` (manual-only per-launch usage/cost collector for hosting workflows), and `changelog` (prints the newest `CHANGELOG.md` entries — what changed in the installed plugin).
 
 ## Architecture
 
