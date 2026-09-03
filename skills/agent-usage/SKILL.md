@@ -5,7 +5,7 @@ description: Manual-only usage collector for one finished agent launch or the wh
 
 # Agent Usage
 
-The bundled collector reads local Codex rollout logs or Claude Code transcripts. It reports one finished launch, or the whole hosting session when `rootAgentRef` is omitted. Hosting workflows and humans call it; roles never do.
+The bundled collector reads local Codex rollout logs or Claude Code transcripts. It reports one finished launch, several finished launches as one table when `launches` is passed, or the whole hosting session when both are omitted. Hosting workflows and humans call it; roles never do.
 
 The main report is a request ledger built from runtime usage. Context attribution under `analysis` is a separate inference and never changes exact token totals or `token_cost_usd`.
 
@@ -24,11 +24,12 @@ Resolve `<plugin_root>` from this skill file's installed location.
 | `runtime` | Required: `"codex"` or `"claude"`. |
 | `sessionId` | Required hosting-session UUID. |
 | `rootAgentRef` | Codex spawned task path/thread id or Claude Task `agentId`. Omit or pass `null` for the session transcript plus all descendants. |
-| `label` | Caller-owned display name. Required for one launch; whole-session default is «Основная сессия». |
+| `launches` | `[{rootAgentRef, label}, …]` — several finished launches of this session rendered as one table with one «ИТОГО», in array order. Labels and refs must be unique: number a repeated stage («Разработка 2»). Passed instead of `rootAgentRef`. |
+| `label` | Caller-owned display name. Required for one launch; the `launches` default is «Прогон», the whole-session default «Основная сессия». |
 | `analyze` | Optional boolean, default `false`. Use `true` only when the request asks for «анализ» or why the context grew. |
 | `full` | Optional boolean, default `false`. Adds the machine-readable fields to stdout. Tests and debugging only — workflows paste rendered strings and never pass it. |
 
-Never add a whole-session report to its own per-launch rows: the session already contains all descendants.
+A run's terminal report is one `launches` call over every launch collected in the run — one table, one «ИТОГО» — never a stack of per-launch blocks, and never rows the caller totals itself. Never add a whole-session report to its own per-launch rows: the session already contains all descendants.
 
 ## Exact output contract
 
@@ -38,9 +39,9 @@ Never add a whole-session report to its own per-launch rows: the session already
 {
   label,
   rendered: {
-    block,           // the «Затрачено» table for one launch
+    block,           // the complete «Затрачено» table for the call's scope
     table_header,
-    rows,            // one line per launch × model × service tier
+    rows,            // one line per launch × model × service tier, launch order
     total_row,       // «ИТОГО»; omitted when the table has a single row
     analysis_block?  // analyze: true only
   },
