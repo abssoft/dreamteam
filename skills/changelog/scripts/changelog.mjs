@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Prints the newest entries of the plugin's bundled CHANGELOG.md, newest first.
-//   --last=N   how many `## [X.Y.Z] - YYYY-MM-DD` entries to print (default 10)
+// Prints the newest rows of the plugin's bundled CHANGELOG.md, newest first.
+//   --last=N   how many `- X.Y.Z — YYYY-MM-DD — …` rows to print (default 10)
 // Read-only: one file read, no git, no network. Exit 1 when CHANGELOG.md is missing.
 
 import { readFileSync } from "node:fs";
@@ -19,14 +19,9 @@ try {
   process.exit(1);
 }
 
-const lines = source.split("\n");
-const starts = lines.flatMap((line, index) => (line.startsWith("## ") ? [index] : []));
-const title = lines.find((line) => line.startsWith("# ")) ?? "# Changelog";
-const shown = starts.slice(0, limit);
-const entries = shown.length === 0
-  ? "(no entries)"
-  : lines.slice(shown[0], starts[limit] ?? lines.length).join("\n").trim();
-const older = starts.length - shown.length;
+const rows = source.split("\n").filter((line) => /^- \d+\.\d+\.\d+ — /.test(line));
+const shown = rows.slice(0, limit);
+const older = rows.length - shown.length;
 const trailer = older > 0 ? `\n\n(ещё ${older} в CHANGELOG.md)` : "";
 
-process.stdout.write(`${title}\n\n${entries}${trailer}\n`);
+process.stdout.write(`${shown.length === 0 ? "(no rows)" : shown.join("\n")}${trailer}\n`);

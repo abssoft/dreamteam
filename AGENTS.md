@@ -5,4 +5,4 @@
 - Keep Dispatcher, tracker, status, branch, and delivery rules in project wrappers.
 - DreamTeam roles must remain tracker-neutral and must not perform mutable Git lifecycle operations.
 - Never commit secrets, private URLs, task identifiers, raw transcripts, or generated caches.
-- Every version bump adds its entry at the top of `CHANGELOG.md` in the form the file's header states; `npm test` fails while the top entry lags `package.json`.
+- Every version bump adds one row per change at the top of `CHANGELOG.md` in the form the file's header states (verb-first, one phrase); `npm test` fails while the top row lags `package.json`.

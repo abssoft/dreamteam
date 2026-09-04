@@ -124,23 +124,23 @@ test('tracked public sources contain no private coordinates', () => {
   assert.deepEqual(violations, []);
 });
 
-const changelogEntry = /^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}$/m;
+const changelogRow = /^- (\d+\.\d+\.\d+) — \d{4}-\d{2}-\d{2} — \S/m;
 
 test('CHANGELOG.md leads with the package version', () => {
-  const heading = readText('CHANGELOG.md').match(changelogEntry);
-  assert.ok(heading, 'CHANGELOG.md: no `## [X.Y.Z] - YYYY-MM-DD` entry');
-  assert.equal(heading[1], readJson('package.json').version, 'CHANGELOG.md: top entry lags package.json — add the release entry');
+  const row = readText('CHANGELOG.md').match(changelogRow);
+  assert.ok(row, 'CHANGELOG.md: no `- X.Y.Z — YYYY-MM-DD — …` row');
+  assert.equal(row[1], readJson('package.json').version, 'CHANGELOG.md: top row lags package.json — add the release row');
 });
 
-test('changelog script prints the newest entries only', () => {
+test('changelog script prints the newest rows only, without headings', () => {
   const output = execFileSync(
     process.execPath,
     ['skills/changelog/scripts/changelog.mjs', '--last=2'],
     { cwd: root, encoding: 'utf8' },
   );
-  const versions = [...output.matchAll(/^## \[(\d+\.\d+\.\d+)\]/gm)].map((match) => match[1]);
+  const versions = [...output.matchAll(/^- (\d+\.\d+\.\d+) — /gm)].map((match) => match[1]);
   assert.equal(versions.length, 2);
   assert.equal(versions[0], readJson('package.json').version);
-  assert.match(output, /^# \S/);
+  assert.doesNotMatch(output, /^#/m);
   assert.match(output, /\(ещё \d+ в CHANGELOG\.md\)\n$/);
 });
