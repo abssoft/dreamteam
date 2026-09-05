@@ -172,10 +172,11 @@ const LIMITS = Object.freeze({
 // Tool-call fees and ChatGPT/Codex subscription billing are deliberately out
 // of scope; the rendered column is therefore named "$ токены".
 const PRICING_CATALOG = Object.freeze({
-    version: "2026-08-29",
-    checked_at: "2026-08-29",
+    version: "2026-09-05",
+    checked_at: "2026-09-05",
     basis: "official_api_model_token_rates",
     sources: Object.freeze([
+        "https://developers.openai.com/api/docs/models/gpt-6-astra",
         "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
         "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
         "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
@@ -183,6 +184,13 @@ const PRICING_CATALOG = Object.freeze({
         "https://platform.claude.com/docs/en/about-claude/pricing"
     ]),
     models: Object.freeze([
+        {
+            key: "gpt-6-astra", provider: "openai", ids: Object.freeze(["gpt-6-astra", "gpt-6"]),
+            snapshot: /^gpt-6-astra-\d{4}-\d{2}-\d{2}$/,
+            standard: Object.freeze({ uncached_input: 10_000, cache_read_input: 1_000, cache_write_input: 12_500, output: 50_000 }),
+            fast_multiplier: 2,
+            long_context: Object.freeze({ threshold: 272_000, input_multiplier: 2, output_multiplier: 1.5 })
+        },
         {
             key: "gpt-5.6-sol", provider: "openai", ids: Object.freeze(["gpt-5.6-sol", "gpt-5.6"]),
             snapshot: /^gpt-5\.6-sol-\d{4}-\d{2}-\d{2}$/,
@@ -201,6 +209,11 @@ const PRICING_CATALOG = Object.freeze({
             snapshot: /^gpt-5\.6-luna-\d{4}-\d{2}-\d{2}$/,
             standard: Object.freeze({ uncached_input: 200, cache_read_input: 20, cache_write_input: 250, output: 1_200 }),
             long_context: Object.freeze({ threshold: 272_000, input_multiplier: 2, output_multiplier: 1.5 })
+        },
+        {
+            key: "claude-fable-5-1", provider: "claude", ids: Object.freeze(["claude-fable-5-1"]),
+            snapshot: /^claude-fable-5-1-\d{8}$/,
+            standard: Object.freeze({ uncached_input: 10_000, cache_read_input: 250, cache_write_5m: 12_500, cache_write_1h: 20_000, output: 50_000 })
         },
         {
             key: "claude-fable-5", provider: "claude", ids: Object.freeze(["claude-fable-5"]),
