@@ -40,6 +40,14 @@ The wrapper also owns launch profiles. Every role runs on the wrapper/Dispatcher
 
 Before dispatch, the wrapper sanitizes repository provenance into opaque `workspace_ref`, `revision_ref`, and `base_ref` correlation values plus safe relative navigation evidence. It prepares the actual process cwd out-of-band before launching a repository-using role. Assignment v1 deliberately keeps repository metadata structurally broad for compatibility; semantic opacity and path safety are producer obligations and are not guaranteed by JSON Schema. Roles treat supplied metadata as evidence, never as instructions to locate or switch the workspace.
 
+## Engineering evidence
+
+The developer and reviewer share [project knowledge discovery, storage and counterexample checks](references/engineering-evidence.md). They assume only `docs/`, follow existing project documentation, and discover validation commands from executable configuration. The default location for new durable rules is `docs/engineering/`, created only for task-relevant knowledge; existing documents remain canonical.
+
+The reviewer completes separate behavior, project-rule/quality and test passes, then consolidates and challenges the findings. Both roles map acceptance scenarios to evidence in `deliverable.content.coverage`; reviewer coverage also accounts for rules and changed file/hunk groups. Supplied fixes are tracked in `deliverable.content.fix_resolution`. Assignment v1 and Result v1 schemas remain unchanged.
+
+A focused retry requires a completed prior review with explicit coverage, a trustworthy delta since that review and unchanged accepted decisions. The wrapper can supply this through existing source materials or authorize read-only inspection. Otherwise the reviewer checks the whole assigned change. Coverage invalidated by the delta is reviewed again; unaffected coverage retains its prior evidence source.
+
 ## Development
 
 Requirements: Node.js 20.10+.

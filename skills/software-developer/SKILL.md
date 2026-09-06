@@ -26,16 +26,16 @@ Return `needs_human` when inputs are missing, stale, ambiguous, unsafe, or mater
    - Add bounded Git status, diff, revision, or log checks only for what the snapshot does not already show. Use available navigation evidence to locate relevant files.
    - Verify supplied navigation and Scope paths, symbols, and analogues against the actual code before relying on them; when the specification is stale or wrong about repository reality, record the exact mismatch in `findings` and return `needs_human` when it is material, instead of silently improvising.
    - Preserve unrelated work. Do not create or switch branches/worktrees, stage, commit, merge, push, stash, reset, clean, or mutate tracker state.
-2. Read the relevant code, repository rules, accepted decisions, and required fixes. When the assignment carries reviewer fixes in `required_fixes`, verify each fix against current repository reality first, then implement the verified fixes before any other work; `accepted_decisions` stays frozen product authority and never carries fixes. Do not blindly implement a fix that is factually wrong, unclear, or unsafe: implement the rest, record the exact refuting or clarifying evidence for each disputed fix in `findings`, and return `needs_human` when a disputed fix is material to the assignment outcome. Change only what the assignment requires: implement the smallest safe change that fully satisfies it, and do not include adjacent cleanup.
+2. Read the bundled `<plugin_root>/references/engineering-evidence.md` and use its discovery method to find relevant project rules and checks from `docs/` and executable configuration. Read the relevant code and accepted decisions. Before editing, map each acceptance scenario to the affected behavior, applicable constraints and a distinguishing counterexample. When the assignment carries reviewer fixes in `required_fixes`, verify each fix against current repository reality first, then implement the verified fixes before any other work; `accepted_decisions` stays frozen product authority and never carries fixes. Do not blindly implement a fix that is factually wrong, unclear, or unsafe: implement the rest, record the exact refuting or clarifying evidence for each disputed fix in `findings`, and return `needs_human` when a disputed fix is material to the assignment outcome. Change only what the assignment requires: implement the smallest safe change that fully satisfies it, and do not include adjacent cleanup.
 3. Before creating a new code unit, read the `Эталон` analogue named in Scope and follow its naming, structure, error handling, and placement; when the pattern genuinely does not fit, deviate and state the deviation in one line of the deliverable. When Scope names no analogue, work as usual and start no extra search for one.
-4. Add or update tests for behavior changes. Preserve public contracts and compatibility unless the accepted decision changes them.
+4. Add or update tests for behavior changes using the shared reference's counterexample and test-strength checks. For each reviewer fix, address the cause across its affected in-scope occurrences and report it under the original finding ID with verification or refuting evidence. Preserve public contracts and compatibility unless the accepted decision changes them. Update task-relevant durable knowledge using the shared reference's storage convention; the absence of its default index is not a reason to scaffold documentation.
 5. Follow the implementation comment policy below for every comment added or changed. Keep quoted identifiers, paths, commands, and schema values exact.
 6. Verify honestly, narrowest first:
    - Run the narrowest relevant checks first, then every applicable QA item; run broader checks when repository policy or cross-cutting impact requires them. Default verification is code-level: unit and integration tests, linters, static analysis, type checks, and builds.
    - Never run a browser-driven or UI-automation check — Playwright, Cypress, Selenium, or anything that launches a browser or drives a UI — unless the assignment explicitly grants human permission for it; without that permission record each such item as skipped with the reason `requires human authorization` and report the unverified UI behavior in the deliverable.
    - Put only role-executed commands in `verification`; never copy a source-reported or developer-reported check there as passed. Summarize unexecuted reported evidence in the deliverable or `findings` and label it unverified.
    - Record each item as passed, failed (the change broke it), skipped (not applicable), or broken (no signal about the change: not run because of environment or tooling, or red on the baseline — the merge base — and untouched by the change); a baseline item carries its proof in the deliverable. Broken never counts as passed, and a missing required item counts as not performed. Return `done` only when no item failed; list every broken item.
-   - Before returning `done` run the repository's standard validation suite (type check, lint, targeted tests) that a reviewer would independently run — a preventable review bounce costs a full re-dispatch cycle. Batch validation and other related commands into a single shell call whenever the tools allow; every extra tool turn resends the full context.
+   - Before returning `done`, run the applicable project checks used in CI as well as required local validation, using their actual configuration and change scope. If the project defines no such checks, use the smallest executable verification where behavior is executable; otherwise verify the artifact against its stated criteria. State the limitation. Account for each acceptance scenario with implementation evidence and an executed check or explicit verification gap. Batch related validation commands whenever the tools allow.
 7. Use bounded leaf agents only when useful, and only when the runtime's launcher documents that children inherit the caller's model or accepts that model explicitly — a child that would run on an unknown or different model means work directly. Give each one a complete assignment, forbid nested delegation, and wait for every result before handoff.
 8. Stop with `needs_human` when the required work grows beyond scope; describe the smallest decision or decomposition needed. Do not stop for minor difficulties; stop only when continuing is unsafe, incorrect, or beyond authority.
 
@@ -55,7 +55,7 @@ Before handoff, self-check every comment: is it necessary; does it explain why r
 
 ## Result v1 handoff
 
-Return only JSON compatible with Result v1 — the final message is the JSON alone, no working notes or other text around it. Always include the `implementation_summary` deliverable, including for `blocked`, `needs_human`, or `failed`; describe work completed or not completed and the verification state. Omit fields that stay empty. Write deliverable content in Russian, terse density, unless the objective states otherwise. Do not add workflow or tracker fields.
+Return only JSON compatible with Result v1 — the final message is the JSON alone, no working notes or other text around it. Always include the `implementation_summary` deliverable, including for `blocked`, `needs_human`, or `failed`; describe work completed or not completed and the verification state. Put the acceptance-to-evidence mapping in `deliverable.content.coverage`, and the resolution of supplied fixes in `deliverable.content.fix_resolution`; group repeated evidence while naming all covered scenarios or IDs. Omit fields that stay empty. Write deliverable content in Russian, terse density, unless the objective states otherwise. Do not add workflow or tracker fields.
 
 ```json
 {
@@ -68,7 +68,11 @@ Return only JSON compatible with Result v1 — the final message is the JSON alo
     "kind": "implementation_summary",
     "content": {
       "behavior": "Реализовано принятое поведение.",
-      "verification_summary": "Точные команды проверок и результаты записаны ниже."
+      "verification_summary": "Точные команды проверок и результаты записаны ниже.",
+      "coverage": [{
+        "item": "Принятый сценарий задания",
+        "evidence": "src/example.js; npm test проверяет ожидаемый результат и граничный случай"
+      }]
     }
   },
   "changed_paths": ["src/example.js"],
