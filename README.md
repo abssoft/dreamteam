@@ -28,7 +28,7 @@ DreamTeam role
 project wrapper translates result -> tracker-specific publication/state transition
 ```
 
-`product-technologist` is the interactive exception: it runs inside the wrapper's process, without Assignment v1 or Result v1. The wrapper loads the issue material, states a brief (the target or the fields for a new issue, the user's words, whether a document exists, the repository root), and invokes the skill; the role interviews the human round by round, researches the repository through read-only children, and finishes with the document and the issue title in-context. The wrapper persists both and moves the state.
+`product-technologist` is the interactive exception: it runs inside the wrapper's process, without Assignment v1 or Result v1. The wrapper loads the issue material, states a brief (the target or the fields for a new issue, the user's words, whether a document exists, the repository root), and invokes the skill; the role interviews the human round by round, researches the repository through read-only children, and finishes with the document, the issue title, and the list of mockup files in-context. The wrapper persists the document and the title, attaches the mockups to the issue, and moves the state.
 
 DreamTeam role skills and the public Assignment v1 / Result v1 contracts are the sole source of professional behavior. Project wrappers supply assignments and translate results, but do not supply source prompts or redefine role judgment. Tracker adapters, project identifiers, statuses, publication schemas, and Git delivery policy remain wrapper-owned. DreamTeam roles receive a bounded assignment and return a neutral Result v1; they do not write tracker artifacts or perform mutable Git lifecycle operations.
 

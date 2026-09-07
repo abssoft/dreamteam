@@ -1,7 +1,7 @@
 # DreamTeam repository rules
 
 - DreamTeam role skills and the public Assignment v1 / Result v1 contracts are the source of truth for professional behavior.
-- `product-technologist` is interactive: it runs inside the wrapper's process without the Assignment v1 / Result v1 envelope and hands off the document and title in-context; the wrapper persists them.
+- `product-technologist` is interactive: it runs inside the wrapper's process without the Assignment v1 / Result v1 envelope and hands off the document, the title, and the mockup file list in-context; the wrapper persists them and attaches the mockups to the issue.
 - Keep Dispatcher, tracker, status, branch, and delivery rules in project wrappers.
 - DreamTeam roles must remain tracker-neutral and must not perform mutable Git lifecycle operations.
 - Never commit secrets, private URLs, task identifiers, raw transcripts, or generated caches.
