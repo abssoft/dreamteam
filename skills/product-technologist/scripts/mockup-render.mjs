@@ -22,7 +22,8 @@
 //               code: file_missing | unsupported_type |
 //               renderer_unavailable | render_failed | render_timeout |
 //               copy_failed. A colliding output name gets a -2, -3 suffix.
-//   ok:false → {ok, code}: bad_args | out_dir_error | render_error
+//   ok:false → {ok, code, detail?}: bad_args | out_dir_error | render_error
+//               (detail carries the unexpected error text)
 // A listed <stem>.html whose sibling <stem>-preview.html exists renders the
 // sibling — the standalone page a visualization host generates around a
 // fragment — and still names the output <stem>.png.
@@ -258,16 +259,28 @@ function launchChrome(path, timeoutMs) {
     waiters.push({ method, sessionId, resolve: resolvePromise, reject, timer });
   });
 
+  // Chrome keeps writing its profile until the process is gone, so the
+  // directory is removed only after the exit — with retries, and a leftover
+  // temp profile is never a render failure.
   const close = async () => {
     if (!exited) {
+      const gone = new Promise((r) => child.once("exit", r));
       try {
         await Promise.race([send("Browser.close"), new Promise((r) => setTimeout(r, 2000))]);
       } catch {
         // closing anyway
       }
-      if (!exited) child.kill("SIGKILL");
+      await Promise.race([gone, new Promise((r) => setTimeout(r, 3000))]);
+      if (!exited) {
+        child.kill("SIGKILL");
+        await Promise.race([gone, new Promise((r) => setTimeout(r, 2000))]);
+      }
     }
-    rmSync(profile, { recursive: true, force: true });
+    try {
+      rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch {
+      // temp profile left behind — harmless
+    }
   };
 
   return { send, waitEvent, close };
@@ -546,4 +559,4 @@ async function main() {
   out({ ok: true, renderer, out_dir: options.outDir, items: report });
 }
 
-main().catch(() => out({ ok: false, code: "render_error" }));
+main().catch((error) => out({ ok: false, code: "render_error", detail: String(error?.stack ?? error?.message ?? error).slice(0, 400) }));
