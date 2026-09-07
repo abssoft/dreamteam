@@ -1,9 +1,17 @@
 {
   "name": "dream-team",
-  "version": "4.6.1",
+  "version": "4.7.0",
   "description": "Tracker-neutral professional skills for project-owned SDLC workflows.",
-  "author": {"name": "DreamTeam"},
-  "keywords": ["sdlc", "workflow", "product", "development", "review"],
+  "author": {
+    "name": "DreamTeam"
+  },
+  "keywords": [
+    "sdlc",
+    "workflow",
+    "product",
+    "development",
+    "review"
+  ],
   "skills": "./skills/",
   "interface": {
     "displayName": "DreamTeam",
@@ -11,7 +19,10 @@
     "longDescription": "A project-neutral team of product, development, review, and documentation professionals launched by a project-owned Dispatcher.",
     "developerName": "DreamTeam",
     "category": "Developer Tools",
-    "capabilities": ["Read", "Write"],
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
     "defaultPrompt": [
       "Use DreamTeam role skills from a project Dispatcher.",
       "Use a DreamTeam professional for this bounded assignment."
