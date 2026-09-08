@@ -23,8 +23,16 @@ const roleDeliverables = {
 };
 
 test('contract examples validate against their schemas', () => {
-  assertValid(validateAssignment, readJson('contracts/examples/assignment.json'), 'assignment example');
-  assertValid(validateResult, readJson('contracts/examples/result.json'), 'result example');
+  const examples = fs.readdirSync(path.join(root, 'contracts/examples')).sort();
+  assert.deepEqual(examples, ['assignment-review.json', 'assignment.json', 'result-review.json', 'result.json']);
+  for (const file of examples) {
+    const validate = file.startsWith('assignment') ? validateAssignment : validateResult;
+    assertValid(validate, readJson(`contracts/examples/${file}`), file);
+  }
+  const review = readJson('contracts/examples/assignment-review.json');
+  assert.equal(review.role, 'code-reviewer');
+  assert.equal(typeof review.repository.base_ref, 'string');
+  assert.ok(review.source_materials.some((item) => item.kind === 'text' && item.name === 'issue'));
 });
 
 test('published plugin manifests use the package version', () => {

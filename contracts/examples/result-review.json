@@ -1,0 +1,43 @@
+{
+  "contract_version": 1,
+  "assignment_id": "assignment-9c4d1e",
+  "role": "code-reviewer",
+  "status": "done",
+  "summary": "Independent review completed: one required fix.",
+  "deliverable": {
+    "kind": "review_report",
+    "content": {
+      "verdict": "Fix B1 is required; the rest matches the accepted decisions.",
+      "lenses": {
+        "behavior": "Completed over every changed file and scenario.",
+        "design": "Completed over every changed file.",
+        "comments": "Completed over every added comment."
+      },
+      "lenses_mode": "in_context",
+      "coverage": [{
+        "item": "Accepted scenario: an empty order sums to zero; src/example.js; test/example.test.js",
+        "status": "reviewed",
+        "evidence": "Every hunk read; npm test confirms the expected result and the boundary case."
+      }]
+    }
+  },
+  "verification": [{
+    "command": "npm test",
+    "status": "passed",
+    "evidence": "all relevant tests passed"
+  }],
+  "findings": [{
+    "id": "B1",
+    "severity": "P1",
+    "category": "correctness",
+    "path": "src/example.js",
+    "line": 12,
+    "problem": "The loop skips the last item.",
+    "impact": "The order total is short by the last item.",
+    "evidence": "src/example.js:12 bounds the loop one short; the test covers only the empty list.",
+    "scenario": "Two items of 10 give 10 instead of 20.",
+    "fix": "Bound the loop by length; add a two-item test.",
+    "confidence": "confirmed"
+  }],
+  "required_fixes": ["B1: bound the loop in src/example.js:12 by length; add a two-item test."]
+}

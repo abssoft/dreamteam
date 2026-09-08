@@ -1,0 +1,35 @@
+{
+  "contract_version": 1,
+  "assignment_id": "assignment-9c4d1e",
+  "role": "code-reviewer",
+  "objective": "Independent review of the bounded change",
+  "scope": {
+    "included": ["the committed change on the task branch"],
+    "excluded": ["unrelated files"]
+  },
+  "repository": {
+    "base_ref": "main",
+    "navigation": [{
+      "path": "src/example.js",
+      "purpose": "changed module",
+      "evidence": "Changed path from the accepted implementation result."
+    }],
+    "implementation_evidence": {
+      "changed_paths": ["src/example.js", "test/example.test.js"],
+      "verification_summary": "developer reported: npm test passed"
+    }
+  },
+  "verification": ["npm test"],
+  "accepted_decisions": ["Keep the change bounded to the approved behavior."],
+  "source_materials": [{
+    "kind": "text",
+    "name": "issue",
+    "content": "Sum the order totals; an empty order sums to zero.",
+    "provenance": "tracker issue text"
+  }, {
+    "kind": "text",
+    "name": "parent_issue",
+    "content": "Order totals across the checkout flow.",
+    "provenance": "tracker parent issue text"
+  }]
+}
