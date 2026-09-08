@@ -18,8 +18,8 @@
   "accepted_decisions": ["Keep the change bounded to the approved behavior."],
   "source_materials": [{
     "kind": "text",
-    "name": "approved specification",
+    "name": "issue",
     "content": "Implement the approved bounded change.",
-    "provenance": "project wrapper"
+    "provenance": "tracker issue text"
   }]
 }

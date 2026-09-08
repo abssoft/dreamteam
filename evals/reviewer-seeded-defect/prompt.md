@@ -16,22 +16,47 @@ allowed_tools: ["Skill", "Bash", "Read", "Grep", "Glob"]
   "role": "code-reviewer",
   "objective": "Независимое ревью изменения: модуль суммирования позиций заказа",
   "scope": {
-    "included": ["src/totals.mjs", "test/totals.test.mjs"],
-    "excluded": ["всё остальное"]
+    "included": [
+      "src/totals.mjs",
+      "test/totals.test.mjs"
+    ],
+    "excluded": [
+      "всё остальное"
+    ]
   },
-  "verification": ["npm test"],
+  "verification": [
+    "npm test"
+  ],
   "accepted_decisions": [
     "Функция sumTotals возвращает сумму поля amount всех позиций переданного списка; пустой список даёт ноль."
   ],
   "repository": {
     "navigation": [
-      {"path": "src/totals.mjs", "reason": "новый модуль из диффа"},
-      {"path": "test/totals.test.mjs", "reason": "тест из диффа"}
+      {
+        "path": "src/totals.mjs",
+        "reason": "новый модуль из диффа"
+      },
+      {
+        "path": "test/totals.test.mjs",
+        "reason": "тест из диффа"
+      }
     ],
     "implementation_evidence": {
-      "changed_paths": ["src/totals.mjs", "test/totals.test.mjs"],
+      "changed_paths": [
+        "src/totals.mjs",
+        "test/totals.test.mjs"
+      ],
       "verification_summary": "разработчик сообщил: npm test прошёл"
+    },
+    "base_ref": "main"
+  },
+  "source_materials": [
+    {
+      "kind": "text",
+      "name": "issue",
+      "content": "Независимое ревью изменения: модуль суммирования позиций заказа. Функция sumTotals возвращает сумму поля amount всех позиций переданного списка; пустой список даёт ноль.",
+      "provenance": "текст задачи из трекера"
     }
-  }
+  ]
 }
 ```

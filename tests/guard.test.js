@@ -33,6 +33,14 @@ test('contract examples validate against their schemas', () => {
   assert.equal(review.role, 'code-reviewer');
   assert.equal(typeof review.repository.base_ref, 'string');
   assert.ok(review.source_materials.some((item) => item.kind === 'text' && item.name === 'issue'));
+  for (const file of ['assignment.json', 'assignment-review.json']) {
+    const output = execFileSync(
+      process.execPath,
+      ['contracts/validate-assignment.mjs', '--assignment', `contracts/examples/${file}`],
+      { cwd: root, encoding: 'utf8' },
+    );
+    assert.equal(JSON.parse(output).ok, true, `${file}: ${output}`);
+  }
 });
 
 test('published plugin manifests use the package version', () => {
