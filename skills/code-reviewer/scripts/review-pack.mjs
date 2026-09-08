@@ -3,9 +3,9 @@
 // review reads before any plan — the assignment, the task text, the whole
 // diff against the base the wrapper named, the shared engineering method,
 // the project rules, risk signals and the environment baseline (the sibling
-// env-snapshot, spawned here).
-// Read-only, zero dependencies. The pack lands outside the repository so the
-// reviewed tree stays clean; stdout carries one JSON line the parent steers by.
+// env-snapshot, spawned here). Read-only, zero dependencies. The pack lands
+// outside the repository so the reviewed tree stays clean; stdout carries one
+// JSON line the parent steers by.
 //
 // Input: --assignment -    Assignment v1 JSON on stdin (or --assignment <path>)
 //   --base <ref>           comparison base; default repository.base_ref
@@ -13,13 +13,22 @@
 //   --lines <n>            in_context threshold on changed lines, default 100
 //   --out <path>           pack file; default <tmpdir>/review-pack-<assignment_id>.md
 //   --skip=<sections>      passed through to env-snapshot (rules,docs,git,runtime,tooling)
+//   --check                wrapper pre-launch gate: validate the packet strictly,
+//                          resolve the base and the diff, write nothing
 //   --usage                print this contract as prose
 // Output: one JSON line; exit 0 on ok:true, exit 1 on ok:false.
 //   ok:true  → {ok, pack, base, head, files, changed_lines, test_files,
 //               risk_hits: [{path, line, match}], mode: "children"|"in_context",
-//               diff_context, truncations: [text], pack_chars}
-//   ok:false → {ok, code, detail?}: bad_args | missing_base_ref | missing_issue |
-//               not_a_git_repository | base_ref_not_found | empty_diff | pack_write_failed
+//               diff_context, truncations: [text], warnings: [text], pack_chars}
+//               (--check: {ok, check: true, base, head, files, changed_lines,
+//               test_files, risk_hits, mode, issue_chars, warnings})
+//   ok:false → {ok, code, detail?}: bad_args | bad_packet (--check only; detail
+//               lists every problem) | missing_base_ref | missing_issue |
+//               not_a_git_repository | base_ref_not_found | empty_diff |
+//               pack_write_failed
+// Task text: the source_materials entry named `issue` (a subtask also
+// `parent_issue`) is read inline when it is text, or from the file its content
+// names when the wrapper wrote the tracker text to disk (attachment_reference).
 // The diff is `git diff` from the merge base of <base> and HEAD (the three-dot
 // range), at the widest context of 10, 6, 3 or 0 lines that fits the budget;
 // a diff that does not fit even at 0 is cut and the files after the cut are
@@ -29,7 +38,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DEFAULTS = Object.freeze({ budget: 150000, lines: 100 });
@@ -38,10 +47,14 @@ const RULES_RESERVE = 20000;
 const DIFF_FLOOR_SHARE = 0.4;
 const RISK_HIT_CAP = 40;
 const DOCS_LIST_CAP = 150;
+const SHORT_ISSUE_CHARS = 300;
 const RULES_INDEX = "docs/engineering/README.md";
-const METHOD_REFERENCE = ["..", "..", "..", "references", "engineering-evidence.md"];
 const RULES_DIR = "docs/engineering/rules";
+const METHOD_REFERENCE = ["..", "..", "..", "references", "engineering-evidence.md"];
 const GIT_MAX_BUFFER = 256 * 1024 * 1024;
+const PACKET_FIELDS = ["contract_version", "assignment_id", "role", "objective", "scope", "repository", "verification", "required_fixes", "accepted_decisions", "source_materials"];
+const MATERIAL_FIELDS = ["kind", "name", "content", "provenance"];
+const MATERIAL_KINDS = ["text", "repository_evidence", "attachment_reference"];
 // Signals that raise the review to children mode and the security escalation:
 // access control, secrets, cryptography, injection surfaces, uploads,
 // deserialization, migrations and destructive data operations, in the
@@ -57,17 +70,22 @@ branch). Pipe the Assignment v1 JSON on stdin:
   JSON
 Flags: --base <ref> (default repository.base_ref), --budget <chars> (150000),
 --lines <n> (in_context threshold, 100), --out <path> (pack file, default under
-the OS temp dir), --skip=<sections> (passed to env-snapshot), --usage.
-Requires repository.base_ref (or --base) and a source_materials entry
-{kind: text, name: issue}; a subtask also carries name: parent_issue.
+the OS temp dir), --skip=<sections> (passed to env-snapshot), --check (wrapper
+pre-launch gate: strict packet validation, base and diff resolution, nothing
+written), --usage.
+Requires repository.base_ref (or --base) and a source_materials entry named
+issue carrying the task text inline (kind text) or as a file path the wrapper
+wrote (kind attachment_reference); a subtask also carries name parent_issue.
 Pack sections, in order: attention (cuts and notes), signals, scope, decisions,
 issue, parent_issue, materials, repository, method (the shared engineering
 reference), rules, env, files, diff.
 Output: one JSON line {ok, pack, base, head, files, changed_lines, test_files,
 risk_hits[{path,line,match}], mode children|in_context, diff_context,
-truncations[], pack_chars}; ok:false codes: bad_args | missing_base_ref |
-missing_issue | not_a_git_repository | base_ref_not_found | empty_diff |
-pack_write_failed. Exit 1 on ok:false.
+truncations[], warnings[], pack_chars}; --check returns {ok, check, base, head,
+files, changed_lines, test_files, risk_hits, mode, issue_chars, warnings}.
+ok:false codes: bad_args | bad_packet (--check; detail lists the problems) |
+missing_base_ref | missing_issue | not_a_git_repository | base_ref_not_found |
+empty_diff | pack_write_failed. Exit 1 on ok:false.
 `;
 
 function out(value) {
@@ -80,7 +98,7 @@ function fail(code, detail) {
 }
 
 function parseArgs(argv) {
-  const opts = { assignment: null, base: null, budget: DEFAULTS.budget, lines: DEFAULTS.lines, out: null, skip: null };
+  const opts = { assignment: null, base: null, budget: DEFAULTS.budget, lines: DEFAULTS.lines, out: null, skip: null, check: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = () => { i += 1; return argv[i]; };
@@ -90,6 +108,7 @@ function parseArgs(argv) {
     else if (arg === "--budget") opts.budget = Number(next());
     else if (arg === "--lines") opts.lines = Number(next());
     else if (arg === "--out") opts.out = next();
+    else if (arg === "--check") opts.check = true;
     else if (arg.startsWith("--skip=")) opts.skip = arg;
     else return { error: `unknown argument ${arg}` };
   }
@@ -125,11 +144,63 @@ function readAssignment(source) {
 }
 
 const isText = (value) => typeof value === "string" && value.trim() !== "";
-const asList = (value) => (Array.isArray(value) ? value.filter(isText) : []);
+const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+// A wrapper that hands one string where the contract says a list meant one item.
+const asList = (value) => (Array.isArray(value) ? value.filter(isText) : isText(value) ? [value] : []);
 
+// A material is found by name; `kind` decides only whether the content is the
+// text itself or the path of the file the wrapper wrote it to. A wrapper that
+// dropped `kind` still names the material, so the content decides.
 function material(assignment, name) {
   if (!Array.isArray(assignment.source_materials)) return null;
-  return assignment.source_materials.find((item) => item && item.kind === "text" && item.name === name && isText(item.content)) ?? null;
+  const item = assignment.source_materials.find((entry) => isPlainObject(entry) && entry.name === name && isText(entry.content));
+  if (!item) return null;
+  const content = String(item.content);
+  const found = { name, provenance: isText(item.provenance) ? item.provenance : "", text: null, path: null };
+  const asFile = item.kind === "attachment_reference" || (item.kind !== "text" && isAbsolute(content.trim()) && existsSync(content.trim()));
+  if (!asFile) return { ...found, text: content };
+  found.path = content.trim();
+  try {
+    found.text = readFileSync(found.path, "utf8");
+  } catch {
+    found.error = `file not readable: ${found.path}`;
+  }
+  return found;
+}
+
+// Strict shape of Assignment v1 for the wrapper's pre-launch gate; the role
+// itself stays lenient so a review is never lost to a slip the pack survives.
+function packetProblems(assignment) {
+  const problems = [];
+  for (const key of Object.keys(assignment)) if (!PACKET_FIELDS.includes(key)) problems.push(`unknown field ${key}`);
+  if (assignment.contract_version !== 1) problems.push("contract_version must be 1");
+  if (!isText(assignment.assignment_id)) problems.push("assignment_id missing");
+  if (assignment.role !== "code-reviewer") problems.push(`role must be code-reviewer, got ${JSON.stringify(assignment.role ?? null)}`);
+  if (!isText(assignment.objective)) problems.push("objective missing");
+  const scope = assignment.scope;
+  if (!isPlainObject(scope) || !Array.isArray(scope.included) || !Array.isArray(scope.excluded)) {
+    problems.push("scope.included and scope.excluded must be arrays");
+  }
+  for (const key of ["verification", "required_fixes", "accepted_decisions"]) {
+    const value = assignment[key];
+    if (value !== undefined && !(Array.isArray(value) && value.every(isText))) problems.push(`${key} must be an array of strings`);
+  }
+  if (assignment.repository !== undefined && !isPlainObject(assignment.repository)) problems.push("repository must be an object");
+  if (!isText(assignment.repository?.base_ref)) problems.push("repository.base_ref missing");
+  const materials = assignment.source_materials;
+  if (materials !== undefined && !Array.isArray(materials)) problems.push("source_materials must be an array");
+  for (const [index, item] of (Array.isArray(materials) ? materials : []).entries()) {
+    const label = `source_materials[${index}] (${isPlainObject(item) && isText(item.name) ? item.name : "unnamed"})`;
+    if (!isPlainObject(item)) { problems.push(`${label} must be an object`); continue; }
+    if (!MATERIAL_KINDS.includes(item.kind)) problems.push(`${label}: kind must be ${MATERIAL_KINDS.join(" | ")}`);
+    if (!isText(item.content)) problems.push(`${label}: content missing`);
+    if (!isText(item.provenance)) problems.push(`${label}: provenance missing`);
+    for (const key of Object.keys(item)) if (!MATERIAL_FIELDS.includes(key)) problems.push(`${label}: unknown field ${key}`);
+  }
+  if (!(Array.isArray(materials) && materials.some((item) => isPlainObject(item) && item.name === "issue"))) {
+    problems.push("source_materials entry named issue missing");
+  }
+  return problems;
 }
 
 // A closing tag inside author content would close the section early.
@@ -247,7 +318,7 @@ function envSnapshot(cwd, skip) {
 function renderMaterials(items) {
   const parts = [];
   for (const item of items) {
-    if (!item || typeof item !== "object") continue;
+    if (!isPlainObject(item)) continue;
     const head = `### ${item.name ?? "(unnamed)"} (${item.kind ?? "?"}; ${item.provenance ?? "provenance unknown"})`;
     if (item.kind === "attachment_reference") parts.push(`${head}\nfile: ${item.content}`);
     else parts.push(`${head}\n${item.content ?? ""}`);
@@ -262,13 +333,19 @@ function main() {
 
   const assignment = readAssignment(opts.assignment);
   if (!assignment || !isText(assignment.assignment_id)) fail("bad_args", "assignment JSON with assignment_id is required");
+  if (opts.check) {
+    const problems = packetProblems(assignment);
+    if (problems.length > 0) fail("bad_packet", problems);
+  }
 
-  const repository = assignment.repository && typeof assignment.repository === "object" ? assignment.repository : {};
+  const repository = isPlainObject(assignment.repository) ? assignment.repository : {};
   const base = opts.base ?? (isText(repository.base_ref) ? repository.base_ref.trim() : null);
   if (!base) fail("missing_base_ref");
 
   const issue = material(assignment, "issue");
   if (!issue) fail("missing_issue");
+  if (issue.error) fail("missing_issue", issue.error);
+  if (!isText(issue.text)) fail("missing_issue", issue.path ? `empty file: ${issue.path}` : "empty content");
   const parent = material(assignment, "parent_issue");
 
   const cwd = process.cwd();
@@ -289,6 +366,20 @@ function main() {
   const mode = lines <= opts.lines && hits.length === 0 ? "in_context" : "children";
   const head = git(["rev-parse", "--short", "HEAD"], cwd);
 
+  const warnings = [];
+  const issueChars = issue.text.trim().length;
+  if (issueChars < SHORT_ISSUE_CHARS) {
+    warnings.push(`issue text is ${issueChars} characters: a wrapper passes the tracker text verbatim, not a summary`);
+  }
+  if (parent?.error) warnings.push(`parent_issue ${parent.error}`);
+
+  if (opts.check) {
+    out({
+      ok: true, check: true, base, head, files: files.length, changed_lines: lines, test_files: testFiles, risk_hits: hits, mode, issue_chars: issueChars, warnings,
+    });
+    return;
+  }
+
   const truncations = [];
   const fixed = [];
   fixed.push(section("signals", [
@@ -299,7 +390,7 @@ function main() {
     hits.length ? `risk_hits:\n${bullets(hits.map((hit) => `${hit.path}${hit.line ? `:${hit.line}` : ""} — ${hit.match}`))}` : "risk_hits: none",
   ].join("\n")));
 
-  const scope = assignment.scope && typeof assignment.scope === "object" ? assignment.scope : {};
+  const scope = isPlainObject(assignment.scope) ? assignment.scope : {};
   fixed.push(section("scope", [
     `objective: ${assignment.objective ?? "(none)"}`,
     `included:\n${bullets(asList(scope.included)) || "- (none)"}`,
@@ -308,9 +399,12 @@ function main() {
     `required_fixes (prior review, verify each first):\n${bullets(asList(assignment.required_fixes)) || "- (none)"}`,
   ].join("\n")));
   fixed.push(section("decisions", bullets(asList(assignment.accepted_decisions)) || "- (none: the issue text carries the intent)"));
-  fixed.push(section("issue", issue.content, { name: issue.name, provenance: issue.provenance ?? "" }));
-  if (parent) fixed.push(section("parent_issue", parent.content, { name: parent.name, provenance: parent.provenance ?? "" }));
-  const others = assignment.source_materials.filter((item) => item !== issue && item !== parent);
+  fixed.push(section("issue", issue.text, { name: issue.name, provenance: issue.provenance, ...(issue.path ? { file: issue.path } : {}) }));
+  if (parent && isText(parent.text)) {
+    fixed.push(section("parent_issue", parent.text, { name: parent.name, provenance: parent.provenance, ...(parent.path ? { file: parent.path } : {}) }));
+  }
+  const taken = new Set(["issue", "parent_issue"]);
+  const others = assignment.source_materials.filter((item) => !(isPlainObject(item) && taken.has(item.name)));
   if (others.length) fixed.push(section("materials", renderMaterials(others)));
   fixed.push(section("repository", JSON.stringify(repository, null, 1)));
   fixed.push(section("method", methodReference()));
@@ -335,6 +429,7 @@ function main() {
   const attention = [
     `Diff: merge base of ${base} and HEAD, context ${diff.context} lines. The files listed are the whole change; a path outside them is not under review.`,
     ...truncations,
+    ...warnings,
   ];
 
   const pack = [
@@ -368,6 +463,7 @@ function main() {
     mode,
     diff_context: diff.context,
     truncations,
+    warnings,
     pack_chars: pack.length,
   });
 }
