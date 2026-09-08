@@ -41,6 +41,14 @@ test('contract examples validate against their schemas', () => {
     );
     assert.equal(JSON.parse(output).ok, true, `${file}: ${output}`);
   }
+  for (const file of ['result.json', 'result-review.json']) {
+    const output = execFileSync(
+      process.execPath,
+      ['contracts/validate-result.mjs', '--result', `contracts/examples/${file}`],
+      { cwd: root, encoding: 'utf8' },
+    );
+    assert.equal(JSON.parse(output).ok, true, `${file}: ${output}`);
+  }
 });
 
 test('published plugin manifests use the package version', () => {
