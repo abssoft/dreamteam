@@ -79,7 +79,8 @@ issue carrying the task text inline (kind text) or as a file path the wrapper
 wrote (kind attachment_reference); a subtask also carries name parent_issue.
 Pack sections, in order: attention (cuts and notes), signals, scope, decisions
 (only when the packet carries any), issue, parent_issue, materials, repository,
-method (the shared engineering reference), rules, env, files, diff.
+development_result and previous_review (the Result files those materials name,
+whole), method (the shared engineering reference), rules, env, files, diff.
 Output: one JSON line {ok, pack, base, head, files, changed_lines, test_files,
 risk_hits[{path,line,match}], mode children|in_context, diff_context,
 truncations[], warnings[], pack_chars}; --check returns {ok, check, base, head,
@@ -313,6 +314,10 @@ function main() {
   if (issue.error) fail("missing_issue", issue.error);
   if (!isText(issue.text)) fail("missing_issue", issue.path ? `empty file: ${issue.path}` : "empty content");
   const parent = material(assignment, "parent_issue");
+  // The developer's Result and the previous review arrive as files too; their
+  // JSON goes into the pack whole, claims for the lenses to reconcile.
+  const developmentResult = material(assignment, "development_result");
+  const previousReview = material(assignment, "previous_review");
 
   const cwd = process.cwd();
   const root = git(["rev-parse", "--show-toplevel"], cwd);
@@ -337,7 +342,9 @@ function main() {
   if (issueChars < SHORT_ISSUE_CHARS) {
     warnings.push(`issue text is ${issueChars} characters: a wrapper passes the tracker text verbatim, not a summary`);
   }
-  if (parent?.error) warnings.push(`parent_issue ${parent.error}`);
+  for (const [name, item] of [["parent_issue", parent], ["development_result", developmentResult], ["previous_review", previousReview]]) {
+    if (item?.error) warnings.push(`${name} ${item.error}`);
+  }
 
   if (opts.check) {
     out({
@@ -362,7 +369,6 @@ function main() {
     `included:\n${bullets(asList(scope.included)) || "- (none)"}`,
     `excluded:\n${bullets(asList(scope.excluded)) || "- (none)"}`,
     `verification:\n${bullets(asList(assignment.verification)) || "- (none)"}`,
-    `required_fixes (prior review, verify each first):\n${bullets(asList(assignment.required_fixes)) || "- (none)"}`,
   ].join("\n")));
   const decisions = asList(assignment.accepted_decisions);
   if (decisions.length) fixed.push(section("decisions", bullets(decisions)));
@@ -370,10 +376,16 @@ function main() {
   if (parent && isText(parent.text)) {
     fixed.push(section("parent_issue", parent.text, { name: parent.name, provenance: parent.provenance, ...(parent.path ? { file: parent.path } : {}) }));
   }
-  const taken = new Set(["issue", "parent_issue"]);
+  const taken = new Set(["issue", "parent_issue", "development_result", "previous_review"]);
   const others = assignment.source_materials.filter((item) => !(isPlainObject(item) && taken.has(item.name)));
   if (others.length) fixed.push(section("materials", renderMaterials(others)));
   fixed.push(section("repository", JSON.stringify(repository, null, 1)));
+  if (developmentResult && isText(developmentResult.text)) {
+    fixed.push(section("development_result", developmentResult.text.trimEnd(), developmentResult.path ? { file: developmentResult.path } : {}));
+  }
+  if (previousReview && isText(previousReview.text)) {
+    fixed.push(section("previous_review", previousReview.text.trimEnd(), previousReview.path ? { file: previousReview.path } : {}));
+  }
   fixed.push(section("method", methodReference()));
 
   const env = envSnapshot(cwd, opts.skip);

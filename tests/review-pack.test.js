@@ -88,7 +88,7 @@ test('a small clean change packs in_context with every section in order', async 
   await writeFile(join(dir, 'src', 'totals.test.js'), 'import { total } from "./totals.js";\nconsole.assert(total([]) === 0);\n');
   commit(dir, 'sum amounts');
 
-  const { code, json } = run(dir, assignment({ required_fixes: ['B1: previous fix'] }), ['--skip=rules']);
+  const { code, json } = run(dir, assignment(), ['--skip=rules']);
   assert.equal(code, 0);
   assert.equal(json.ok, true);
   assert.equal(json.mode, 'in_context');
@@ -114,7 +114,6 @@ test('a small clean change packs in_context with every section in order', async 
   assert.match(pack, /<issue name="issue" provenance="tracker issue text">\nTotals must sum amounts\./);
   assert.match(pack, /<method>\n# Engineering evidence\n/);
   assert.match(pack, /## Implementation comments/);
-  assert.match(pack, /required_fixes \(prior review, verify each first\):\n- B1: previous fix/);
   assert.match(pack, /#### docs\/engineering\/rules\/money\.md\n\n# Money\nRound once, at the end\./);
   assert.match(pack, /- M src\/totals\.js\n- A src\/totals\.test\.js/);
   assert.match(pack, /&lt;\/diff&gt; early/);
@@ -274,4 +273,27 @@ test('a packet without decisions renders no decisions section', async () => {
   const { json } = run(dir, assignment({ accepted_decisions: undefined }));
   assert.equal(json.ok, true);
   assert.equal((await readFile(json.pack, 'utf8')).includes('<decisions>'), false);
+});
+
+test('the development result and the previous review ride as files and land in the pack whole', async () => {
+  const dir = await repo();
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => 0;\n');
+  commit(dir, 'stub');
+  const devFile = join(dir, '..', `result-dev-${Date.now()}.json`);
+  await writeFile(devFile, JSON.stringify({ role: 'software-developer', changed_paths: ['src/totals.js'], summary: 'сделано' }));
+  const prevFile = join(dir, '..', `result-prev-${Date.now()}.json`);
+  await writeFile(prevFile, JSON.stringify({ role: 'code-reviewer', required_fixes: ['B1: починить цикл'] }));
+  const { json } = run(dir, assignment({
+    source_materials: [
+      { kind: 'text', name: 'issue', content: ISSUE_TEXT, provenance: 'tracker issue text' },
+      { kind: 'attachment_reference', name: 'development_result', content: devFile, provenance: 'результат разработки' },
+      { kind: 'attachment_reference', name: 'previous_review', content: prevFile, provenance: 'предыдущее ревью' },
+    ],
+  }));
+  assert.equal(json.ok, true, JSON.stringify(json));
+  const pack = await readFile(json.pack, 'utf8');
+  assert.match(pack, /<development_result file="[^"]+">\n\{"role":"software-developer"/);
+  assert.match(pack, /<previous_review file="[^"]+">\n\{"role":"code-reviewer","required_fixes":\["B1: починить цикл"\]\}/);
+  assert.equal(pack.includes('<materials>'), false);
+  assert.ok(pack.indexOf('<repository>') < pack.indexOf('<development_result') && pack.indexOf('<development_result') < pack.indexOf('<method>'));
 });
