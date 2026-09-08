@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 const scriptPath = join(process.cwd(), 'skills', 'code-reviewer', 'scripts', 'review-pack.mjs');
 
@@ -257,5 +257,21 @@ test('--check validates the packet strictly and writes nothing', async () => {
   assert.equal(Object.hasOwn(good.json, 'pack'), false);
   await assert.rejects(readFile(outPath, 'utf8'), /ENOENT/);
 
+  const packetFile = join(dir, '..', `packet-${Date.now()}.json`);
+  await writeFile(packetFile, JSON.stringify(assignment()));
+  const fromFile = spawnSync(process.execPath, [scriptPath, '--assignment', packetFile], { cwd: dir, encoding: 'utf8' });
+  const placed = JSON.parse(fromFile.stdout.trim().split('\n').pop());
+  assert.equal(placed.ok, true);
+  assert.equal(placed.pack, join(dirname(packetFile), 'review-pack-assignment-review-eval.md'));
+
   assert.equal(run(dir, assignment({ repository: { base_ref: 'nowhere' } }), ['--check']).json.code, 'base_ref_not_found');
+});
+
+test('a packet without decisions renders no decisions section', async () => {
+  const dir = await repo();
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => 0;\n');
+  commit(dir, 'stub');
+  const { json } = run(dir, assignment({ accepted_decisions: undefined }));
+  assert.equal(json.ok, true);
+  assert.equal((await readFile(json.pack, 'utf8')).includes('<decisions>'), false);
 });

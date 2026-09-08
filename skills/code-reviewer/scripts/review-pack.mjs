@@ -11,10 +11,12 @@
 //   --base <ref>           comparison base; default repository.base_ref
 //   --budget <chars>       pack ceiling, default 150000
 //   --lines <n>            in_context threshold on changed lines, default 100
-//   --out <path>           pack file; default <tmpdir>/review-pack-<assignment_id>.md
+//   --out <path>           pack file; default beside the packet file, or under
+//                          <tmpdir> when the packet came on stdin
 //   --skip=<sections>      passed through to env-snapshot (rules,docs,git,runtime,tooling)
-//   --check                wrapper pre-launch gate: validate the packet strictly,
-//                          resolve the base and the diff, write nothing
+//   --check                wrapper pre-launch gate: validate the packet strictly
+//                          (contracts/validate-assignment.mjs), resolve the base
+//                          and the diff, write nothing
 //   --usage                print this contract as prose
 // Output: one JSON line; exit 0 on ok:true, exit 1 on ok:false.
 //   ok:true  → {ok, pack, base, head, files, changed_lines, test_files,
@@ -40,6 +42,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { packetProblems } from "../../../contracts/validate-assignment.mjs";
 
 const DEFAULTS = Object.freeze({ budget: 150000, lines: 100 });
 const DIFF_WIDTHS = [10, 6, 3, 0];
@@ -52,9 +55,6 @@ const RULES_INDEX = "docs/engineering/README.md";
 const RULES_DIR = "docs/engineering/rules";
 const METHOD_REFERENCE = ["..", "..", "..", "references", "engineering-evidence.md"];
 const GIT_MAX_BUFFER = 256 * 1024 * 1024;
-const PACKET_FIELDS = ["contract_version", "assignment_id", "role", "objective", "scope", "repository", "verification", "required_fixes", "accepted_decisions", "source_materials"];
-const MATERIAL_FIELDS = ["kind", "name", "content", "provenance"];
-const MATERIAL_KINDS = ["text", "repository_evidence", "attachment_reference"];
 // Signals that raise the review to children mode and the security escalation:
 // access control, secrets, cryptography, injection surfaces, uploads,
 // deserialization, migrations and destructive data operations, in the
@@ -69,16 +69,17 @@ branch). Pipe the Assignment v1 JSON on stdin:
   { …assignment… }
   JSON
 Flags: --base <ref> (default repository.base_ref), --budget <chars> (150000),
---lines <n> (in_context threshold, 100), --out <path> (pack file, default under
-the OS temp dir), --skip=<sections> (passed to env-snapshot), --check (wrapper
+--lines <n> (in_context threshold, 100), --out <path> (pack file, default beside
+the packet file, or under the OS temp dir for stdin), --skip=<sections> (passed
+to env-snapshot), --check (wrapper
 pre-launch gate: strict packet validation, base and diff resolution, nothing
 written), --usage.
 Requires repository.base_ref (or --base) and a source_materials entry named
 issue carrying the task text inline (kind text) or as a file path the wrapper
 wrote (kind attachment_reference); a subtask also carries name parent_issue.
-Pack sections, in order: attention (cuts and notes), signals, scope, decisions,
-issue, parent_issue, materials, repository, method (the shared engineering
-reference), rules, env, files, diff.
+Pack sections, in order: attention (cuts and notes), signals, scope, decisions
+(only when the packet carries any), issue, parent_issue, materials, repository,
+method (the shared engineering reference), rules, env, files, diff.
 Output: one JSON line {ok, pack, base, head, files, changed_lines, test_files,
 risk_hits[{path,line,match}], mode children|in_context, diff_context,
 truncations[], warnings[], pack_chars}; --check returns {ok, check, base, head,
@@ -166,41 +167,6 @@ function material(assignment, name) {
     found.error = `file not readable: ${found.path}`;
   }
   return found;
-}
-
-// Strict shape of Assignment v1 for the wrapper's pre-launch gate; the role
-// itself stays lenient so a review is never lost to a slip the pack survives.
-function packetProblems(assignment) {
-  const problems = [];
-  for (const key of Object.keys(assignment)) if (!PACKET_FIELDS.includes(key)) problems.push(`unknown field ${key}`);
-  if (assignment.contract_version !== 1) problems.push("contract_version must be 1");
-  if (!isText(assignment.assignment_id)) problems.push("assignment_id missing");
-  if (assignment.role !== "code-reviewer") problems.push(`role must be code-reviewer, got ${JSON.stringify(assignment.role ?? null)}`);
-  if (!isText(assignment.objective)) problems.push("objective missing");
-  const scope = assignment.scope;
-  if (!isPlainObject(scope) || !Array.isArray(scope.included) || !Array.isArray(scope.excluded)) {
-    problems.push("scope.included and scope.excluded must be arrays");
-  }
-  for (const key of ["verification", "required_fixes", "accepted_decisions"]) {
-    const value = assignment[key];
-    if (value !== undefined && !(Array.isArray(value) && value.every(isText))) problems.push(`${key} must be an array of strings`);
-  }
-  if (assignment.repository !== undefined && !isPlainObject(assignment.repository)) problems.push("repository must be an object");
-  if (!isText(assignment.repository?.base_ref)) problems.push("repository.base_ref missing");
-  const materials = assignment.source_materials;
-  if (materials !== undefined && !Array.isArray(materials)) problems.push("source_materials must be an array");
-  for (const [index, item] of (Array.isArray(materials) ? materials : []).entries()) {
-    const label = `source_materials[${index}] (${isPlainObject(item) && isText(item.name) ? item.name : "unnamed"})`;
-    if (!isPlainObject(item)) { problems.push(`${label} must be an object`); continue; }
-    if (!MATERIAL_KINDS.includes(item.kind)) problems.push(`${label}: kind must be ${MATERIAL_KINDS.join(" | ")}`);
-    if (!isText(item.content)) problems.push(`${label}: content missing`);
-    if (!isText(item.provenance)) problems.push(`${label}: provenance missing`);
-    for (const key of Object.keys(item)) if (!MATERIAL_FIELDS.includes(key)) problems.push(`${label}: unknown field ${key}`);
-  }
-  if (!(Array.isArray(materials) && materials.some((item) => isPlainObject(item) && item.name === "issue"))) {
-    problems.push("source_materials entry named issue missing");
-  }
-  return problems;
 }
 
 // A closing tag inside author content would close the section early.
@@ -398,7 +364,8 @@ function main() {
     `verification:\n${bullets(asList(assignment.verification)) || "- (none)"}`,
     `required_fixes (prior review, verify each first):\n${bullets(asList(assignment.required_fixes)) || "- (none)"}`,
   ].join("\n")));
-  fixed.push(section("decisions", bullets(asList(assignment.accepted_decisions)) || "- (none: the issue text carries the intent)"));
+  const decisions = asList(assignment.accepted_decisions);
+  if (decisions.length) fixed.push(section("decisions", bullets(decisions)));
   fixed.push(section("issue", issue.text, { name: issue.name, provenance: issue.provenance, ...(issue.path ? { file: issue.path } : {}) }));
   if (parent && isText(parent.text)) {
     fixed.push(section("parent_issue", parent.text, { name: parent.name, provenance: parent.provenance, ...(parent.path ? { file: parent.path } : {}) }));
@@ -443,7 +410,9 @@ function main() {
     "</review_pack>",
   ].join("\n\n");
 
-  const target = opts.out ? resolve(opts.out) : join(tmpdir(), `review-pack-${assignment.assignment_id.replace(/[^A-Za-z0-9._-]+/g, "-")}.md`);
+  const packName = `review-pack-${assignment.assignment_id.replace(/[^A-Za-z0-9._-]+/g, "-")}.md`;
+  const packDir = opts.assignment === "-" ? tmpdir() : dirname(resolve(opts.assignment));
+  const target = opts.out ? resolve(opts.out) : join(packDir, packName);
   try {
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, `${pack}\n`);
