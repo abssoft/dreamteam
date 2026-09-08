@@ -55,3 +55,17 @@ For each added or changed behavior test, name a plausible production-code mutati
 For a defect fix, run the relevant test or minimal probe against the faulty behavior where practical, then against the fix. When an isolated mutation is useful and permitted, demonstrate that the assertion fails for the intended reason. A mutation run is not mandatory for every test. Record whether the counterexample was executed or only inspected. Reviewers can use in-memory probes or permitted disposable fixtures while keeping the reviewed files unchanged.
 
 A green suite does not replace this analysis. Conversely, report a test weakness as required rework only when a concrete in-scope failure or required acceptance scenario lacks protection; do not require more tests solely to increase their number.
+
+## Implementation comments
+
+This policy governs every comment newly added or changed in implementation artifacts, including client-visible query comments. The developer writes to it; the reviewer checks each added or changed comment against it and reports one that fails as a finding.
+
+- Default to no comment.
+- Never reference the assignment, tracker items, or any other task identifiers.
+- A comment may state only the essential why or a non-obvious constraint, invariant, edge case, side effect, workaround, security or performance trade-off, compatibility requirement, failure mode, or operational caveat.
+- Explain why the code has this shape and, when useful, what breaks if it changes; never narrate what a method, query, expression, or variable does, and never add tutorial prose, work logs, or generated filler.
+- Self-explanatory code with no hidden constraint gets no comment. If a comment would explain what the code does, improve naming, structure, or extraction instead when that stays within scope; otherwise omit the comment.
+- Never invent rationale. When unknown intent affects correctness, the developer returns `needs_human`; otherwise the code stays uncommented.
+- Preserve existing comments that explain non-obvious behavior. Remove redundant, stale, or purely decorative comments only inside the assignment diff or directly changed code; do not rewrite or clean up unrelated existing comments.
+
+Self-check for every comment before handoff: is it necessary; does it explain why rather than what; does it capture a constraint, invariant, or edge case not obvious from the code; will it stay true after a small refactor. A comment that fails is removed or rewritten. The missing comment is the mirror case: a non-obvious constraint, invariant, edge case, workaround or failure mode left without its why fails the same check.
