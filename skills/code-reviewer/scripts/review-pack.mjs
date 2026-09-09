@@ -64,7 +64,7 @@ const SHORT_ISSUE_CHARS = 300;
 // pack, and only the lens that needs it pays the read.
 const RULES_ENTRIES = ["AGENTS.md", "CLAUDE.md", "docs/engineering/README.md"];
 const RULES_DIR = "docs/engineering/rules";
-const RULES_ROUTE_CAP = 24;
+const RULES_ROUTE_CAP = 40;
 const ROUTE_HINT_CHARS = 160;
 const LENS_NOTE = "This pack is your whole review context: settle every doubt by reading the code it names, and collect no environment snapshot, rules or diff of your own — the environment and its checks belong to the parent review.";
 // A markdown link or bare path naming a document of this repository; a URL, an
@@ -260,16 +260,17 @@ function widestDiff(range, cwd, budget, narrow) {
 
 // Documents an entry file names, resolved inside the repository only, each with
 // the line that names it: that line is the condition for reading the document.
-function routes(text, root, seen, found) {
+function routes(text, root, seen, state) {
   for (const line of text.split("\n")) {
     for (const match of line.matchAll(DOC_LINK)) {
       const relative = match[1];
-      if (seen.has(relative) || found.length >= RULES_ROUTE_CAP) continue;
+      if (seen.has(relative)) continue;
       const target = resolve(root, relative);
       if (target !== join(root, relative) || !existsSync(target)) continue;
       seen.add(relative);
+      if (state.list.length >= RULES_ROUTE_CAP) { state.cut.push(relative); continue; }
       const hint = line.replace(/^[\s>*+-]*/, "").trim().slice(0, ROUTE_HINT_CHARS);
-      found.push(hint && hint !== relative ? `${relative} — ${hint}` : relative);
+      state.list.push(hint && hint !== relative ? `${relative} — ${hint}` : relative);
     }
   }
 }
@@ -284,7 +285,7 @@ function collectRules(root, cwd, budget) {
   }
   if (entries.length === 0) {
     const paths = (git(["ls-files", "docs/*.md", "docs/**/*.md"], cwd) ?? "").split("\n").filter(Boolean).slice(0, DOCS_LIST_CAP);
-    return { mode: "paths", paths, routes: [], items: [], dropped: [] };
+    return { mode: "paths", paths, routes: [], routes_cut: [], items: [], dropped: [] };
   }
   const items = [...entries];
   const dir = join(root, RULES_DIR);
@@ -298,8 +299,9 @@ function collectRules(root, cwd, budget) {
   }
   // Routes are drawn from the entry files only, and never repeat a document the
   // pack already carries whole.
-  const routed = [];
-  for (const entry of entries) routes(entry.text, root, seen, routed);
+  const state = { list: [], cut: [] };
+  for (const entry of entries) routes(entry.text, root, seen, state);
+  const routed = state.list;
   const kept = [];
   const dropped = [];
   // Routes come first: when the budget is tight, knowing where a rule lives
@@ -309,7 +311,7 @@ function collectRules(root, cwd, budget) {
     const size = item.path.length + item.text.length + 8;
     if (used + size <= budget) { kept.push(item); used += size; } else dropped.push(item.path);
   }
-  return { mode: "content", paths: [], routes: routed, items: kept, dropped };
+  return { mode: "content", paths: [], routes: routed, routes_cut: state.cut, items: kept, dropped };
 }
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -453,6 +455,7 @@ function main() {
 
   const rules = collectRules(root, cwd, Math.max(opts.budget - fixedLength - diff.text.length, 0));
   if (rules.dropped.length) truncations.push(`rules omitted for budget, read them yourself: ${rules.dropped.join(", ")}`);
+  if (rules.routes_cut.length) truncations.push(`rule routes past the cap of ${RULES_ROUTE_CAP}, follow the entry files for them: ${rules.routes_cut.join(", ")}`);
   const rulesText = rules.mode === "content"
     ? [
       ...rules.items.map((item) => `#### ${item.path}\n\n${item.text.trimEnd()}`),
