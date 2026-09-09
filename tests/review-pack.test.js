@@ -358,3 +358,21 @@ test('in_context mode writes one pack only', async () => {
   assert.equal(Object.hasOwn(json, 'lens_pack'), false);
   assert.equal(existsSync(`${json.pack.slice(0, -3)}-lens.md`), false);
 });
+
+test('routes past the cap are named in the truncations, never dropped in silence', async () => {
+  const dir = await repo();
+  const names = Array.from({ length: 45 }, (_, i) => `docs/note${i}.md`);
+  for (const name of names) await writeFile(join(dir, name), `# Note\nrule text\n`);
+  await writeFile(join(dir, 'AGENTS.md'), `# Repository rules\n${names.map((name) => `- see ${name}`).join('\n')}\n`);
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.reduce((sum, item) => sum + item.amount, 0);\n');
+  commit(dir, 'many rules');
+
+  const { json } = run(dir, assignment({ assignment_id: 'assignment-review-routes' }), ['--skip=rules']);
+  const pack = await readFile(json.pack, 'utf8');
+  const rules = pack.slice(pack.indexOf('<rules>'), pack.indexOf('</rules>'));
+  assert.equal([...rules.matchAll(/^- docs\/note\d+\.md — /gm)].length, 40);
+  const note = json.truncations.find((line) => /rule routes past the cap of 40/.test(line));
+  assert.ok(note, json.truncations.join(' | '));
+  assert.match(note, /docs\/note44\.md/);
+  assert.match(pack, /<attention>[\s\S]*rule routes past the cap of 40/);
+});
