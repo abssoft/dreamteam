@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -20,7 +21,8 @@ async function repo() {
   await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.length;\n');
   await writeFile(join(dir, 'docs', 'engineering', 'README.md'), '# Rules index\n- rules/money.md — read when sums are computed\n');
   await writeFile(join(dir, 'docs', 'engineering', 'rules', 'money.md'), '# Money\nRound once, at the end.\n');
-  await writeFile(join(dir, 'AGENTS.md'), '# Repository rules\n- keep changes bounded\n');
+  await writeFile(join(dir, 'AGENTS.md'), '# Repository rules\n- keep changes bounded\n- naming lives in docs/style.md\n');
+  await writeFile(join(dir, 'docs', 'style.md'), '# Style\nName a total after what it sums.\n');
   commit(dir, 'base');
   sh(dir, 'git', ['checkout', '-qb', 'task']);
   return dir;
@@ -296,4 +298,63 @@ test('the development result and the previous review ride as files and land in t
   assert.match(pack, /<previous_review file="[^"]+">\n\{"role":"code-reviewer","required_fixes":\["B1: починить цикл"\]\}/);
   assert.equal(pack.includes('<materials>'), false);
   assert.ok(pack.indexOf('<repository>') < pack.indexOf('<development_result') && pack.indexOf('<development_result') < pack.indexOf('<method>'));
+});
+
+test('rules carry the instruction chain whole and route to the documents it names', async () => {
+  const dir = await repo();
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.reduce((sum, item) => sum + item.amount, 0);\n');
+  commit(dir, 'sum amounts');
+
+  const { json } = run(dir, assignment(), ['--skip=rules']);
+  const pack = await readFile(json.pack, 'utf8');
+  const rules = pack.slice(pack.indexOf('<rules>'), pack.indexOf('</rules>'));
+  assert.deepEqual(
+    [...rules.matchAll(/^#### (.+)$/gm)].map((match) => match[1]),
+    ['AGENTS.md', 'docs/engineering/README.md', 'docs/engineering/rules/money.md', 'routed by the entry files — open the one your doubt names'],
+  );
+  // The document an entry file names is a route, not a body: one line, with the line that named it.
+  assert.match(rules, /\n- docs\/style\.md — naming lives in docs\/style\.md\n/);
+  assert.equal(rules.includes('Name a total after what it sums.'), false);
+});
+
+test('without an entry file the rules section falls back to documentation paths', async () => {
+  const dir = await repo();
+  sh(dir, 'git', ['rm', '-q', 'AGENTS.md', 'docs/engineering/README.md']);
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.reduce((sum, item) => sum + item.amount, 0);\n');
+  commit(dir, 'sum amounts');
+
+  const { json } = run(dir, assignment(), ['--skip=rules']);
+  const pack = await readFile(json.pack, 'utf8');
+  assert.match(pack, /<rules>\nNo AGENTS\.md, CLAUDE\.md, docs\/engineering\/README\.md; documentation paths to route reads:\n- docs\/engineering\/rules\/money\.md/);
+});
+
+test('children mode writes a lens pack: the same context without env, and no environment work for the lenses', async () => {
+  const dir = await repo();
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.length;\nexport const login = (password) => password === "x";\n');
+  commit(dir, 'auth');
+
+  const { json } = run(dir, assignment(), ['--skip=rules']);
+  assert.equal(json.mode, 'children');
+  assert.equal(json.lens_pack, `${json.pack.slice(0, -3)}-lens.md`);
+  const pack = await readFile(json.pack, 'utf8');
+  const lens = await readFile(json.lens_pack, 'utf8');
+  assert.match(pack, /<env>/);
+  assert.equal(lens.includes('<env>'), false);
+  assert.match(lens, /- This pack is your whole review context: settle every doubt by reading the code it names, and collect no environment snapshot, rules or diff of your own/);
+  assert.ok(lens.endsWith('</review_pack>\n'));
+  for (const marker of ['<signals>', '<issue ', '<method>', '<rules>', '<files>', '<diff context="10">']) {
+    assert.ok(lens.includes(marker), `${marker} missing from the lens pack`);
+  }
+});
+
+test('in_context mode writes one pack only', async () => {
+  const dir = await repo();
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.reduce((sum, item) => sum + item.amount, 0);\n');
+  commit(dir, 'sum amounts');
+
+  // Its own id: the shared temp directory still holds the lens pack of the children-mode run.
+  const { json } = run(dir, assignment({ assignment_id: 'assignment-review-in-context' }), ['--skip=rules']);
+  assert.equal(json.mode, 'in_context');
+  assert.equal(Object.hasOwn(json, 'lens_pack'), false);
+  assert.equal(existsSync(`${json.pack.slice(0, -3)}-lens.md`), false);
 });
