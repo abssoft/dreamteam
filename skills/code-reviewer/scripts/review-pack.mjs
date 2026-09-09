@@ -19,9 +19,10 @@
 //                          and the diff, write nothing
 //   --usage                print this contract as prose
 // Output: one JSON line; exit 0 on ok:true, exit 1 on ok:false.
-//   ok:true  → {ok, pack, base, head, files, changed_lines, test_files,
-//               risk_hits: [{path, line, match}], mode: "children"|"in_context",
-//               diff_context, truncations: [text], warnings: [text], pack_chars}
+//   ok:true  → {ok, pack, lens_pack (children mode only), base, head, files,
+//               changed_lines, test_files, risk_hits: [{path, line, match}],
+//               mode: "children"|"in_context", diff_context,
+//               truncations: [text], warnings: [text], pack_chars}
 //               (--check: {ok, check: true, base, head, files, changed_lines,
 //               test_files, risk_hits, mode, issue_chars, warnings})
 //   ok:false → {ok, code, detail?}: bad_args | bad_packet (--check only; detail
@@ -35,7 +36,12 @@
 // range), at the widest context of 10, 6, 3 or 0 lines that fits the budget;
 // a diff that does not fit even at 0 is cut and the files after the cut are
 // listed. Mode: at most --lines changed lines and no risk hit → in_context,
-// otherwise children.
+// otherwise children. Rules: the repository instruction chain — the agent entry
+// files and the engineering rule directory whole, then routes (path plus the
+// line naming it) to the documents those entries name — or, with no entry file,
+// the documentation paths to route reads by. In children mode a
+// second `-lens` pack is written beside the first, the same context without the
+// environment snapshot, for the lens children.
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -51,8 +57,19 @@ const DIFF_FLOOR_SHARE = 0.4;
 const RISK_HIT_CAP = 40;
 const DOCS_LIST_CAP = 150;
 const SHORT_ISSUE_CHARS = 300;
-const RULES_INDEX = "docs/engineering/README.md";
+// The instruction chain a repository publishes: the agent entry files and the
+// engineering rule directory go in whole, and the documents those entries name
+// go in as routes — path plus the line that names it. A route costs one line
+// where the document costs its whole length in every context that holds the
+// pack, and only the lens that needs it pays the read.
+const RULES_ENTRIES = ["AGENTS.md", "CLAUDE.md", "docs/engineering/README.md"];
 const RULES_DIR = "docs/engineering/rules";
+const RULES_ROUTE_CAP = 24;
+const ROUTE_HINT_CHARS = 160;
+const LENS_NOTE = "This pack is your whole review context: settle every doubt by reading the code it names, and collect no environment snapshot, rules or diff of your own — the environment and its checks belong to the parent review.";
+// A markdown link or bare path naming a document of this repository; a URL, an
+// absolute path or a traversal is not one.
+const DOC_LINK = /(?:^|[\s(<"'`[])([A-Za-z0-9._][A-Za-z0-9._/-]*\.md)\b/g;
 const METHOD_REFERENCE = ["..", "..", "..", "references", "engineering-evidence.md"];
 const GIT_MAX_BUFFER = 256 * 1024 * 1024;
 // Signals that raise the review to children mode and the security escalation:
@@ -80,11 +97,15 @@ wrote (kind attachment_reference); a subtask also carries name parent_issue.
 Pack sections, in order: attention (cuts and notes), signals, scope, decisions
 (only when the packet carries any), issue, parent_issue, materials, repository,
 development_result and previous_review (the Result files those materials name,
-whole), method (the shared engineering reference), rules, env, files, diff.
-Output: one JSON line {ok, pack, base, head, files, changed_lines, test_files,
-risk_hits[{path,line,match}], mode children|in_context, diff_context,
-truncations[], warnings[], pack_chars}; --check returns {ok, check, base, head,
-files, changed_lines, test_files, risk_hits, mode, issue_chars, warnings}.
+whole), method (the shared engineering reference), rules (the repository
+instruction chain: the entry files and the rule directory whole, then routes to
+the documents they name), env, files, diff. In children mode a second pack, named -lens beside the first,
+carries the same context without env, for the lens children.
+Output: one JSON line {ok, pack, lens_pack (children mode), base, head, files,
+changed_lines, test_files, risk_hits[{path,line,match}], mode
+children|in_context, diff_context, truncations[], warnings[], pack_chars};
+--check returns {ok, check, base, head, files, changed_lines, test_files,
+risk_hits, mode, issue_chars, warnings}.
 ok:false codes: bad_args | bad_packet (--check; detail lists the problems) |
 missing_base_ref | missing_issue | not_a_git_repository | base_ref_not_found |
 empty_diff | pack_write_failed. Exit 1 on ok:false.
@@ -237,27 +258,58 @@ function widestDiff(range, cwd, budget, narrow) {
   return { text: narrow.slice(0, budget), context: 0, cut: true, hidden };
 }
 
-function collectRules(root, cwd, budget) {
-  const index = join(root, RULES_INDEX);
-  if (!existsSync(index)) {
-    const paths = (git(["ls-files", "docs/*.md", "docs/**/*.md"], cwd) ?? "").split("\n").filter(Boolean).slice(0, DOCS_LIST_CAP);
-    return { mode: "paths", paths, items: [], dropped: [] };
+// Documents an entry file names, resolved inside the repository only, each with
+// the line that names it: that line is the condition for reading the document.
+function routes(text, root, seen, found) {
+  for (const line of text.split("\n")) {
+    for (const match of line.matchAll(DOC_LINK)) {
+      const relative = match[1];
+      if (seen.has(relative) || found.length >= RULES_ROUTE_CAP) continue;
+      const target = resolve(root, relative);
+      if (target !== join(root, relative) || !existsSync(target)) continue;
+      seen.add(relative);
+      const hint = line.replace(/^[\s>*+-]*/, "").trim().slice(0, ROUTE_HINT_CHARS);
+      found.push(hint && hint !== relative ? `${relative} — ${hint}` : relative);
+    }
   }
-  const items = [{ path: RULES_INDEX, text: readFileSync(index, "utf8") }];
+}
+
+function collectRules(root, cwd, budget) {
+  const seen = new Set();
+  const entries = [];
+  for (const entry of RULES_ENTRIES) {
+    if (seen.has(entry) || !existsSync(join(root, entry))) continue;
+    seen.add(entry);
+    entries.push({ path: entry, text: readFileSync(join(root, entry), "utf8") });
+  }
+  if (entries.length === 0) {
+    const paths = (git(["ls-files", "docs/*.md", "docs/**/*.md"], cwd) ?? "").split("\n").filter(Boolean).slice(0, DOCS_LIST_CAP);
+    return { mode: "paths", paths, routes: [], items: [], dropped: [] };
+  }
+  const items = [...entries];
   const dir = join(root, RULES_DIR);
   if (existsSync(dir)) {
     for (const name of readdirSync(dir).filter((entry) => entry.endsWith(".md")).sort()) {
-      items.push({ path: `${RULES_DIR}/${name}`, text: readFileSync(join(dir, name), "utf8") });
+      const relative = `${RULES_DIR}/${name}`;
+      if (seen.has(relative)) continue;
+      seen.add(relative);
+      items.push({ path: relative, text: readFileSync(join(dir, name), "utf8") });
     }
   }
+  // Routes are drawn from the entry files only, and never repeat a document the
+  // pack already carries whole.
+  const routed = [];
+  for (const entry of entries) routes(entry.text, root, seen, routed);
   const kept = [];
   const dropped = [];
-  let used = 0;
+  // Routes come first: when the budget is tight, knowing where a rule lives
+  // beats holding one rule and losing the map to the rest.
+  let used = routed.reduce((total, route) => total + route.length + 3, 0);
   for (const item of items) {
     const size = item.path.length + item.text.length + 8;
     if (used + size <= budget) { kept.push(item); used += size; } else dropped.push(item.path);
   }
-  return { mode: "content", paths: [], items: kept, dropped };
+  return { mode: "content", paths: [], routes: routed, items: kept, dropped };
 }
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -402,8 +454,11 @@ function main() {
   const rules = collectRules(root, cwd, Math.max(opts.budget - fixedLength - diff.text.length, 0));
   if (rules.dropped.length) truncations.push(`rules omitted for budget, read them yourself: ${rules.dropped.join(", ")}`);
   const rulesText = rules.mode === "content"
-    ? rules.items.map((item) => `#### ${item.path}\n\n${item.text.trimEnd()}`).join("\n\n")
-    : (rules.paths.length ? `No ${RULES_INDEX}; documentation paths to route reads:\n${bullets(rules.paths)}` : "No docs/ directory in this repository.");
+    ? [
+      ...rules.items.map((item) => `#### ${item.path}\n\n${item.text.trimEnd()}`),
+      ...(rules.routes.length ? [`#### routed by the entry files — open the one your doubt names\n\n${bullets(rules.routes)}`] : []),
+    ].join("\n\n")
+    : (rules.paths.length ? `No ${RULES_ENTRIES.join(", ")}; documentation paths to route reads:\n${bullets(rules.paths)}` : "No documentation in this repository.");
 
   const attention = [
     `Diff: merge base of ${base} and HEAD, context ${diff.context} lines. The files listed are the whole change; a path outside them is not under review.`,
@@ -411,23 +466,29 @@ function main() {
     ...warnings,
   ];
 
-  const pack = [
+  const build = (notes, sections) => [
     `<review_pack assignment_id="${assignment.assignment_id}" base="${base}" head="${head ?? ""}">`,
-    section("attention", bullets(attention)),
+    section("attention", bullets([...attention, ...notes])),
     ...fixed,
     section("rules", rulesText),
-    envText,
+    ...sections,
     filesText,
     section("diff", diff.text, { context: diff.context }),
     "</review_pack>",
   ].join("\n\n");
+  const pack = build([], [envText]);
+  // The lenses judge the change, not the runtime: their pack carries the whole
+  // review context without the environment snapshot the parent's checks need.
+  const lensPack = mode === "children" ? build([LENS_NOTE], []) : null;
 
   const packName = `review-pack-${assignment.assignment_id.replace(/[^A-Za-z0-9._-]+/g, "-")}.md`;
   const packDir = opts.assignment === "-" ? tmpdir() : dirname(resolve(opts.assignment));
   const target = opts.out ? resolve(opts.out) : join(packDir, packName);
+  const lensTarget = lensPack ? (target.endsWith(".md") ? `${target.slice(0, -3)}-lens.md` : `${target}-lens`) : null;
   try {
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, `${pack}\n`);
+    if (lensPack) writeFileSync(lensTarget, `${lensPack}\n`);
   } catch (error) {
     fail("pack_write_failed", String(error.message));
   }
@@ -435,6 +496,7 @@ function main() {
   out({
     ok: true,
     pack: target,
+    ...(lensTarget ? { lens_pack: lensTarget } : {}),
     base,
     head,
     files: files.length,
