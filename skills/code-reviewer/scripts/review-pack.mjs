@@ -9,8 +9,7 @@
 //
 // Input: --assignment -    Assignment v1 JSON on stdin (or --assignment <path>)
 //   --base <ref>           comparison base; default repository.base_ref
-//   --budget <chars>       pack ceiling, default 150000
-//   --lines <n>            in_context threshold on changed lines, default 100
+//   --budget <chars>       pack ceiling, default 300000
 //   --out <path>           pack file; default beside the packet file, or under
 //                          <tmpdir> when the packet came on stdin
 //   --skip=<sections>      passed through to env-snapshot (rules,docs,git,runtime,tooling)
@@ -35,8 +34,9 @@
 // The diff is `git diff` from the merge base of <base> and HEAD (the three-dot
 // range), at the widest context of 10, 6, 3 or 0 lines that fits the budget;
 // a diff that does not fit even at 0 is cut and the files after the cut are
-// listed. Mode: at most --lines changed lines and no risk hit → in_context,
-// otherwise children. Rules: the repository instruction chain — the agent entry
+// listed. Mode: the diff fits → in_context, one reviewer applying the three
+// lenses over one reading; the diff had to be cut → children, the only case
+// where a second reader earns its own copy of the pack. Rules: the repository instruction chain — the agent entry
 // files and the engineering rule directory whole, then routes (path plus the
 // line naming it) to the documents those entries name — or, with no entry file,
 // the documentation paths to route reads by. In children mode a
@@ -50,7 +50,9 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { packetProblems } from "../../../contracts/validate-assignment.mjs";
 
-const DEFAULTS = Object.freeze({ budget: 150000, lines: 100 });
+// The ceiling answers one question — does the change fit one reviewer? — so it
+// tracks the model window rather than an older, smaller pack.
+const DEFAULTS = Object.freeze({ budget: 300000 });
 const DIFF_WIDTHS = [10, 6, 3, 0];
 const RULES_RESERVE = 20000;
 const DIFF_FLOOR_SHARE = 0.4;
@@ -85,9 +87,9 @@ branch). Pipe the Assignment v1 JSON on stdin:
   node review-pack.mjs --assignment - <<'JSON'
   { …assignment… }
   JSON
-Flags: --base <ref> (default repository.base_ref), --budget <chars> (150000),
---lines <n> (in_context threshold, 100), --out <path> (pack file, default beside
-the packet file, or under the OS temp dir for stdin), --skip=<sections> (passed
+Flags: --base <ref> (default repository.base_ref), --budget <chars> (300000),
+--out <path> (pack file, default beside the packet file, or under the OS temp
+dir for stdin), --skip=<sections> (passed
 to env-snapshot), --check (wrapper
 pre-launch gate: strict packet validation, base and diff resolution, nothing
 written), --usage.
@@ -121,7 +123,7 @@ function fail(code, detail) {
 }
 
 function parseArgs(argv) {
-  const opts = { assignment: null, base: null, budget: DEFAULTS.budget, lines: DEFAULTS.lines, out: null, skip: null, check: false };
+  const opts = { assignment: null, base: null, budget: DEFAULTS.budget, out: null, skip: null, check: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = () => { i += 1; return argv[i]; };
@@ -129,7 +131,6 @@ function parseArgs(argv) {
     if (arg === "--assignment") opts.assignment = next();
     else if (arg === "--base") opts.base = next();
     else if (arg === "--budget") opts.budget = Number(next());
-    else if (arg === "--lines") opts.lines = Number(next());
     else if (arg === "--out") opts.out = next();
     else if (arg === "--check") opts.check = true;
     else if (arg.startsWith("--skip=")) opts.skip = arg;
@@ -137,7 +138,6 @@ function parseArgs(argv) {
   }
   if (!opts.assignment) return { error: "--assignment is required" };
   if (!Number.isInteger(opts.budget) || opts.budget < 1000) return { error: "--budget must be an integer of at least 1000" };
-  if (!Number.isInteger(opts.lines) || opts.lines < 0) return { error: "--lines must be a non-negative integer" };
   return opts;
 }
 
@@ -388,7 +388,6 @@ function main() {
   const narrow = git(["diff", "-U0", range], cwd) ?? "";
   const hits = riskHits(narrow, files);
   const testFiles = files.filter((file) => TEST_PATH.test(file.path)).length;
-  const mode = lines <= opts.lines && hits.length === 0 ? "in_context" : "children";
   const head = git(["rev-parse", "--short", "HEAD"], cwd);
 
   const warnings = [];
@@ -401,6 +400,9 @@ function main() {
   }
 
   if (opts.check) {
+    // No pack is built here, so the fit is estimated from the narrowest diff
+    // against the floor the pack guarantees it.
+    const mode = narrow.length > Math.floor(opts.budget * DIFF_FLOOR_SHARE) ? "children" : "in_context";
     out({
       ok: true, check: true, base, head, files: files.length, changed_lines: lines, test_files: testFiles, risk_hits: hits, mode, issue_chars: issueChars, warnings,
     });
@@ -409,13 +411,17 @@ function main() {
 
   const truncations = [];
   const fixed = [];
-  fixed.push(section("signals", [
+  // The mode follows from the diff, which is sized further down; the placeholder
+  // differs from the final line by a few characters and cannot move the budget.
+  const signals = (packMode) => section("signals", [
     `files: ${files.length}`,
     `changed_lines: ${lines}`,
     `test_files: ${testFiles}`,
-    `mode: ${mode}`,
+    `mode: ${packMode}`,
     hits.length ? `risk_hits:\n${bullets(hits.map((hit) => `${hit.path}${hit.line ? `:${hit.line}` : ""} — ${hit.match}`))}` : "risk_hits: none",
-  ].join("\n")));
+  ].join("\n"));
+  const signalsAt = fixed.length;
+  fixed.push(signals("in_context"));
 
   const scope = isPlainObject(assignment.scope) ? assignment.scope : {};
   fixed.push(section("scope", [
@@ -449,6 +455,10 @@ function main() {
   const fixedLength = fixed.join("\n\n").length + envText.length + filesText.length;
   const diffBudget = Math.max(opts.budget - fixedLength - RULES_RESERVE, Math.floor(opts.budget * DIFF_FLOOR_SHARE));
   const diff = widestDiff(range, cwd, diffBudget, narrow);
+  // A cut diff is the one case a single reviewer cannot hold the change: the
+  // lenses then read it as children, each in its own context.
+  const mode = diff.cut ? "children" : "in_context";
+  fixed[signalsAt] = signals(mode);
   if (diff.cut) {
     truncations.push(`diff cut at ${diffBudget} characters (context 0); read the rest yourself${diff.hidden.length ? `, starting with: ${diff.hidden.join(", ")}` : ""}`);
   }

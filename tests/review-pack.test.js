@@ -123,19 +123,21 @@ test('a small clean change packs in_context with every section in order', async 
   assert.equal(json.pack_chars, pack.length - 1);
 });
 
-test('risk signals and size switch the mode to children', async () => {
+test('a fitting diff stays in_context whatever its size or risk; only a cut diff goes to children', async () => {
   const dir = await repo();
   await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.length;\nexport const login = (password) => password === "x";\n');
   commit(dir, 'auth');
   const risky = run(dir, assignment()).json;
-  assert.equal(risky.mode, 'children');
+  assert.equal(risky.mode, 'in_context');
   assert.deepEqual(risky.risk_hits, [{ path: 'src/totals.js', line: 2, match: 'login' }]);
 
-  const big = Array.from({ length: 120 }, (_, i) => `export const v${i} = ${i};`).join('\n');
+  const big = Array.from({ length: 300 }, (_, i) => `export const value${i} = "${'x'.repeat(40)}";`).join('\n');
   await writeFile(join(dir, 'src', 'totals.js'), `${big}\n`);
   commit(dir, 'many lines');
-  assert.equal(run(dir, assignment()).json.mode, 'children');
-  assert.equal(run(dir, assignment(), ['--lines', '500']).json.mode, 'in_context');
+  assert.equal(run(dir, assignment()).json.mode, 'in_context');
+  const cut = run(dir, assignment(), ['--budget', '9000', '--skip=rules,docs,runtime,tooling']).json;
+  assert.equal(cut.mode, 'children');
+  assert.ok(cut.truncations.some((note) => /diff cut/.test(note)), cut.truncations.join(' | '));
 });
 
 test('a tight budget narrows the diff, then cuts it and drops rules with notes', async () => {
@@ -330,10 +332,11 @@ test('without an entry file the rules section falls back to documentation paths'
 
 test('children mode writes a lens pack: the same context without env, and no environment work for the lenses', async () => {
   const dir = await repo();
-  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.length;\nexport const login = (password) => password === "x";\n');
-  commit(dir, 'auth');
+  const big = Array.from({ length: 300 }, (_, i) => `export const value${i} = "${'x'.repeat(40)}";`).join('\n');
+  await writeFile(join(dir, 'src', 'totals.js'), `${big}\n`);
+  commit(dir, 'bulk');
 
-  const { json } = run(dir, assignment(), ['--skip=rules']);
+  const { json } = run(dir, assignment(), ['--budget', '9000', '--skip=rules,docs,runtime,tooling']);
   assert.equal(json.mode, 'children');
   assert.equal(json.lens_pack, `${json.pack.slice(0, -3)}-lens.md`);
   const pack = await readFile(json.pack, 'utf8');
@@ -342,7 +345,7 @@ test('children mode writes a lens pack: the same context without env, and no env
   assert.equal(lens.includes('<env>'), false);
   assert.match(lens, /- This pack is your whole review context: settle every doubt by reading the code it names, and collect no environment snapshot, rules or diff of your own/);
   assert.ok(lens.endsWith('</review_pack>\n'));
-  for (const marker of ['<signals>', '<issue ', '<method>', '<rules>', '<files>', '<diff context="10">']) {
+  for (const marker of ['<signals>', '<issue ', '<method>', '<rules>', '<files>', '<diff context=']) {
     assert.ok(lens.includes(marker), `${marker} missing from the lens pack`);
   }
 });
