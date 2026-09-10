@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -47,8 +47,11 @@ function assignment(overrides = {}) {
   };
 }
 
+// Tests list the checks without starting them; the one test of the runner
+// passes --run-checks instead.
 function run(dir, input, args = []) {
-  const result = spawnSync(process.execPath, [scriptPath, '--assignment', '-', ...args], {
+  const flags = args.includes('--run-checks') ? args.filter((arg) => arg !== '--run-checks') : ['--no-checks', ...args];
+  const result = spawnSync(process.execPath, [scriptPath, '--assignment', '-', ...flags], {
     cwd: dir, input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8',
   });
   const line = result.stdout.trim().split('\n').pop();
@@ -443,4 +446,43 @@ test('a change that is only tests keeps them as the diff', async () => {
   const pack = await readFile(json.pack, 'utf8');
   assert.equal(pack.includes('<tests '), false);
   assert.match(pack.slice(pack.indexOf('<diff ')), /src\/totals\.test\.js/);
+});
+
+test('the runnable checks start detached as the pack is written, and their results file settles every item', async () => {
+  const dir = await repo();
+  sh(dir, 'git', ['checkout', '-q', 'main']);
+  await mkdir(join(dir, 'vendor', 'bin'), { recursive: true });
+  await mkdir(join(dir, 'tests'), { recursive: true });
+  await writeFile(join(dir, 'vendor', 'bin', 'phpstan'), '#!/bin/sh\necho "phpstan $*"\nfor a in "$@"; do case "$a" in *.neon) cat "$a";; esac; done\n');
+  await writeFile(join(dir, 'vendor', 'bin', 'phpunit'), '#!/bin/sh\necho "phpunit $*"\n');
+  await chmod(join(dir, 'vendor', 'bin', 'phpstan'), 0o755);
+  await chmod(join(dir, 'vendor', 'bin', 'phpunit'), 0o755);
+  await writeFile(join(dir, 'phpstan.neon'), 'parameters:\n    level: 5\n');
+  await writeFile(join(dir, 'composer.json'), JSON.stringify({ name: 'acme/fixture', scripts: { analyse: 'vendor/bin/phpstan analyse --memory-limit=1G', test: 'vendor/bin/phpunit --testdox' } }));
+  commit(dir, 'tooling');
+  sh(dir, 'git', ['checkout', '-q', 'task']);
+  sh(dir, 'git', ['rebase', '-q', 'main']);
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.reduce((sum, item) => sum + item.amount, 0);\n');
+  await writeFile(join(dir, 'tests', 'TotalsTest.php'), '<?php\nclass TotalsTest { public function testSums() {} }\n');
+  commit(dir, 'totals');
+
+  const { json } = run(dir, assignment({ verification: ['false'] }), ['--run-checks', '--skip=rules,docs']);
+  assert.equal(json.checks_started, 3);
+  assert.equal(json.checks, join(tmpdir(), 'checks-assignment-review-eval-results.json'));
+  const pack = await readFile(json.pack, 'utf8');
+  assert.match(pack, /<checks note="scope is the diff of this pack; the items with an id are running now — read their results with node .*checks-run\.mjs --wait /);
+  assert.match(pack, /\[c1\] composer analyse — phpstan, full width only/);
+  assert.match(pack, /\[c2\] vendor\/bin\/phpunit --testdox tests\/TotalsTest\.php — phpunit, from composer test/);
+  assert.match(pack, /\[c3\] false — assignment verification, as given/);
+  assert.match(pack, /composer analyse && composer test — project suite, full width only/);
+
+  const waited = spawnSync(process.execPath, [join(dirname(scriptPath), 'checks-run.mjs'), '--wait', json.checks, '--timeout', '30'], { encoding: 'utf8' });
+  const results = JSON.parse(waited.stdout.trim().split('\n').pop());
+  assert.equal(results.status, 'complete');
+  assert.deepEqual(results.checks.map((item) => [item.id, item.status]), [['c1', 'passed'], ['c2', 'passed'], ['c3', 'failed']]);
+  // phpstan ran directly with the wrapper, not through composer; phpunit ran narrowed.
+  assert.match(results.checks[0].ran, /^vendor\/bin\/phpstan analyse --memory-limit=1G -c .*phpstan-c1\.neon$/);
+  assert.match(results.checks[0].tail, /tmpDir: /);
+  assert.equal(results.checks[1].ran, 'vendor/bin/phpunit --testdox tests/TotalsTest.php');
+  assert.equal(results.checks[2].exit, 1);
 });

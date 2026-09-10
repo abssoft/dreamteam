@@ -42,7 +42,7 @@ Options:
 
 - Do not re-collect anything the snapshot already reports; cite it instead.
 - Batch the remaining startup context — language-server or index status probes, task-specific file reads — into the next single call.
-- Before handoff, take the commands from the `validation` section and give them the paths this change touched; do not re-derive them. The shared engineering reference states when a check runs at full width instead.
+- The `validation` section is the review gate's: the review pack gives its commands the paths of the diff and runs them in a detached runner (`checks-run.mjs`, which also pins the PHPStan result cache per workspace); the developer runs only the tests of the behavior it changed. The shared engineering reference states when a check runs at full width instead.
 - The auto-detected base is name-based; when the assignment implies a different comparison base, diff against that one.
 
 ## Boundaries
