@@ -80,6 +80,11 @@ const GIT_MAX_BUFFER = 256 * 1024 * 1024;
 // English and Russian the codebases mix.
 const RISK = /\b(?:auth[a-z]*|login|logout|sessions?|tokens?|passw(?:or)?ds?|secrets?|credentials?|api[_-]?keys?|crypt[a-z]*|hmac|jwt|oauth|permissions?|acl|roles?|privileges?|tenants?|sql|unserialize|deserializ[a-z]*|uploads?|multipart|migrat[a-z]*|backfill|retention|truncate|purge)\b|alter\s+table|drop\s+(?:table|column|index)|delete\s+from|rm\s+-rf|парол|токен|шифр|полномоч|миграц|удал[её]н/i;
 const TEST_PATH = /(?:^|\/)(?:tests?|__tests__|specs?)\/|\.(?:test|spec)\.[a-z]+$|Test\.php$|_test\.[a-z]+$/;
+// A test declaration, in the shapes the common runners use. The pack carries
+// these names instead of the test bodies: the review judges the code, and opens
+// a test file when it doubts the strength of a test or the cover of a scenario.
+const TEST_CASE = /(?:^|\s)(?:it|test|describe|context)\s*(?:\.\w+)?\s*\(\s*[`'"](.+?)[`'"]|(?:^|\s)def\s+(test_\w+)|(?:public\s+)?function\s+(test\w+)|(?:^|\s)func\s+(Test\w+)|(?:^|\s)(?:it|Scenario|Feature)\s*\(\s*[`'"](.+?)[`'"]/gm;
+const TEST_CASE_CAP = 40;
 
 const USAGE = `review-pack.mjs — one-call review context for the code-reviewer role.
 Run from the review workspace (the process cwd, a git checkout of the reviewed
@@ -246,9 +251,9 @@ function riskHits(narrowDiff, files) {
   return hits;
 }
 
-function widestDiff(range, cwd, budget, narrow) {
+function widestDiff(range, cwd, budget, narrow, paths) {
   for (const context of DIFF_WIDTHS) {
-    const text = context === 0 ? narrow : (git(["diff", `-U${context}`, range], cwd) ?? "");
+    const text = context === 0 ? narrow : (git(["diff", `-U${context}`, range, "--", ...paths], cwd) ?? "");
     if (text.length <= budget) return { text, context, cut: false, hidden: [] };
   }
   const hidden = [];
@@ -312,6 +317,31 @@ function collectRules(root, cwd, budget) {
     if (used + size <= budget) { kept.push(item); used += size; } else dropped.push(item.path);
   }
   return { mode: "content", paths: [], routes: routed, routes_cut: state.cut, items: kept, dropped };
+}
+
+// Every test file of the change, each with its declared cases: enough to see
+// which scenarios claim cover and how the suite is named, without the bodies.
+function testDigest(files, range, mergeBase, cwd) {
+  const counts = new Map();
+  for (const line of (git(["diff", "--numstat", range, "--", ...files.map((file) => file.path)], cwd) ?? "").split("\n")) {
+    const [added, removed, path] = line.split("\t");
+    if (path) counts.set(path, `+${Number(added) || 0} -${Number(removed) || 0}`);
+  }
+  const parts = [];
+  for (const file of files) {
+    const source = file.status === "D"
+      ? git(["show", `${mergeBase}:${file.path}`], cwd)
+      : git(["show", `HEAD:${file.path}`], cwd);
+    const cases = [];
+    for (const match of (source ?? "").matchAll(TEST_CASE)) {
+      const name = match.slice(1).find((group) => group !== undefined);
+      if (name && !cases.includes(name)) cases.push(name.trim());
+      if (cases.length >= TEST_CASE_CAP) break;
+    }
+    const head = `${file.status} ${file.from ? `${file.from} → ` : ""}${file.path} ${counts.get(file.path) ?? ""}`.trimEnd();
+    parts.push(cases.length ? `${head}\n${bullets(cases)}` : `${head}\n- (no declared case found)`);
+  }
+  return parts.join("\n\n");
 }
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -385,9 +415,19 @@ function main() {
   const files = parseNameStatus(git(["diff", "--name-status", range], cwd));
   if (files.length === 0) fail("empty_diff", `no changes between ${base} and HEAD`);
   const lines = changedLines(git(["diff", "--numstat", range], cwd));
-  const narrow = git(["diff", "-U0", range], cwd) ?? "";
-  const hits = riskHits(narrow, files);
-  const testFiles = files.filter((file) => TEST_PATH.test(file.path)).length;
+  // Tests ride as a digest, not as diff: the review judges the code the tests
+  // exercise. A change that is only tests has no code to judge instead, so
+  // there they are the diff.
+  const tests = files.filter((file) => TEST_PATH.test(file.path));
+  const code = files.filter((file) => !TEST_PATH.test(file.path));
+  const diffFiles = code.length ? code : files;
+  const digestFiles = code.length ? tests : [];
+  const diffPaths = diffFiles.map((file) => file.path);
+  const narrow = git(["diff", "-U0", range, "--", ...diffPaths], cwd) ?? "";
+  // Risk signals steer the security review of the change; a fixture naming a
+  // password or a table is not that change.
+  const hits = riskHits(narrow, diffFiles);
+  const testFiles = tests.length;
   const head = git(["rev-parse", "--short", "HEAD"], cwd);
 
   const warnings = [];
@@ -450,11 +490,14 @@ function main() {
 
   const env = envSnapshot(cwd, opts.skip);
   const envText = section("env", JSON.stringify(env, null, 1));
-  const filesText = section("files", bullets(files.map((file) => `${file.status} ${file.from ? `${file.from} → ` : ""}${file.path}`)));
+  const filesText = section("files", bullets(files.map((file) => `${file.status} ${file.from ? `${file.from} → ` : ""}${file.path}${TEST_PATH.test(file.path) ? " (test)" : ""}`)));
+  const testsText = digestFiles.length
+    ? section("tests", testDigest(digestFiles, range, mergeBase, cwd), { note: "declared cases only; open the file to judge a test's strength or a scenario's cover" })
+    : "";
 
-  const fixedLength = fixed.join("\n\n").length + envText.length + filesText.length;
+  const fixedLength = fixed.join("\n\n").length + envText.length + filesText.length + testsText.length;
   const diffBudget = Math.max(opts.budget - fixedLength - RULES_RESERVE, Math.floor(opts.budget * DIFF_FLOOR_SHARE));
-  const diff = widestDiff(range, cwd, diffBudget, narrow);
+  const diff = widestDiff(range, cwd, diffBudget, narrow, diffPaths);
   // A cut diff is the one case a single reviewer cannot hold the change: the
   // lenses then read it as children, each in its own context.
   const mode = diff.cut ? "children" : "in_context";
@@ -486,6 +529,7 @@ function main() {
     section("rules", rulesText),
     ...sections,
     filesText,
+    ...(testsText ? [testsText] : []),
     section("diff", diff.text, { context: diff.context }),
     "</review_pack>",
   ].join("\n\n");
