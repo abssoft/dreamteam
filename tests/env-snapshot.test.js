@@ -72,6 +72,8 @@ test('php scripts split into what narrows safely and what does not', async () =>
   assert.equal(byTool(validation, 'rector').command, 'vendor/bin/rector process --dry-run {paths}');
   assert.equal(byTool(validation, 'phpstan').scope, 'none');
   assert.match(byTool(validation, 'phpstan').reason, /consume it/);
+  // The runner executes the binary itself, so the wrapper configuration can replace -c.
+  assert.equal(byTool(validation, 'phpstan').run, 'vendor/bin/phpstan analyse --configuration=phpstan.neon');
 });
 
 test('a target that cannot be told from a flag value is reported, never guessed', async () => {

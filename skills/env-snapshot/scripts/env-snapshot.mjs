@@ -155,8 +155,8 @@ const TOOLS = [
     note: "without --path-mode=intersection the given paths replace the finder of the configuration instead of narrowing it" },
   { tool: "rector", lang: "php", re: /rector$/, scope: "paths", arg: "--dry-run {paths}", sub: ["process"], bool: ["--dry-run", "--clear-cache", "-n"], value: ["--config", "-c", "--memory-limit"],
     note: "rector rewrites files; only the --dry-run form is a check" },
-  { tool: "phpstan", lang: "php", re: /phpstan$/, scope: "none", sub: ["analyse", "analyze"],
-    note: "narrowing to changed paths drops the errors the change causes in the files that consume it, and the result cache makes the full run cheap after the first one" },
+  { tool: "phpstan", lang: "php", re: /phpstan$/, scope: "none", sub: ["analyse", "analyze"], value: ["-c", "--configuration", "--memory-limit", "-a", "--autoload-file", "-l", "--level", "--error-format"],
+    note: "narrowing to changed paths drops the errors the change causes in the files that consume it; the review pack runner pins its result cache per workspace, so only the first run in a worktree is cold" },
   { tool: "psalm", lang: "php", re: /psalm$/, scope: "none", note: "same as phpstan: a partial run loses the consumers of the change; use its own cache instead" },
   { tool: "tsc", lang: "node", re: /tsc$/, scope: "none", note: "passing files to tsc ignores tsconfig.json and type-checks them with default options, so a narrowed run says nothing about the project" },
 ];
@@ -215,7 +215,7 @@ function narrowSegment(segment, spec, runner) {
         if (seen.has(key)) continue;
         seen.add(key);
         if (spec.scope === "none") {
-          checks.push({ tool: spec.tool, source, scope: "none", command: source, reason: spec.note });
+          checks.push({ tool: spec.tool, source, scope: "none", command: source, run: parsed.command, reason: spec.note });
         } else if (parsed.ambiguous) {
           checks.push({ tool: spec.tool, source, scope: "none", command: source, reason: `cannot tell the target from the value of ${parsed.ambiguous}; run it as the script defines it` });
         } else {

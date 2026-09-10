@@ -16,11 +16,14 @@
 //   --check                wrapper pre-launch gate: validate the packet strictly
 //                          (contracts/validate-assignment.mjs), resolve the base
 //                          and the diff, write nothing
+//   --no-checks            list the checks in the pack without starting them
 //   --usage                print this contract as prose
 // Output: one JSON line; exit 0 on ok:true, exit 1 on ok:false.
 //   ok:true  → {ok, pack, lens_pack (children mode only), base, head, files,
 //               changed_lines, test_files, risk_hits: [{path, line, match}],
 //               mode: "children"|"in_context", diff_context,
+//               checks (results file of the detached checks-run.mjs, null when
+//               nothing runs), checks_started, checks_error?,
 //               truncations: [text], warnings: [text], pack_chars}
 //               (--check: {ok, check: true, base, head, files, changed_lines,
 //               test_files, risk_hits, mode, issue_chars, warnings})
@@ -94,6 +97,7 @@ branch). Pipe the Assignment v1 JSON on stdin:
   { …assignment… }
   JSON
 Flags: --base <ref> (default repository.base_ref), --budget <chars> (300000),
+--no-checks (list the checks without starting them),
 --out <path> (pack file, default beside the packet file, or under the OS temp
 dir for stdin), --skip=<sections> (passed
 to env-snapshot), --check (wrapper
@@ -108,11 +112,15 @@ development_result and previous_review (the Result files those materials name,
 whole), method (the shared engineering reference), rules (the repository
 instruction chain: the entry files and the rule directory whole, then routes to
 the documents they name), env, checks (the snapshot's check templates with this
-diff's paths already in them), files, diff. In children mode a second pack, named -lens beside the first,
+diff's paths already in them, plus the packet's verification commands; the
+runnable ones start in a detached checks-run.mjs as the pack is written, and
+the note names the results file to read with checks-run.mjs --wait), files,
+diff. In children mode a second pack, named -lens beside the first,
 carries the same context without env or checks, for the lens children.
 Output: one JSON line {ok, pack, lens_pack (children mode), base, head, files,
 changed_lines, test_files, risk_hits[{path,line,match}], mode
-children|in_context, diff_context, truncations[], warnings[], pack_chars};
+children|in_context, diff_context, checks (results file, null when nothing
+runs), checks_started, checks_error?, truncations[], warnings[], pack_chars};
 --check returns {ok, check, base, head, files, changed_lines, test_files,
 risk_hits, mode, issue_chars, warnings}.
 ok:false codes: bad_args | bad_packet (--check; detail lists the problems) |
@@ -130,7 +138,7 @@ function fail(code, detail) {
 }
 
 function parseArgs(argv) {
-  const opts = { assignment: null, base: null, budget: DEFAULTS.budget, out: null, skip: null, check: false };
+  const opts = { assignment: null, base: null, budget: DEFAULTS.budget, out: null, skip: null, check: false, checks: true };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = () => { i += 1; return argv[i]; };
@@ -140,6 +148,7 @@ function parseArgs(argv) {
     else if (arg === "--budget") opts.budget = Number(next());
     else if (arg === "--out") opts.out = next();
     else if (arg === "--check") opts.check = true;
+    else if (arg === "--no-checks") opts.checks = false;
     else if (arg.startsWith("--skip=")) opts.skip = arg;
     else return { error: `unknown argument ${arg}` };
   }
@@ -372,9 +381,8 @@ function envSnapshot(cwd, skip) {
 // mid-run: the templates come from the environment snapshot, the paths from the
 // diff this pack was built on. Past the cap the list collapses to the
 // directories it came from, so a wide change still runs one narrowed command.
-function checksSection(env, codePaths, testPaths) {
-  const checks = env?.validation?.checks;
-  if (!Array.isArray(checks) || !checks.length) return "";
+function checkItems(env, codePaths, testPaths, verification) {
+  const checks = Array.isArray(env?.validation?.checks) ? env.validation.checks : [];
   const quote = (path) => (/[\s]|^-/.test(path) ? `'${path}'` : path);
   const collapse = (paths) => {
     if (paths.length <= CHECK_PATH_CAP) return { list: paths.map(quote).join(" "), note: "" };
@@ -383,28 +391,67 @@ function checksSection(env, codePaths, testPaths) {
   };
   const code = collapse(codePaths);
   const tests = collapse(testPaths);
-  const rows = [];
+  const items = [];
+  const add = (item) => items.push({ id: `c${items.length + 1}`, ...item });
   for (const check of checks) {
     if (!isPlainObject(check) || !isText(check.command)) continue;
     const detail = check.note ?? check.reason ?? "";
     if (check.scope === "none") {
-      rows.push(`${check.command} — ${check.tool}, full width only${detail ? `: ${detail}` : ""}`);
+      add({ tool: check.tool, command: check.command, run: isText(check.run) ? check.run : check.command, scope: "none", width: "full", source: check.source, runnable: true,
+        row: `${check.command} — ${check.tool}, full width only${detail ? `: ${detail}` : ""}` });
       continue;
     }
     const wanted = check.scope === "tests-by-path" ? tests : code;
     if (!wanted.list) {
-      rows.push(`${check.command} — ${check.tool}: this change carries no ${check.scope === "tests-by-path" ? "test" : "code"} path, derive the scope from the files above`);
+      add({ tool: check.tool, command: check.command, scope: check.scope, width: "unscoped", source: check.source, runnable: false,
+        row: `${check.command} — ${check.tool}: this change carries no ${check.scope === "tests-by-path" ? "test" : "code"} path, derive the scope from the files above` });
       continue;
     }
-    rows.push(`${check.command.replace(/\{test paths\}|\{paths\}/g, wanted.list)} — ${check.tool}, from ${check.source}${wanted.note}${detail ? `; ${detail}` : ""}`);
+    const command = check.command.replace(/\{test paths\}|\{paths\}/g, wanted.list);
+    add({ tool: check.tool, command, scope: check.scope, width: `narrowed to the diff${wanted.note}`, source: check.source, runnable: true,
+      row: `${command} — ${check.tool}, from ${check.source}${wanted.note}${detail ? `; ${detail}` : ""}` });
+  }
+  // The wrapper's own commands run at the width it gave them; one that is
+  // already a derived check's source is that check, not a second run.
+  for (const command of asList(verification)) {
+    if (items.some((item) => item.command === command || item.source === command)) continue;
+    add({ tool: "assignment", command, scope: "none", width: "as given", source: "assignment verification", runnable: true, row: `${command} — assignment verification, as given` });
   }
   for (const command of env?.validation?.suite ?? []) {
-    if (isText(command)) rows.push(`${command} — project suite, full width only`);
+    if (isText(command)) items.push({ id: null, tool: "suite", command, scope: "none", width: "full", source: "project suite", runnable: false, row: `${command} — project suite, full width only` });
   }
-  if (!rows.length) return "";
+  return items;
+}
+
+// The runnable items execute in a detached checks-run.mjs while the review
+// reads: every check is a fact of the pack, the reviewer only reads the result.
+function checksSection(items, results) {
+  if (!items.length) return "";
+  const rows = items.map((item) => (item.id ? `[${item.id}] ${item.row}${item.runnable ? "" : " (not started)"}` : item.row));
+  const running = results
+    ? `; the items with an id are running now — read their results with node ${join(scriptDir, "checks-run.mjs")} --wait ${results} (each item: status, exit, log, tail), rerun a check yourself only for a doubt the result leaves`
+    : "";
   return section("checks", bullets(rows), {
-    note: "scope is the diff of this pack; widen a check only for a reason the shared method names, and record the command you ran with its actual scope",
+    note: `scope is the diff of this pack${running}; widen a check only for a reason the shared method names, and record the command you ran with its actual scope`,
   });
+}
+
+function startChecks(items, cwd, target, slug) {
+  const runnable = items.filter((item) => item.runnable);
+  if (!runnable.length) return { spec: null, results: null, error: null, count: 0 };
+  const spec = join(dirname(target), `checks-${slug}.json`);
+  const results = join(dirname(target), `checks-${slug}-results.json`);
+  const checks = runnable.map(({ id, tool, command, run, scope, width, source }) => ({ id, tool, command, ...(run && run !== command ? { run } : {}), scope, width, source }));
+  try {
+    mkdirSync(dirname(spec), { recursive: true });
+    writeFileSync(spec, `${JSON.stringify({ cwd, results, checks }, null, 1)}\n`);
+    const line = execFileSync(process.execPath, [join(scriptDir, "checks-run.mjs"), "--spec", spec, "--detach"], { cwd, encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "ignore"] });
+    const started = JSON.parse(line.trim().split("\n").pop());
+    if (!started.ok) return { spec, results, error: started.code ?? "checks_start_failed", count: 0 };
+    return { spec, results, error: null, count: runnable.length, pid: started.pid };
+  } catch (error) {
+    return { spec, results, error: `checks_start_failed: ${error.message}`, count: 0 };
+  }
 }
 
 function renderMaterials(items) {
@@ -577,14 +624,17 @@ function main() {
     section("diff", diff.text, { context: diff.context }),
     "</review_pack>",
   ].join("\n\n");
-  const pack = build([], [envText, checksSection(env, diffPaths, tests.map((file) => file.path))].filter(Boolean));
+  const slug = assignment.assignment_id.replace(/[^A-Za-z0-9._-]+/g, "-");
+  const packDir = opts.assignment === "-" ? tmpdir() : dirname(resolve(opts.assignment));
+  const target = opts.out ? resolve(opts.out) : join(packDir, `review-pack-${slug}.md`);
+  // The checks start before the pack is written, so the note the pack carries
+  // about them is a fact by the time the reviewer reads it.
+  const items = checkItems(env, diffPaths, tests.map((file) => file.path), assignment.verification);
+  const started = opts.checks ? startChecks(items, cwd, target, slug) : { spec: null, results: null, error: null, count: 0 };
+  const pack = build([], [envText, checksSection(items, started.count && !started.error ? started.results : null)].filter(Boolean));
   // The lenses judge the change, not the runtime: their pack carries the whole
   // review context without the environment snapshot the parent's checks need.
   const lensPack = mode === "children" ? build([LENS_NOTE], []) : null;
-
-  const packName = `review-pack-${assignment.assignment_id.replace(/[^A-Za-z0-9._-]+/g, "-")}.md`;
-  const packDir = opts.assignment === "-" ? tmpdir() : dirname(resolve(opts.assignment));
-  const target = opts.out ? resolve(opts.out) : join(packDir, packName);
   const lensTarget = lensPack ? (target.endsWith(".md") ? `${target.slice(0, -3)}-lens.md` : `${target}-lens`) : null;
   try {
     mkdirSync(dirname(target), { recursive: true });
@@ -606,6 +656,9 @@ function main() {
     risk_hits: hits,
     mode,
     diff_context: diff.context,
+    checks: started.count && !started.error ? started.results : null,
+    checks_started: started.count,
+    ...(started.error ? { checks_error: started.error } : {}),
     truncations,
     warnings,
     pack_chars: pack.length,
