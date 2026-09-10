@@ -10,6 +10,8 @@ Use an existing project index or convention first. When present, `docs/engineeri
 
 Record the applicable constraints with their source paths and why this change triggers them. Derive check commands from the actual manifests, build targets and CI configuration reported by the snapshot, following referenced scripts as needed. Select check modes appropriate to the role's permissions and affected paths. Keep baseline exclusions and generated-code boundaries visible: a green tool that excludes the changed behavior is not evidence about that behavior.
 
+Narrowing is that same rule applied on purpose. Narrow by default: give each check the paths the assignment changed against its base — the whole assignment, never only the last fix — and prefer the mode that resolves dependents itself over a bare path list. Run a check at full width when any of: the repository's own gate — a CI workflow, a hook configuration, a documented rule — defines it that way; the tool takes no scope, or takes only file paths while the change alters something other files import, extend, delete, move, or generate from — a shared module, a public signature, a configuration, a dependency, a schema or migration, a generated artifact; a narrowed run comes back red, empty, or selects no test. A narrowed green is evidence about the paths it covered and nothing else: the recorded command carries its actual scope, and the uncovered remainder is named as a gap with its reason, never as covered.
+
 ## Store durable knowledge
 
 The developer updates existing documentation when the assignment changes its contract or establishes a verified, reusable constraint needed to maintain the change. Keep one canonical source. Use this default only when no established location fits:

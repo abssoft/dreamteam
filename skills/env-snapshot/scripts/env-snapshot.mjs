@@ -132,16 +132,108 @@ if (!skip.has("tooling")) {
 }
 
 // ---------- validation command derivation ----------
+// A check is evidence about a change only when the role can point it at that
+// change. Whether a check narrows, and how, follows from the binary its script
+// actually runs — never from the name the author gave the script.
+const TOOLS = [
+  { tool: "vitest", lang: "node", re: /vitest$/, scope: "related", arg: "related {paths}", value: ["--config", "-c", "--reporter", "--project", "--environment"],
+    note: "related follows the module graph to the tests that import the change; a bare path argument matches test file names instead" },
+  { tool: "jest", lang: "node", re: /jest$/, scope: "related", arg: "--findRelatedTests {paths}", value: ["--config", "-c", "--reporters", "--maxWorkers", "--testPathPattern"],
+    note: "a global coverage threshold fails a partial run; drop it or accept the coverage item as uncovered" },
+  { tool: "eslint", lang: "node", re: /eslint$/, scope: "paths", arg: "{paths}", bool: ["--fix", "--quiet", "--cache", "--no-warn-ignored", "--no-eslintrc"], value: ["--config", "-c", "--ext", "--format", "-f", "--max-warnings", "--rulesdir", "--resolve-plugins-relative-to"],
+    note: "add --no-warn-ignored when a changed path is ignored by the configuration" },
+  { tool: "biome", lang: "node", re: /biome$/, scope: "paths", arg: "{paths}", sub: ["check", "lint", "format", "ci"], value: ["--config-path"] },
+  { tool: "stylelint", lang: "node", re: /stylelint$/, scope: "paths", arg: "{paths}", bool: ["--fix", "--quiet"], value: ["--config", "--custom-syntax", "--formatter"] },
+  { tool: "prettier", lang: "node", re: /prettier$/, scope: "paths", arg: "{paths}", bool: ["--check", "-c", "--write", "-w", "--list-different", "-l"], value: ["--config", "--ignore-path", "--parser"] },
+  { tool: "phpunit", lang: "php", re: /phpunit$/, scope: "tests-by-path", arg: "{test paths}", bool: ["--testdox", "--no-coverage", "--stop-on-failure", "--fail-on-warning"], value: ["--configuration", "-c", "--testsuite", "--filter", "--group", "--bootstrap"],
+    note: "takes test files or directories, never source paths; map a changed unit to its test by the suite's own mirror convention and widen when no test claims it" },
+  { tool: "artisan test", lang: "php", re: /artisan$/, bin: "php artisan", sub: ["test"], scope: "tests-by-path", arg: "{test paths}", value: ["--testsuite", "--filter", "--group"],
+    note: "forwards its arguments to phpunit: test paths, never source paths" },
+  { tool: "pint", lang: "php", re: /pint$/, scope: "paths", arg: "{paths}", bool: ["--test", "--dirty"], value: ["--config"] },
+  { tool: "phpcs", lang: "php", re: /phpcs$/, scope: "paths", arg: "{paths}", value: ["--standard", "--report"] },
+  { tool: "php-cs-fixer", lang: "php", re: /php-cs-fixer$/, scope: "paths", arg: "--path-mode=intersection {paths}", sub: ["fix"], value: ["--config", "--path-mode"],
+    note: "without --path-mode=intersection the given paths replace the finder of the configuration instead of narrowing it" },
+  { tool: "rector", lang: "php", re: /rector$/, scope: "paths", arg: "--dry-run {paths}", sub: ["process"], bool: ["--dry-run", "--clear-cache", "-n"], value: ["--config", "-c", "--memory-limit"],
+    note: "rector rewrites files; only the --dry-run form is a check" },
+  { tool: "phpstan", lang: "php", re: /phpstan$/, scope: "none", sub: ["analyse", "analyze"],
+    note: "narrowing to changed paths drops the errors the change causes in the files that consume it, and the result cache makes the full run cheap after the first one" },
+  { tool: "psalm", lang: "php", re: /psalm$/, scope: "none", note: "same as phpstan: a partial run loses the consumers of the change; use its own cache instead" },
+  { tool: "tsc", lang: "node", re: /tsc$/, scope: "none", note: "passing files to tsc ignores tsconfig.json and type-checks them with default options, so a narrowed run says nothing about the project" },
+];
+const PATH_SHAPED = /[\/*]|^\.$|^\.\.$|\.[A-Za-z0-9]+$/;
+const tokenize = (text) => text.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+const unquote = (token) => token.replace(/^["']|["']$/g, "");
+
+// Keeps the flags the script already carries — a check run without its own
+// configuration is a different check — and drops the targets it hardcodes.
+// A bare flag whose value looks like a path and is not a known value flag is
+// indistinguishable from a target, so that check is reported as unnarrowable
+// rather than guessed at.
+function narrowSegment(segment, spec, runner) {
+  const tokens = tokenize(segment);
+  const at = tokens.findIndex((token) => spec.re.test(unquote(token)));
+  if (at < 0) return null;
+  const binary = unquote(tokens[at]);
+  const kept = [spec.bin ?? (binary.includes("/") ? binary : spec.lang === "php" ? `vendor/bin/${binary}` : `${runner} ${binary}`)];
+  let pending = null;
+  for (const raw of tokens.slice(at + 1)) {
+    const token = unquote(raw);
+    if (token.startsWith("-")) {
+      kept.push(raw);
+      pending = token.includes("=") ? null : token;
+      continue;
+    }
+    if (pending && !(spec.bool ?? []).includes(pending)) {
+      if ((spec.value ?? []).includes(pending)) { kept.push(raw); pending = null; continue; }
+      if (PATH_SHAPED.test(token)) return { ambiguous: `${pending} ${token}` };
+      kept.push(raw);
+      pending = null;
+      continue;
+    }
+    pending = null;
+    if ((spec.sub ?? []).includes(token)) { kept.push(raw); continue; }
+  }
+  return { command: kept.join(" ") };
+}
+
 {
-  const commands = [];
+  const checks = [];
+  const suite = [];
   const notes = [];
+  const runner = exists("pnpm-lock.yaml") ? "pnpm exec" : exists("yarn.lock") ? "yarn" : "npx";
+  const seen = new Set();
+
+  const classify = (source, body, lang) => {
+    // A watch or interactive run never returns, so it is not a check.
+    if (/--watch\b|--ui\b/.test(String(body))) return;
+    for (const segment of String(body).split(/&&|\|\||;|\|/)) {
+      for (const spec of TOOLS) {
+        if (spec.lang !== lang) continue;
+        const parsed = narrowSegment(segment, spec, runner);
+        if (!parsed) continue;
+        const key = `${spec.tool}:${parsed.command ?? source}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (spec.scope === "none") {
+          checks.push({ tool: spec.tool, source, scope: "none", command: source, reason: spec.note });
+        } else if (parsed.ambiguous) {
+          checks.push({ tool: spec.tool, source, scope: "none", command: source, reason: `cannot tell the target from the value of ${parsed.ambiguous}; run it as the script defines it` });
+        } else {
+          const already = new Set(tokenize(parsed.command).map(unquote));
+          const arg = spec.arg.split(" ").filter((token) => !already.has(token)).join(" ");
+          checks.push({ tool: spec.tool, source, scope: spec.scope, command: `${parsed.command} ${arg}`, ...(spec.note ? { note: spec.note } : {}) });
+        }
+      }
+    }
+  };
+
   if (project.node?.scripts) {
     const mgr = exists("pnpm-lock.yaml") ? "pnpm" : exists("yarn.lock") ? "yarn" : "npm run";
     const s = project.node.scripts;
     const pick = names => names.find(n => Object.hasOwn(s, n));
     const seq = [pick(["check:types", "typecheck", "type-check", "types:check", "tsc"]), pick(["lint:ci", "lint"]), pick(["test:unit", "test"])].filter(Boolean);
-    if (seq.length) commands.push(seq.map(n => `${mgr} ${n}`).join(" && "));
-    if (Object.hasOwn(s, "test") && /vitest/.test(String(s.test))) notes.push("targeted tests: append a file path to the test script runner");
+    if (seq.length) suite.push(seq.map(n => `${mgr} ${n}`).join(" && "));
+    for (const [name, body] of Object.entries(s)) classify(`${mgr} ${name}`, body, "node");
   }
   if (project.php) {
     const s = project.php.scripts ?? {};
@@ -150,10 +242,22 @@ if (!skip.has("tooling")) {
     if (!Object.hasOwn(s, "test") && (exists("phpunit.xml") || exists("phpunit.xml.dist"))) {
       phpSeq.push(exists("artisan") ? "php artisan test" : "vendor/bin/phpunit");
     }
-    if (phpSeq.length) commands.push(phpSeq.join(" && "));
+    if (phpSeq.length) suite.push(phpSeq.join(" && "));
+    for (const [name, body] of Object.entries(s)) {
+      for (const line of Array.isArray(body) ? body : [body]) classify(`composer ${name}`, line, "php");
+    }
+    if (!Object.hasOwn(s, "test") && (exists("phpunit.xml") || exists("phpunit.xml.dist"))) {
+      classify(exists("artisan") ? "php artisan test" : "vendor/bin/phpunit", exists("artisan") ? "artisan test" : "vendor/bin/phpunit", "php");
+    }
   }
-  if (!commands.length) notes.push("no validation commands derived; check project manifests or repository docs");
-  snapshot.validation = { commands, notes };
+  if (!checks.length && !suite.length) notes.push("no validation commands derived; check project manifests or repository docs");
+  else if (!checks.some(c => c.scope !== "none")) notes.push("nothing here narrows to changed paths; the suite is the check, and its width is a stated gap, not coverage");
+  snapshot.validation = {
+    scope_source: "the paths this assignment changed against its base: git diff --name-only <base>...HEAD, plus the working tree (git diff --name-only HEAD and untracked entries of git status --short); a review takes them from its pack instead",
+    checks,
+    suite,
+    notes,
+  };
 }
 
 // ---------- docs index ----------
@@ -234,8 +338,22 @@ if (project.php) {
 }
 if (project.lockfiles?.length) out.push(`lockfiles: ${project.lockfiles.join(", ")}`);
 if (project.makefile_targets?.length) out.push(`Makefile targets: ${project.makefile_targets.join(", ")}`);
-out.push(`\n## validation (run before handoff; narrowest first, this suite last)`);
-for (const c of snapshot.validation.commands) out.push("  " + c);
+out.push(`\n## validation (default width: the paths this change touched — the shared engineering reference states when a check runs at full width instead)`);
+out.push(`scope of a run: ${snapshot.validation.scope_source}`);
+for (const [label, kept] of [
+  ["narrowed by dependents", (c) => c.scope === "related"],
+  ["narrowed by paths", (c) => c.scope === "paths" || c.scope === "tests-by-path"],
+  ["full width only", (c) => c.scope === "none"],
+]) {
+  const group = snapshot.validation.checks.filter(kept);
+  if (!group.length) continue;
+  out.push(`${label}:`);
+  for (const c of group) out.push(`  ${c.command}   (${c.tool}, from ${c.source}${c.note ? `; ${c.note}` : c.reason ? `; ${c.reason}` : ""})`);
+}
+if (snapshot.validation.suite.length) {
+  out.push(`project suite (only when the shared reference calls for full width):`);
+  for (const c of snapshot.validation.suite) out.push("  " + c);
+}
 for (const n of snapshot.validation.notes) out.push("  note: " + n);
 if (snapshot.tooling) {
   out.push(`\n## tooling`);

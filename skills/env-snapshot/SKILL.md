@@ -33,7 +33,7 @@ Options:
 | workspace | git toplevel, HEAD, current ref, short status, recent commits, auto-detected base with changed paths and commits on top of it, uncommitted diffstat, worktree list |
 | runtime | versions of node plus the package tooling the project actually uses (pnpm/npm/yarn, php/composer), version-manager files |
 | project | detected kinds (node, php, mixed), manifest names, engines, full script lists, lockfiles, Makefile targets |
-| validation | check commands derived from project scripts (typecheck, lint, tests) to run before handoff |
+| validation | per-tool checks derived from the binaries the project scripts actually run: how each one narrows to the paths a change touched, or why it cannot, plus the whole-project suite as the fallback |
 | tooling | config files present, test-file count, names of local env files (contents never read) |
 | docs index | tracked documentation file list for routing later reads |
 | rules | bounded embeds of repository instruction documents, following one level of `@` imports |
@@ -42,7 +42,7 @@ Options:
 
 - Do not re-collect anything the snapshot already reports; cite it instead.
 - Batch the remaining startup context — language-server or index status probes, task-specific file reads — into the next single call.
-- Before handoff, reuse the `validation` section commands; do not re-derive them.
+- Before handoff, take the commands from the `validation` section and give them the paths this change touched; do not re-derive them. The shared engineering reference states when a check runs at full width instead.
 - The auto-detected base is name-based; when the assignment implies a different comparison base, diff against that one.
 
 ## Boundaries

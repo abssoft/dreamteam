@@ -57,6 +57,7 @@ const DIFF_WIDTHS = [10, 6, 3, 0];
 const RULES_RESERVE = 20000;
 const DIFF_FLOOR_SHARE = 0.4;
 const RISK_HIT_CAP = 40;
+const CHECK_PATH_CAP = 40;
 const DOCS_LIST_CAP = 150;
 const SHORT_ISSUE_CHARS = 300;
 // The instruction chain a repository publishes: the agent entry files and the
@@ -106,8 +107,9 @@ Pack sections, in order: attention (cuts and notes), signals, scope, decisions
 development_result and previous_review (the Result files those materials name,
 whole), method (the shared engineering reference), rules (the repository
 instruction chain: the entry files and the rule directory whole, then routes to
-the documents they name), env, files, diff. In children mode a second pack, named -lens beside the first,
-carries the same context without env, for the lens children.
+the documents they name), env, checks (the snapshot's check templates with this
+diff's paths already in them), files, diff. In children mode a second pack, named -lens beside the first,
+carries the same context without env or checks, for the lens children.
 Output: one JSON line {ok, pack, lens_pack (children mode), base, head, files,
 changed_lines, test_files, risk_hits[{path,line,match}], mode
 children|in_context, diff_context, truncations[], warnings[], pack_chars};
@@ -366,6 +368,45 @@ function envSnapshot(cwd, skip) {
   }
 }
 
+// The width of a check is a fact of the pack, not a choice the reviewer makes
+// mid-run: the templates come from the environment snapshot, the paths from the
+// diff this pack was built on. Past the cap the list collapses to the
+// directories it came from, so a wide change still runs one narrowed command.
+function checksSection(env, codePaths, testPaths) {
+  const checks = env?.validation?.checks;
+  if (!Array.isArray(checks) || !checks.length) return "";
+  const quote = (path) => (/[\s]|^-/.test(path) ? `'${path}'` : path);
+  const collapse = (paths) => {
+    if (paths.length <= CHECK_PATH_CAP) return { list: paths.map(quote).join(" "), note: "" };
+    const dirs = [...new Set(paths.map((path) => path.split("/").slice(0, -1).join("/") || "."))];
+    return { list: dirs.slice(0, CHECK_PATH_CAP).map(quote).join(" "), note: ` (${paths.length} paths collapsed to their directories)` };
+  };
+  const code = collapse(codePaths);
+  const tests = collapse(testPaths);
+  const rows = [];
+  for (const check of checks) {
+    if (!isPlainObject(check) || !isText(check.command)) continue;
+    const detail = check.note ?? check.reason ?? "";
+    if (check.scope === "none") {
+      rows.push(`${check.command} — ${check.tool}, full width only${detail ? `: ${detail}` : ""}`);
+      continue;
+    }
+    const wanted = check.scope === "tests-by-path" ? tests : code;
+    if (!wanted.list) {
+      rows.push(`${check.command} — ${check.tool}: this change carries no ${check.scope === "tests-by-path" ? "test" : "code"} path, derive the scope from the files above`);
+      continue;
+    }
+    rows.push(`${check.command.replace(/\{test paths\}|\{paths\}/g, wanted.list)} — ${check.tool}, from ${check.source}${wanted.note}${detail ? `; ${detail}` : ""}`);
+  }
+  for (const command of env?.validation?.suite ?? []) {
+    if (isText(command)) rows.push(`${command} — project suite, full width only`);
+  }
+  if (!rows.length) return "";
+  return section("checks", bullets(rows), {
+    note: "scope is the diff of this pack; widen a check only for a reason the shared method names, and record the command you ran with its actual scope",
+  });
+}
+
 function renderMaterials(items) {
   const parts = [];
   for (const item of items) {
@@ -489,7 +530,10 @@ function main() {
   fixed.push(section("method", methodReference()));
 
   const env = envSnapshot(cwd, opts.skip);
-  const envText = section("env", JSON.stringify(env, null, 1));
+  // The checks section is where the width of a run is settled, so the snapshot
+  // rides without its own path-less templates: one list, already scoped.
+  const { validation, ...envRest } = env;
+  const envText = section("env", JSON.stringify(envRest, null, 1));
   const filesText = section("files", bullets(files.map((file) => `${file.status} ${file.from ? `${file.from} → ` : ""}${file.path}${TEST_PATH.test(file.path) ? " (test)" : ""}`)));
   const testsText = digestFiles.length
     ? section("tests", testDigest(digestFiles, range, mergeBase, cwd), { note: "declared cases only; open the file to judge a test's strength or a scenario's cover" })
@@ -533,7 +577,7 @@ function main() {
     section("diff", diff.text, { context: diff.context }),
     "</review_pack>",
   ].join("\n\n");
-  const pack = build([], [envText]);
+  const pack = build([], [envText, checksSection(env, diffPaths, tests.map((file) => file.path))].filter(Boolean));
   // The lenses judge the change, not the runtime: their pack carries the whole
   // review context without the environment snapshot the parent's checks need.
   const lensPack = mode === "children" ? build([LENS_NOTE], []) : null;

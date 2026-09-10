@@ -330,6 +330,32 @@ test('without an entry file the rules section falls back to documentation paths'
   assert.match(pack, /<rules>\nNo AGENTS\.md, CLAUDE\.md, docs\/engineering\/README\.md; documentation paths to route reads:\n- docs\/engineering\/rules\/money\.md/);
 });
 
+test('the checks section carries the snapshot templates with this diff\'s paths already in them', async () => {
+  const dir = await repo();
+  sh(dir, 'git', ['checkout', '-q', 'main']);
+  await writeFile(join(dir, 'package.json'), JSON.stringify({
+    name: 'fixture',
+    scripts: { 'check:types': 'tsc -p tsconfig.json --noEmit', lint: 'eslint . --max-warnings 0', test: 'vitest run' },
+  }));
+  commit(dir, 'tooling');
+  sh(dir, 'git', ['checkout', '-q', 'task']);
+  sh(dir, 'git', ['rebase', '-q', 'main']);
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.reduce((sum, item) => sum + item.amount, 0);\n');
+  await writeFile(join(dir, 'src', 'totals.test.js'), 'test("sums amounts", () => {});\n');
+  commit(dir, 'totals');
+
+  const { json } = run(dir, assignment(), ['--skip=rules,docs']);
+  const pack = await readFile(json.pack, 'utf8');
+  // The narrowed command names the changed source; the tool that cannot narrow
+  // says so instead of arriving as a path-less template.
+  assert.match(pack, /<checks note="scope is the diff of this pack/);
+  assert.match(pack, /npx vitest related src\/totals\.js — vitest, from npm run test/);
+  assert.match(pack, /npx eslint --max-warnings 0 src\/totals\.js — eslint/);
+  assert.match(pack, /npm run check:types — tsc, full width only/);
+  assert.ok(pack.indexOf('<env>') < pack.indexOf('<checks') && pack.indexOf('<checks') < pack.indexOf('<files>'), 'checks sits between env and files');
+  assert.equal(pack.includes('{paths}'), false);
+});
+
 test('children mode writes a lens pack: the same context without env, and no environment work for the lenses', async () => {
   const dir = await repo();
   const big = Array.from({ length: 300 }, (_, i) => `export const value${i} = "${'x'.repeat(40)}";`).join('\n');
@@ -343,6 +369,7 @@ test('children mode writes a lens pack: the same context without env, and no env
   const lens = await readFile(json.lens_pack, 'utf8');
   assert.match(pack, /<env>/);
   assert.equal(lens.includes('<env>'), false);
+  assert.equal(lens.includes('<checks'), false);
   assert.match(lens, /- This pack is your whole review context: settle every doubt by reading the code it names, and collect no environment snapshot, rules or diff of your own/);
   assert.ok(lens.endsWith('</review_pack>\n'));
   for (const marker of ['<signals>', '<issue ', '<method>', '<rules>', '<files>', '<diff context=']) {
