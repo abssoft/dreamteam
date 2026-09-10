@@ -379,3 +379,41 @@ test('routes past the cap are named in the truncations, never dropped in silence
   assert.match(note, /docs\/note44\.md/);
   assert.match(pack, /<attention>[\s\S]*rule routes past the cap of 40/);
 });
+
+test('tests ride as a digest of declared cases, and their fixtures raise no risk signal', async () => {
+  const dir = await repo();
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.reduce((sum, item) => sum + item.amount, 0);\n');
+  await writeFile(join(dir, 'src', 'totals.test.js'), [
+    'import { total } from "./totals.js";',
+    'const password = "hunter2"; // fixture, not a change to authorization',
+    'describe("total", () => {',
+    '  it("sums every amount", () => {});',
+    '  it("is zero for an empty order", () => {});',
+    '});',
+  ].join('\n'));
+  commit(dir, 'sum amounts with tests');
+
+  const { json } = run(dir, assignment({ assignment_id: 'assignment-review-digest' }), ['--skip=rules']);
+  assert.deepEqual(json.risk_hits, [], 'a fixture password is not a risk signal of the change');
+  assert.equal(json.test_files, 1);
+  const pack = await readFile(json.pack, 'utf8');
+  const digest = pack.slice(pack.indexOf('<tests '), pack.indexOf('</tests>'));
+  assert.match(digest, /A src\/totals\.test\.js \+6 -0/);
+  assert.match(digest, /\n- total\n- sums every amount\n- is zero for an empty order/);
+  // The bodies stay out of the diff; the code they exercise stays in.
+  const diff = pack.slice(pack.indexOf('<diff '), pack.indexOf('</diff>'));
+  assert.equal(diff.includes('totals.test.js'), false);
+  assert.match(diff, /src\/totals\.js/);
+  assert.match(pack, /- A src\/totals\.test\.js \(test\)/);
+});
+
+test('a change that is only tests keeps them as the diff', async () => {
+  const dir = await repo();
+  await writeFile(join(dir, 'src', 'totals.test.js'), 'import { total } from "./totals.js";\nit("counts", () => {});\n');
+  commit(dir, 'tests only');
+
+  const { json } = run(dir, assignment({ assignment_id: 'assignment-review-tests-only' }), ['--skip=rules']);
+  const pack = await readFile(json.pack, 'utf8');
+  assert.equal(pack.includes('<tests '), false);
+  assert.match(pack.slice(pack.indexOf('<diff ')), /src\/totals\.test\.js/);
+});
