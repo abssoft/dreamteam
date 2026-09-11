@@ -96,7 +96,12 @@ test('collector rejects malformed arguments with bad_args and exit 0', async () 
     { runtime: 'codex', sessionId: 's', launches: [{ rootAgentRef: 'r', label: 'Ревью' }], rootAgentRef: 'r', label: 'Ревью' },
     { runtime: 'codex', sessionId: 's', launches: [{ rootAgentRef: 'r1', label: 'Ревью' }, { rootAgentRef: 'r2', label: 'Ревью' }] },
     { runtime: 'codex', sessionId: 's', launches: [{ rootAgentRef: 'r', label: 'PRD' }, { rootAgentRef: 'r', label: 'Ревью' }] },
-    { runtime: 'claude', sessionId: 's', launches: [{ rootAgentRef: 'r', label: 'Ревью' }], label: '' }
+    { runtime: 'claude', sessionId: 's', launches: [{ rootAgentRef: 'r', label: 'Ревью' }], label: '' },
+    // hostLabel: the host row exists only beside launches[], never empty, never a launch's own label.
+    { runtime: 'claude', sessionId: 's', rootAgentRef: 'r', label: 'Ревью', hostLabel: 'Диспетчер' },
+    { runtime: 'claude', sessionId: 's', hostLabel: 'Диспетчер' },
+    { runtime: 'codex', sessionId: 's', launches: [{ rootAgentRef: 'r', label: 'Ревью' }], hostLabel: '' },
+    { runtime: 'codex', sessionId: 's', launches: [{ rootAgentRef: 'r', label: 'Ревью' }], hostLabel: 'Ревью' }
   ]) {
     assert.deepEqual(await runCollector(args), {
       ok: false,
@@ -481,6 +486,82 @@ test('Codex launches[] renders one table over several launches in call order wit
   );
 });
 
+test('Codex hostLabel closes the launches[] table with the host thread and its unclaimed children', async () => {
+  const sessionsRoot = await makeLogs({
+    'main.jsonl': [
+      { timestamp: '2026-01-01T10:00:00.000Z', type: 'session_meta', payload: { id: 'sess-1' } },
+      codexTurnContext('gpt-5.6-sol', '2026-01-01T10:00:05.000Z'),
+      { timestamp: '2026-01-01T10:00:06.000Z', type: 'event_msg', payload: { type: 'agent_message', message: 'spawned thread-dev' } },
+      codexTokenCount({ input_tokens: 1000, cached_input_tokens: 100, output_tokens: 100, total_tokens: 1100 }, '2026-01-01T10:06:00.000Z')
+    ],
+    'dev.jsonl': [
+      codexMeta('thread-dev', 'sess-1', null),
+      codexTurnContext('gpt-5.6-terra', '2026-01-01T10:01:00.000Z'),
+      codexTokenCount({ input_tokens: 200, cached_input_tokens: 0, output_tokens: 20, total_tokens: 220 }, '2026-01-01T10:02:00.000Z')
+    ],
+    // Spawned by the host outside launches[] — it rows after the host under its own role name.
+    'research.jsonl': [
+      codexMeta('thread-research', 'sess-1', '/root/review'),
+      codexTurnContext('gpt-5.6-terra', '2026-01-01T10:03:00.000Z'),
+      codexTokenCount({ input_tokens: 50, cached_input_tokens: 0, output_tokens: 5, total_tokens: 55 }, '2026-01-01T10:04:00.000Z')
+    ]
+  });
+  const empty = await emptyDir();
+  const call = {
+    runtime: 'codex', sessionId: 'sess-1', full: true, codexRoot: sessionsRoot, codexArchivedRoot: empty,
+    launches: [{ rootAgentRef: 'thread-dev', label: 'Разработка' }], hostLabel: 'Диспетчер'
+  };
+
+  const result = await runCollector(call);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.agents, 3, 'the launch, the host rollout and the child no launch claimed');
+  assert.equal(
+    result.rendered.rows,
+    '| Разработка<br>*gpt-5.6-terra · default* | 1м 0с | 1 | 200 | 0 | 20 | 0.000 |\n' +
+      '| Диспетчер<br>*gpt-5.6-sol · default* | 5м 55с | 1 | 1 000 | 100 | 100 | 0.005 |\n' +
+      '| Ревью<br>*gpt-5.6-terra · default* | 1м 0с | 1 | 50 | 0 | 5 | 0.000 |'
+  );
+  assert.equal(result.rendered.total_row, '| **ИТОГО** | 6м 0с | 3 | 1 250 | 100 | 125 | 0.006 |');
+
+  // The promise of the host row: the table now totals exactly what the whole session spent.
+  const session = await runCollector({ runtime: 'codex', sessionId: 'sess-1', full: true, codexRoot: sessionsRoot, codexArchivedRoot: empty });
+  assert.deepEqual(result.tokens, session.tokens);
+  assert.equal(result.steps, session.steps);
+  assert.equal(result.wall_seconds, session.wall_seconds);
+  assert.equal(result.cost_usd, session.cost_usd);
+
+  // Without the session rollout the host row cannot be proven: the whole call fails closed.
+  const launchesOnly = await makeLogs({
+    'dev.jsonl': [
+      codexMeta('thread-dev', 'sess-1', null),
+      codexTurnContext('gpt-5.6-terra', '2026-01-01T10:01:00.000Z'),
+      codexTokenCount({ input_tokens: 200, cached_input_tokens: 0, output_tokens: 20, total_tokens: 220 }, '2026-01-01T10:02:00.000Z')
+    ]
+  });
+  assert.deepEqual(await runCollector({ ...call, codexRoot: launchesOnly }), failure('logs_not_found', 'Прогон'));
+
+  // A multi_agent_v1 launch the caller addressed by ref needs no echo in the host rollout;
+  // whole-session scope, where no ref was given, still demands that evidence.
+  const silentHost = await makeLogs({
+    'main.jsonl': [
+      { timestamp: '2026-01-01T10:00:00.000Z', type: 'session_meta', payload: { id: 'sess-1' } },
+      codexTurnContext('gpt-5.6-sol', '2026-01-01T10:00:05.000Z'),
+      codexTokenCount({ input_tokens: 1000, cached_input_tokens: 100, output_tokens: 100, total_tokens: 1100 }, '2026-01-01T10:06:00.000Z')
+    ],
+    'dev.jsonl': [
+      codexMeta('thread-dev', 'sess-1', null),
+      codexTurnContext('gpt-5.6-terra', '2026-01-01T10:01:00.000Z'),
+      codexTokenCount({ input_tokens: 200, cached_input_tokens: 0, output_tokens: 20, total_tokens: 220 }, '2026-01-01T10:02:00.000Z')
+    ]
+  });
+  assert.equal((await runCollector({ ...call, codexRoot: silentHost })).ok, true);
+  assert.deepEqual(
+    await runCollector({ runtime: 'codex', sessionId: 'sess-1', codexRoot: silentHost, codexArchivedRoot: empty }),
+    failure('workflow_run_incomplete', 'Основная сессия')
+  );
+});
+
 test('Codex whole-session scope without the session rollout fails with logs_not_found', async () => {
   const sessionsRoot = await makeLogs({
     'foreign.jsonl': [codexMeta('thread-foreign', 'sess-2', '/root/review'), codexTurnContext('gpt-5.6-terra')]
@@ -630,6 +711,74 @@ test('Claude launches[] keeps each launch with its subagents and totals exactly 
     }),
     failure('root_not_found', 'Прогон')
   );
+});
+
+test('Claude hostLabel adds the session transcript as its own row and keeps unclaimed subagents visible', async () => {
+  const projectsRoot = await makeLogs({
+    'proj/sess-uuid.jsonl': [
+      { type: 'user', timestamp: '2026-01-01T09:59:00.000Z', message: { role: 'user', content: 'go' } },
+      {
+        type: 'assistant', requestId: 'host1', timestamp: '2026-01-01T10:00:00.000Z',
+        message: {
+          model: 'claude-sonnet-5',
+          usage: { input_tokens: 2000, cache_creation_input_tokens: 0, cache_read_input_tokens: 1000, output_tokens: 200 },
+          content: [{ type: 'tool_use', id: 'tu-x', name: 'Task', input: { description: 'Разбор логов', subagent_type: 'general-purpose' } }]
+        }
+      },
+      {
+        type: 'user', timestamp: '2026-01-01T10:01:00.000Z', toolUseResult: { agentId: 'stray' },
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu-x', content: 'done' }] }
+      },
+      claudeAssistant({
+        requestId: 'host2', model: 'claude-sonnet-5', at: '2026-01-01T10:02:00.000Z',
+        usage: { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 }
+      })
+    ],
+    'proj/sess-uuid/subagents/agent-dev.jsonl': [
+      claudeAssistant({
+        requestId: 'dev1', model: 'claude-sonnet-5', at: '2026-01-01T10:03:00.000Z',
+        usage: { input_tokens: 1000, cache_creation_input_tokens: 0, cache_read_input_tokens: 500, output_tokens: 100 }
+      }),
+      claudeAssistant({
+        requestId: 'dev2', model: 'claude-sonnet-5', at: '2026-01-01T10:05:00.000Z',
+        usage: { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 }
+      })
+    ],
+    'proj/sess-uuid/subagents/agent-stray.jsonl': [
+      claudeAssistant({
+        requestId: 'stray1', model: 'claude-sonnet-5', at: '2026-01-01T10:06:00.000Z',
+        usage: { input_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 10 }
+      }),
+      claudeAssistant({
+        requestId: 'stray2', model: 'claude-sonnet-5', at: '2026-01-01T10:07:00.000Z',
+        usage: { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 }
+      })
+    ]
+  });
+  const call = {
+    runtime: 'claude', sessionId: 'sess-uuid', full: true, claudeProjectsRoot: projectsRoot,
+    launches: [{ rootAgentRef: 'dev', label: 'Разработка' }], hostLabel: 'Диспетчер'
+  };
+
+  const result = await runCollector(call);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.agents, 3);
+  // The host row carries the transcript alone; the subagent it launched outside launches[]
+  // rows after it under its Task description, so nothing of the session is hidden in «Диспетчер».
+  assert.equal(
+    result.rendered.rows,
+    '| Разработка<br>*claude-sonnet-5 · standard* | 2м 0с | 2 | 1 500 | 500 | 100 | 0.003 |\n' +
+      '| Диспетчер<br>*claude-sonnet-5 · standard* | 2м 0с | 2 | 3 000 | 1 000 | 200 | 0.006 |\n' +
+      '| Разбор логов<br>*claude-sonnet-5 · standard* | 1м 0с | 2 | 100 | 0 | 10 | 0.000 |'
+  );
+  assert.equal(result.rendered.total_row, '| **ИТОГО** | 7м 0с | 6 | 4 600 | 1 500 | 310 | 0.009 |');
+
+  const session = await runCollector({ runtime: 'claude', sessionId: 'sess-uuid', full: true, claudeProjectsRoot: projectsRoot });
+  assert.deepEqual(result.tokens, session.tokens);
+  assert.equal(result.steps, session.steps);
+  assert.equal(result.wall_seconds, session.wall_seconds);
+  assert.equal(result.cost_usd, session.cost_usd);
 });
 
 test('Claude whole-session scope failure codes: logs_not_found without the transcript, ambiguous_root on duplicates', async () => {
