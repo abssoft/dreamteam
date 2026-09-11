@@ -18,6 +18,12 @@
 //   so parallel launches count once while per-launch rows keep their own
 //   time. The caller cannot total rendered rows itself (digit formatting
 //   is script-only), which is why this mode exists.
+// hostLabel names the hosting session's own row beside launches[]: the
+//   thread that launched them (a project Dispatcher) spends tokens too.
+//   Valid only with launches[], and unique against their labels. The row
+//   carries the session's own log; whatever the session spawned outside
+//   launches[] rows after it under its own name, so the table's ИТОГО is
+//   exactly what the whole session spent.
 // analyze:true adds the inferred context-attribution pass (see `analysis`
 //   below); it is off by default and never changes exact usage or pricing.
 // rootAgentRef targets one finished launch. Omitted (or null) without
@@ -1376,8 +1382,11 @@ function emit(label, span, agents, models, ledger, source, analysis, full) {
     out(full ? { ...result, ...rendered } : { ok: true, label, ...rendered });
 }
 
-async function collectCodex({ sessionId, launches, label, analyze, full, codexRoot, codexArchivedRoot }) {
+async function collectCodex({ sessionId, launches, label, hostLabel, analyze, full, codexRoot, codexArchivedRoot }) {
     const sessionScope = launches === null;
+    // The session's own rollout is a root in whole-session scope and, with
+    // hostLabel, the closing host row of a launches[] table.
+    const needsSessionRoot = sessionScope || hostLabel !== null;
     const state = { files: [], seen: new Set() };
     await listJsonlFiles(codexRoot ?? join(homedir(), ".codex", "sessions"), state);
     await listJsonlFiles(codexArchivedRoot ?? join(homedir(), ".codex", "archived_sessions"), state);
@@ -1391,7 +1400,7 @@ async function collectCodex({ sessionId, launches, label, analyze, full, codexRo
         if (!isNonEmptyString(payload?.id)) continue;
         // Whole-session scope roots at the session's own rollout, whatever
         // spawned it; launch scope only ever matches spawned threads.
-        if (sessionScope && payload.id === sessionId) {
+        if (needsSessionRoot && payload.id === sessionId) {
             sessionRoots.push({ path, id: payload.id });
             continue;
         }
@@ -1424,6 +1433,14 @@ async function collectCodex({ sessionId, launches, label, analyze, full, codexRo
             if (matches.length > 1) failWith("ambiguous_root");
             roots.push({ item: matches[0], label: launch.label });
         }
+        // Host row last: its rollout plus whatever it spawned outside the
+        // launches, whose subtrees are already taken — absorb skips them
+        // instead of reading them twice.
+        if (hostLabel !== null) {
+            if (sessionRoots.length === 0) failWith("logs_not_found");
+            if (sessionRoots.length > 1) failWith("ambiguous_root");
+            roots.push({ item: sessionRoots[0], label: hostLabel, absorb: true });
+        }
     }
 
     const selected = new Map();
@@ -1436,7 +1453,10 @@ async function collectCodex({ sessionId, launches, label, analyze, full, codexRo
         while (pending.length > 0) {
             const parentId = pending.shift();
             for (const child of metadata.filter((item) => item.parentId === parentId)) {
-                if (selected.has(child.id)) failWith("ambiguous_root");
+                if (selected.has(child.id)) {
+                    if (root.absorb) continue;
+                    failWith("ambiguous_root");
+                }
                 selected.set(child.id, child);
                 pending.push(child.id);
             }
@@ -1457,6 +1477,9 @@ async function collectCodex({ sessionId, launches, label, analyze, full, codexRo
         // A null-path child has no structured launch record; the only
         // parent-side evidence is its thread id echoed in tool output.
         for (const child of metadata.filter((meta) => meta.parentId === item.id && meta.agentPath === null)) {
+            // A launch the caller addressed by ref is evidenced by the call
+            // itself; only unnamed children need the parent-side echo.
+            if (rootLabels.has(child.id)) continue;
             if (!records.some((record) => JSON.stringify(record).includes(child.id))) failWith("workflow_run_incomplete");
         }
         let activeModel;
@@ -1609,7 +1632,7 @@ async function collectCodex({ sessionId, launches, label, analyze, full, codexRo
     emit(label, span, selected.size, models, ledger, "codex", analysis?.result() ?? undefined, full);
 }
 
-async function collectClaude({ sessionId, launches, label, analyze, full, claudeProjectsRoot }) {
+async function collectClaude({ sessionId, launches, label, hostLabel, analyze, full, claudeProjectsRoot }) {
     // Subagent transcripts live at <projects>/<slug>/<sessionId>/subagents/agent-<agentId>.jsonl;
     // nested subagents are linked through toolUseResult.agentId in the parent's records.
     const sessionScope = launches === null;
@@ -1622,9 +1645,12 @@ async function collectClaude({ sessionId, launches, label, analyze, full, claude
     // rows together (root, then its descendants, then the next launch).
     const seeds = [];
     const rootLabels = new Map();
-    if (sessionScope) {
-        // Whole-session scope: the session transcript plus every subagent
-        // file in its directory — linked or not, it was spent in this chat.
+    // The session transcript plus every subagent file in its directory —
+    // linked or not, it was spent in this chat. As the host seed beside
+    // launches[] it is queued last, so the launch subtrees are already
+    // selected and skipped on read: the row is the host's own transcript
+    // and the rows after it are the children no launch claimed.
+    const seedSession = (rootLabel) => {
         const mains = state.files.filter((path) => basename(path) === `${sessionId}.jsonl`);
         if (mains.length === 0) failWith("logs_not_found");
         if (mains.length > 1) failWith("ambiguous_root");
@@ -1633,8 +1659,11 @@ async function collectClaude({ sessionId, launches, label, analyze, full, claude
         for (const path of state.files) {
             if (dirname(path) === subagentsDir) pending.push([basename(path, ".jsonl").replace(/^agent-/, ""), path]);
         }
-        rootLabels.set(sessionId, label);
+        rootLabels.set(sessionId, rootLabel);
         seeds.push(pending);
+    };
+    if (sessionScope) {
+        seedSession(label);
     } else {
         for (const launch of launches) {
             const rootMatches = agentFile(launch.rootAgentRef);
@@ -1646,6 +1675,7 @@ async function collectClaude({ sessionId, launches, label, analyze, full, claude
             rootLabels.set(launch.rootAgentRef, launch.label);
             seeds.push([[launch.rootAgentRef, rootMatches[0]]]);
         }
+        if (hostLabel !== null) seedSession(hostLabel);
     }
 
     const selected = new Map();
@@ -1823,7 +1853,7 @@ async function main() {
     } catch {
         failWith("bad_args");
     }
-    const { runtime, sessionId, rootAgentRef, launches, label, analyze, full } = args ?? {};
+    const { runtime, sessionId, rootAgentRef, launches, label, hostLabel, analyze, full } = args ?? {};
     // Scopes: launches[] → one table over several launches (rootAgentRef
     // must then be absent); rootAgentRef → one launch; neither → the whole
     // session. The top-level label may be omitted only where a default
@@ -1839,6 +1869,11 @@ async function main() {
         !["codex", "claude"].includes(runtime) ||
         !isNonEmptyString(sessionId) ||
         (multiScope && !validLaunches) ||
+        // The host row exists only beside launches[]; whole-session scope
+        // already contains the host, and a single launch is not a table.
+        !(hostLabel === undefined || hostLabel === null
+            || (multiScope && isNonEmptyString(hostLabel)
+                && !launches.some((item) => item.label.trim() === hostLabel.trim()))) ||
         (!sessionScope && !multiScope && !isNonEmptyString(rootAgentRef)) ||
         !(isNonEmptyString(label) || ((sessionScope || multiScope) && label == null)) ||
         !(analyze === undefined || typeof analyze === "boolean") ||
@@ -1846,6 +1881,7 @@ async function main() {
     ) {
         failWith("bad_args");
     }
+    args.hostLabel = isNonEmptyString(hostLabel) ? hostLabel.trim() : null;
     args.analyze = analyze === true;
     args.full = full === true;
     args.label = isNonEmptyString(label) ? label : multiScope ? "Прогон" : "Основная сессия";

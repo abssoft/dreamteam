@@ -25,11 +25,12 @@ Resolve `<plugin_root>` from this skill file's installed location.
 | `sessionId` | Required hosting-session UUID. |
 | `rootAgentRef` | Codex spawned task path/thread id or Claude Task `agentId`. Omit or pass `null` for the session transcript plus all descendants. |
 | `launches` | `[{rootAgentRef, label}, …]` — several finished launches of this session rendered as one table with one «ИТОГО», in array order. Labels and refs must be unique: number a repeated stage («Разработка 2»). Passed instead of `rootAgentRef`. |
+| `hostLabel` | Caller-owned name for the hosting session's own row beside `launches` — «Диспетчер» in a Dispatcher run. Valid only with `launches` and unique against their labels. The row is the host thread itself; whatever the session spawned outside `launches` rows after it under its own name, so the table's «ИТОГО» is exactly what the whole session spent. Fail-closed: no session log, no table. |
 | `label` | Caller-owned display name. Required for one launch; the `launches` default is «Прогон», the whole-session default «Основная сессия». |
 | `analyze` | Optional boolean, default `false`. Use `true` only when the request asks for «анализ» or why the context grew. |
 | `full` | Optional boolean, default `false`. Adds the machine-readable fields to stdout. Tests and debugging only — workflows paste rendered strings and never pass it. |
 
-A run's terminal report is one `launches` call over every launch collected in the run — one table, one «ИТОГО» — never a stack of per-launch blocks, and never rows the caller totals itself. Never add a whole-session report to its own per-launch rows: the session already contains all descendants.
+A run's terminal report is one `launches` call over every launch collected in the run — one table, one «ИТОГО» — never a stack of per-launch blocks, and never rows the caller totals itself. Pass `hostLabel` there: the thread that ran the launches spends tokens too, and without its row the «ИТОГО» understates the run. Never add a whole-session report to its own per-launch rows: the session already contains all descendants.
 
 ## Exact output contract
 
