@@ -58,6 +58,12 @@ For a defect fix, run the relevant test or minimal probe against the faulty beha
 
 A green suite does not replace this analysis. Conversely, report a test weakness as required rework only when a concrete in-scope failure or required acceptance scenario lacks protection; do not require more tests solely to increase their number.
 
+## Name the smell, then cost it
+
+Shared labels for the design read, the classic refactoring smells: mysterious name, duplicated code, feature envy, data clumps, primitive obsession, repeated switches, shotgun surgery, divergent change, message chains, middle man, refused bequest, plus state ordering and dependency boundary crossings. Each is a heuristic to look for, never a violation by itself.
+
+A label becomes a finding only where this change makes its cost concrete: the future edit it forces, the paths that would have to move together, or the failure it invites. A documented project convention or an accepted decision overrides any label it endorses. A defect the gate's linter, type check or static analysis already reports belongs to that check, not to a second finding beside it.
+
 ## Implementation comments
 
 This policy governs every comment newly added or changed in implementation artifacts, including client-visible query comments. The developer writes to it; the reviewer checks each added or changed comment against it and reports one that fails as a finding.
