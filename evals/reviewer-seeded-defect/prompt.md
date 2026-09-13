@@ -56,6 +56,12 @@ allowed_tools: ["Skill", "Bash", "Read", "Grep", "Glob"]
       "name": "issue",
       "content": "Независимое ревью изменения: модуль суммирования позиций заказа. Функция sumTotals возвращает сумму поля amount всех позиций переданного списка; пустой список даёт ноль.",
       "provenance": "текст задачи из трекера"
+    },
+    {
+      "kind": "text",
+      "name": "qa_result",
+      "content": "{\"kind\":\"qa_result\",\"verdict\":\"green\",\"executor\":{\"status\":\"host\"},\"checks\":[{\"id\":\"c1\",\"tool\":\"node:test\",\"command\":\"npm test\",\"width\":\"full\",\"status\":\"passed\",\"exit\":0}],\"obstacles\":[],\"summary\":{\"passed\":1,\"failed\":0,\"broken\":0,\"skipped\":0}}",
+      "provenance": "результат QA"
     }
   ]
 }

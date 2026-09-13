@@ -15,8 +15,8 @@ const assertValid = (validate, value, label) => {
   assert.equal(validate(value), true, `${label}: ${ajv.errorsText(validate.errors)}`);
 };
 
-const roles = ['product-technologist', 'software-developer', 'code-reviewer'];
-// product-technologist is interactive and hands off in-context; only launched roles return Result v1.
+const roles = ['product-technologist', 'software-developer', 'qa-engineer', 'code-reviewer'];
+// product-technologist and qa-engineer run in the wrapper's process and hand off in-context; only launched roles return Result v1.
 const roleDeliverables = {
   'software-developer': 'implementation_summary',
   'code-reviewer': 'review_report',

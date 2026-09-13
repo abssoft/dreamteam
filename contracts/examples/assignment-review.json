@@ -31,5 +31,10 @@
     "name": "parent_issue",
     "content": "Order totals across the checkout flow.",
     "provenance": "tracker parent issue text"
+  }, {
+    "kind": "text",
+    "name": "qa_result",
+    "content": "{\"kind\":\"qa_result\",\"verdict\":\"green\",\"executor\":{\"status\":\"host\"},\"checks\":[{\"id\":\"c1\",\"tool\":\"vitest\",\"command\":\"npx vitest related src/example.js\",\"width\":\"narrowed to the change\",\"status\":\"passed\"}],\"obstacles\":[],\"summary\":{\"passed\":1,\"failed\":0,\"broken\":0,\"skipped\":0}}",
+    "provenance": "the QA role's result"
   }]
 }
