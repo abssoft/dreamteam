@@ -5,7 +5,7 @@ import { mkdtemp, readFile, writeFile, chmod, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const scriptPath = join(process.cwd(), 'skills', 'code-reviewer', 'scripts', 'checks-run.mjs');
+const scriptPath = join(process.cwd(), 'skills', 'qa-engineer', 'scripts', 'checks-run.mjs');
 
 const run = (args, cwd) => {
   const result = spawnSync(process.execPath, [scriptPath, ...args], { cwd, encoding: 'utf8' });
@@ -82,6 +82,37 @@ test('phpstan runs through a wrapper that includes the project configuration and
   assert.equal(explicit.ran.includes('-c custom.neon'), false);
   assert.match(explicit.tail, /includes:\n    - .*\/custom\.neon\n/);
   assert.equal(explicit.cache, discovered.cache, 'one cache per workspace');
+});
+
+test('an executor prefix wraps every command, and phpstan keeps the project cache under it or when the project pins tmpDir', async () => {
+  const dir = await workspace();
+  await mkdir(join(dir, 'other'), { recursive: true });
+  const spec = join(dir, 'checks.json');
+  await writeFile(spec, JSON.stringify({
+    cwd: dir,
+    exec: 'sh -c',
+    checks: [
+      { id: 'c1', tool: 'vitest', command: "echo \"it's green\"", scope: 'related', width: 'narrowed', source: 'npm run test' },
+      { id: 'c2', tool: 'phpstan', command: 'composer analyse', run: 'vendor/bin/phpstan analyse', scope: 'none', width: 'full', source: 'composer analyse' },
+    ],
+  }));
+  const { json } = run(['--spec', spec], dir);
+  assert.equal(json.exec, 'sh -c');
+  assert.equal(json.checks[0].ran, "sh -c 'echo \"it'\\''s green\"'");
+  assert.equal(json.checks[0].status, 'passed');
+  assert.match(json.checks[0].tail, /it's green/);
+  assert.equal(json.checks[1].ran, "sh -c 'vendor/bin/phpstan analyse'");
+  assert.equal(Object.hasOwn(json.checks[1], 'cache'), false, 'no host wrapper under an executor');
+
+  await writeFile(join(dir, 'phpstan.neon'), 'parameters:\n    level: 5\n    tmpDir: .phpstan\n');
+  const pinned = join(dir, 'pinned.json');
+  await writeFile(pinned, JSON.stringify({
+    cwd: dir,
+    checks: [{ id: 'c1', tool: 'phpstan', command: 'composer analyse', run: 'vendor/bin/phpstan analyse', scope: 'none', width: 'full', source: 'composer analyse' }],
+  }));
+  const host = run(['--spec', pinned], dir).json;
+  assert.equal(host.checks[0].ran, 'vendor/bin/phpstan analyse');
+  assert.equal(Object.hasOwn(host.checks[0], 'cache'), false, 'the project pins tmpDir itself');
 });
 
 test('--detach starts a runner and --wait returns its complete results; a dead runner is reported as aborted', async () => {

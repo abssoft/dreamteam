@@ -16,10 +16,14 @@ function packet(overrides = {}) {
     objective: 'Review the change',
     scope: { included: ['the change'], excluded: ['everything else'] },
     repository: { base_ref: 'main' },
-    source_materials: [{ kind: 'text', name: 'issue', content: 'Sum the totals.', provenance: 'tracker issue text' }],
+    source_materials: [
+      { kind: 'text', name: 'issue', content: 'Sum the totals.', provenance: 'tracker issue text' },
+      { kind: 'text', name: 'qa_result', content: '{"kind":"qa_result","verdict":"green","checks":[]}', provenance: 'the QA result' },
+    ],
     ...overrides,
   };
 }
+const QA = { kind: 'text', name: 'qa_result', content: '{"kind":"qa_result","verdict":"green","checks":[]}', provenance: 'the QA result' };
 
 function run(input, args = ['--assignment', '-']) {
   const result = spawnSync(process.execPath, [scriptPath, ...args], {
@@ -33,12 +37,12 @@ test('a well-formed packet passes and lists its materials', async () => {
   const issue = join(dir, 'issue.md');
   await writeFile(issue, '# KEY Title\nSum the totals.\n');
   const good = run(packet({
-    source_materials: [{ kind: 'attachment_reference', name: 'issue', content: issue, provenance: 'текст задачи из трекера' }],
+    source_materials: [{ kind: 'attachment_reference', name: 'issue', content: issue, provenance: 'текст задачи из трекера' }, QA],
   }));
   assert.equal(good.code, 0);
   assert.deepEqual(good.json, {
     ok: true, role: 'code-reviewer', assignment_id: 'assignment-validate-eval',
-    materials: [{ name: 'issue', kind: 'attachment_reference', path: issue }],
+    materials: [{ name: 'issue', kind: 'attachment_reference', path: issue }, { name: 'qa_result', kind: 'text', path: null }],
   });
 
   const file = join(dir, 'packet.json');
@@ -67,11 +71,14 @@ test('shape problems are all listed at once', () => {
   ]);
 });
 
-test('role rules: the reviewer needs base_ref, both roles need an issue material', () => {
+test('role rules: the reviewer needs base_ref and the QA result, both roles need an issue material', () => {
   assert.deepEqual(packetProblems(packet({ repository: {} })), ['repository.base_ref missing (code-reviewer)']);
   assert.deepEqual(packetProblems(packet({ role: 'software-developer', repository: {} })), []);
-  assert.deepEqual(packetProblems(packet({ source_materials: [] })), ['source_materials entry named issue missing']);
-  assert.deepEqual(packetProblems(packet({ source_materials: undefined })), ['source_materials entry named issue missing']);
+  assert.deepEqual(packetProblems(packet({ source_materials: [] })), ['source_materials entry named issue missing', 'source_materials entry named qa_result missing (code-reviewer)']);
+  assert.deepEqual(packetProblems(packet({ source_materials: undefined })), ['source_materials entry named issue missing', 'source_materials entry named qa_result missing (code-reviewer)']);
+  const issueOnly = [{ kind: 'text', name: 'issue', content: 'Sum the totals.', provenance: 'tracker issue text' }];
+  assert.deepEqual(packetProblems(packet({ source_materials: issueOnly })), ['source_materials entry named qa_result missing (code-reviewer)']);
+  assert.deepEqual(packetProblems(packet({ role: 'software-developer', repository: {}, source_materials: issueOnly })), []);
 });
 
 test('file materials must exist; issue and parent_issue files must be non-empty', async () => {
@@ -86,12 +93,14 @@ test('file materials must exist; issue and parent_issue files must be non-empty'
       { kind: 'attachment_reference', name: 'parent_issue', content: join(dir, 'missing.md'), provenance: 'p' },
       { kind: 'attachment_reference', name: 'shot.png', content: shot, provenance: 'p' },
       { kind: 'attachment_reference', name: 'relative.png', content: 'relative/path.png', provenance: 'p' },
+      { kind: 'attachment_reference', name: 'qa_result', content: empty, provenance: 'p' },
     ],
   }));
   assert.deepEqual(problems, [
     `source_materials[0] (issue): empty file: ${empty}`,
     `source_materials[1] (parent_issue): file not found: ${join(dir, 'missing.md')}`,
     'source_materials[3] (relative.png): attachment_reference content must be an absolute path',
+    `source_materials[4] (qa_result): empty file: ${empty}`,
   ]);
 });
 

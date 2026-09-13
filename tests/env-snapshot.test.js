@@ -76,6 +76,31 @@ test('php scripts split into what narrows safely and what does not', async () =>
   assert.equal(byTool(validation, 'phpstan').run, 'vendor/bin/phpstan analyse --configuration=phpstan.neon');
 });
 
+test('a script that rewrites files is never a check, and two scripts with one run are one check', async () => {
+  const dir = await repo({
+    'package-lock.json': '{}',
+    'package.json': {
+      name: 'fixture',
+      scripts: { lint: 'eslint .', 'lint:fix': 'eslint . --fix', 'lint:prune': 'eslint --prune-suppressions src', format: 'prettier --write .' },
+    },
+    'composer.json': {
+      name: 'acme/fixture',
+      scripts: {
+        phpstan: 'vendor/bin/phpstan analyse --memory-limit=4G',
+        'phpstan-baseline': 'vendor/bin/phpstan analyse --generate-baseline --memory-limit=4G',
+        rector: 'vendor/bin/rector process',
+        'rector-dry': 'vendor/bin/rector process --dry-run',
+      },
+    },
+  });
+  const { validation } = snapshot(dir);
+  const of = (tool) => validation.checks.filter((check) => check.tool === tool);
+  assert.deepEqual(of('eslint').map((check) => [check.source, check.command, check.lang]), [['npm run lint', 'npx eslint {paths}', 'node']]);
+  assert.deepEqual(of('prettier').map((check) => check.command), ['npx prettier --check {paths}']);
+  assert.deepEqual(of('phpstan').map((check) => [check.source, check.run]), [['composer phpstan', 'vendor/bin/phpstan analyse --memory-limit=4G']]);
+  assert.deepEqual(of('rector').map((check) => [check.source, check.command, check.lang]), [['composer rector', 'vendor/bin/rector process --dry-run {paths}', 'php']]);
+});
+
 test('a target that cannot be told from a flag value is reported, never guessed', async () => {
   const dir = await repo({
     'composer.json': { name: 'acme/fixture', scripts: { test: 'vendor/bin/phpunit --configuration phpunit.xml' } },

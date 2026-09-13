@@ -29,8 +29,17 @@ async function repo() {
 }
 
 const ISSUE_TEXT = `Totals must sum amounts. ${'The order total is the sum of every line amount; an empty order sums to zero. '.repeat(5)}`;
+const QA_MATERIAL = { kind: 'text', name: 'qa_result', content: JSON.stringify({ kind: 'qa_result', verdict: 'green', checks: [{ id: 'c1', tool: 'vitest', command: 'npx vitest related src/totals.js', width: 'narrowed to the change', status: 'passed' }], obstacles: [], summary: { passed: 1, failed: 0, broken: 0, skipped: 0 } }), provenance: 'результат QA' };
 
+// Every packet carries the QA result unless a test hands over an empty list on purpose.
 function assignment(overrides = {}) {
+  const packet = base(overrides);
+  const materials = packet.source_materials;
+  if (Array.isArray(materials) && materials.length && !materials.some((item) => item?.name === 'qa_result')) packet.source_materials = [...materials, QA_MATERIAL];
+  return packet;
+}
+
+function base(overrides) {
   return {
     contract_version: 1,
     assignment_id: 'assignment-review-eval',
@@ -42,16 +51,14 @@ function assignment(overrides = {}) {
     accepted_decisions: ['total sums amount over every item; an empty list is zero'],
     source_materials: [
       { kind: 'text', name: 'issue', content: ISSUE_TEXT, provenance: 'tracker issue text' },
+      QA_MATERIAL,
     ],
     ...overrides,
   };
 }
 
-// Tests list the checks without starting them; the one test of the runner
-// passes --run-checks instead.
 function run(dir, input, args = []) {
-  const flags = args.includes('--run-checks') ? args.filter((arg) => arg !== '--run-checks') : ['--no-checks', ...args];
-  const result = spawnSync(process.execPath, [scriptPath, '--assignment', '-', ...flags], {
+  const result = spawnSync(process.execPath, [scriptPath, '--assignment', '-', ...args], {
     cwd: dir, input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8',
   });
   const line = result.stdout.trim().split('\n').pop();
@@ -61,12 +68,13 @@ function run(dir, input, args = []) {
 test('--usage prints the contract as prose', () => {
   const usage = execFileSync(process.execPath, [scriptPath, '--usage'], { encoding: 'utf8' });
   assert.ok(usage.startsWith('review-pack.mjs — '));
-  assert.match(usage, /entry named\nissue/);
+  assert.match(usage, /entry named issue/);
+  assert.match(usage, /named qa_result/);
   assert.match(usage, /--check/);
   assert.match(usage, /children\|in_context/);
 });
 
-test('refuses malformed input and packets without base_ref or issue text', async () => {
+test('refuses malformed input and packets without base_ref, issue text or the QA result', async () => {
   const dir = await repo();
   await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.reduce((sum, item) => sum + item.amount, 0);\n');
   commit(dir, 'sum amounts');
@@ -77,6 +85,7 @@ test('refuses malformed input and packets without base_ref or issue text', async
   assert.deepEqual(noBase.json, { ok: false, code: 'missing_base_ref' });
   assert.equal(noBase.code, 1);
   assert.equal(run(dir, assignment({ source_materials: [] })).json.code, 'missing_issue');
+  assert.equal(run(dir, base({ source_materials: [{ kind: 'text', name: 'issue', content: ISSUE_TEXT, provenance: 'tracker issue text' }] })).json.code, 'missing_qa_result');
   assert.equal(run(dir, assignment({ repository: { base_ref: 'nowhere' } })).json.code, 'base_ref_not_found');
   assert.equal(run(dir, assignment({ repository: {} }), ['--base', 'main']).json.ok, true);
   assert.equal(run(dir, assignment(), ['--budget', '10']).json.code, 'bad_args');
@@ -108,7 +117,7 @@ test('a small clean change packs in_context with every section in order', async 
   assert.ok(json.pack.endsWith('review-pack-assignment-review-eval.md'));
 
   const pack = await readFile(json.pack, 'utf8');
-  const order = ['<review_pack ', '<attention>', '<signals>', '<scope>', '<decisions>', '<issue ', '<method>', '<rules>', '<env>', '<files>', '<diff context="10">', '</review_pack>'];
+  const order = ['<review_pack ', '<attention>', '<signals>', '<scope>', '<decisions>', '<issue ', '<qa_result ', '<method>', '<rules>', '<env>', '<files>', '<diff context="10">', '</review_pack>'];
   let cursor = -1;
   for (const marker of order) {
     const at = pack.indexOf(marker);
@@ -248,7 +257,7 @@ test('--check validates the packet strictly and writes nothing', async () => {
   ]);
 
   const noIssue = run(dir, assignment({ source_materials: [] }), ['--check']);
-  assert.deepEqual(noIssue.json, { ok: false, code: 'bad_packet', detail: ['source_materials entry named issue missing'] });
+  assert.deepEqual(noIssue.json, { ok: false, code: 'bad_packet', detail: ['source_materials entry named issue missing', 'source_materials entry named qa_result missing (code-reviewer)'] });
 
   const good = run(dir, assignment({
     source_materials: [{ kind: 'text', name: 'issue', content: 'Sum totals.', provenance: 'tracker issue text' }],
@@ -333,30 +342,28 @@ test('without an entry file the rules section falls back to documentation paths'
   assert.match(pack, /<rules>\nNo AGENTS\.md, CLAUDE\.md, docs\/engineering\/README\.md; documentation paths to route reads:\n- docs\/engineering\/rules\/money\.md/);
 });
 
-test('the checks section carries the snapshot templates with this diff\'s paths already in them', async () => {
+test('the QA result rides in the pack whole, as a file or inline, between the review files and the method', async () => {
   const dir = await repo();
-  sh(dir, 'git', ['checkout', '-q', 'main']);
-  await writeFile(join(dir, 'package.json'), JSON.stringify({
-    name: 'fixture',
-    scripts: { 'check:types': 'tsc -p tsconfig.json --noEmit', lint: 'eslint . --max-warnings 0', test: 'vitest run' },
-  }));
-  commit(dir, 'tooling');
-  sh(dir, 'git', ['checkout', '-q', 'task']);
-  sh(dir, 'git', ['rebase', '-q', 'main']);
-  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.reduce((sum, item) => sum + item.amount, 0);\n');
-  await writeFile(join(dir, 'src', 'totals.test.js'), 'test("sums amounts", () => {});\n');
-  commit(dir, 'totals');
-
-  const { json } = run(dir, assignment(), ['--skip=rules,docs']);
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => 0;\n');
+  commit(dir, 'stub');
+  const qaFile = join(dir, '..', `qa-result-${Date.now()}.json`);
+  await writeFile(qaFile, JSON.stringify({ kind: 'qa_result', verdict: 'red', checks: [{ id: 'c1', tool: 'vitest', status: 'failed', attribution: 'in_change' }] }));
+  const { json } = run(dir, assignment({
+    source_materials: [
+      { kind: 'text', name: 'issue', content: ISSUE_TEXT, provenance: 'tracker issue text' },
+      { kind: 'attachment_reference', name: 'qa_result', content: qaFile, provenance: 'результат QA' },
+    ],
+  }), ['--skip=rules,docs']);
+  assert.equal(json.ok, true, JSON.stringify(json));
   const pack = await readFile(json.pack, 'utf8');
-  // The narrowed command names the changed source; the tool that cannot narrow
-  // says so instead of arriving as a path-less template.
-  assert.match(pack, /<checks note="scope is the diff of this pack/);
-  assert.match(pack, /npx vitest related src\/totals\.js — vitest, from npm run test/);
-  assert.match(pack, /npx eslint --max-warnings 0 src\/totals\.js — eslint/);
-  assert.match(pack, /npm run check:types — tsc, full width only/);
-  assert.ok(pack.indexOf('<env>') < pack.indexOf('<checks') && pack.indexOf('<checks') < pack.indexOf('<files>'), 'checks sits between env and files');
-  assert.equal(pack.includes('{paths}'), false);
+  assert.match(pack, /<qa_result note="the gate, run once by the QA role[^"]*" file="[^"]+">\n\{"kind":"qa_result","verdict":"red"/);
+  assert.ok(pack.indexOf('<repository>') < pack.indexOf('<qa_result') && pack.indexOf('<qa_result') < pack.indexOf('<method>'));
+  assert.equal(pack.includes('<checks'), false);
+  assert.equal(pack.includes('"validation"'), false, 'the snapshot rides without its check templates');
+  assert.equal(Object.hasOwn(json, 'checks'), false);
+
+  const inline = run(dir, assignment(), ['--skip=rules,docs']);
+  assert.match(await readFile(inline.json.pack, 'utf8'), /<qa_result note="[^"]+">\n\{"kind":"qa_result","verdict":"green"/);
 });
 
 test('children mode writes a lens pack: the same context without env, and no environment work for the lenses', async () => {
@@ -372,7 +379,6 @@ test('children mode writes a lens pack: the same context without env, and no env
   const lens = await readFile(json.lens_pack, 'utf8');
   assert.match(pack, /<env>/);
   assert.equal(lens.includes('<env>'), false);
-  assert.equal(lens.includes('<checks'), false);
   assert.match(lens, /- This pack is your whole review context: settle every doubt by reading the code it names, and collect no environment snapshot, rules or diff of your own/);
   assert.ok(lens.endsWith('</review_pack>\n'));
   for (const marker of ['<signals>', '<issue ', '<method>', '<rules>', '<files>', '<diff context=']) {
@@ -446,43 +452,4 @@ test('a change that is only tests keeps them as the diff', async () => {
   const pack = await readFile(json.pack, 'utf8');
   assert.equal(pack.includes('<tests '), false);
   assert.match(pack.slice(pack.indexOf('<diff ')), /src\/totals\.test\.js/);
-});
-
-test('the runnable checks start detached as the pack is written, and their results file settles every item', async () => {
-  const dir = await repo();
-  sh(dir, 'git', ['checkout', '-q', 'main']);
-  await mkdir(join(dir, 'vendor', 'bin'), { recursive: true });
-  await mkdir(join(dir, 'tests'), { recursive: true });
-  await writeFile(join(dir, 'vendor', 'bin', 'phpstan'), '#!/bin/sh\necho "phpstan $*"\nfor a in "$@"; do case "$a" in *.neon) cat "$a";; esac; done\n');
-  await writeFile(join(dir, 'vendor', 'bin', 'phpunit'), '#!/bin/sh\necho "phpunit $*"\n');
-  await chmod(join(dir, 'vendor', 'bin', 'phpstan'), 0o755);
-  await chmod(join(dir, 'vendor', 'bin', 'phpunit'), 0o755);
-  await writeFile(join(dir, 'phpstan.neon'), 'parameters:\n    level: 5\n');
-  await writeFile(join(dir, 'composer.json'), JSON.stringify({ name: 'acme/fixture', scripts: { analyse: 'vendor/bin/phpstan analyse --memory-limit=1G', test: 'vendor/bin/phpunit --testdox' } }));
-  commit(dir, 'tooling');
-  sh(dir, 'git', ['checkout', '-q', 'task']);
-  sh(dir, 'git', ['rebase', '-q', 'main']);
-  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.reduce((sum, item) => sum + item.amount, 0);\n');
-  await writeFile(join(dir, 'tests', 'TotalsTest.php'), '<?php\nclass TotalsTest { public function testSums() {} }\n');
-  commit(dir, 'totals');
-
-  const { json } = run(dir, assignment({ verification: ['false'] }), ['--run-checks', '--skip=rules,docs']);
-  assert.equal(json.checks_started, 3);
-  assert.equal(json.checks, join(tmpdir(), 'checks-assignment-review-eval-results.json'));
-  const pack = await readFile(json.pack, 'utf8');
-  assert.match(pack, /<checks note="scope is the diff of this pack; the items with an id are running now — read their results with node .*checks-run\.mjs --wait /);
-  assert.match(pack, /\[c1\] composer analyse — phpstan, full width only/);
-  assert.match(pack, /\[c2\] vendor\/bin\/phpunit --testdox tests\/TotalsTest\.php — phpunit, from composer test/);
-  assert.match(pack, /\[c3\] false — assignment verification, as given/);
-  assert.match(pack, /composer analyse && composer test — project suite, full width only/);
-
-  const waited = spawnSync(process.execPath, [join(dirname(scriptPath), 'checks-run.mjs'), '--wait', json.checks, '--timeout', '30'], { encoding: 'utf8' });
-  const results = JSON.parse(waited.stdout.trim().split('\n').pop());
-  assert.equal(results.status, 'complete');
-  assert.deepEqual(results.checks.map((item) => [item.id, item.status]), [['c1', 'passed'], ['c2', 'passed'], ['c3', 'failed']]);
-  // phpstan ran directly with the wrapper, not through composer; phpunit ran narrowed.
-  assert.match(results.checks[0].ran, /^vendor\/bin\/phpstan analyse --memory-limit=1G -c .*phpstan-c1\.neon$/);
-  assert.match(results.checks[0].tail, /tmpDir: /);
-  assert.equal(results.checks[1].ran, 'vendor/bin/phpunit --testdox tests/TotalsTest.php');
-  assert.equal(results.checks[2].exit, 1);
 });

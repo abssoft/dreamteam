@@ -140,23 +140,23 @@ const TOOLS = [
     note: "related follows the module graph to the tests that import the change; a bare path argument matches test file names instead" },
   { tool: "jest", lang: "node", re: /jest$/, scope: "related", arg: "--findRelatedTests {paths}", value: ["--config", "-c", "--reporters", "--maxWorkers", "--testPathPattern"],
     note: "a global coverage threshold fails a partial run; drop it or accept the coverage item as uncovered" },
-  { tool: "eslint", lang: "node", re: /eslint$/, scope: "paths", arg: "{paths}", bool: ["--fix", "--quiet", "--cache", "--no-warn-ignored", "--no-eslintrc"], value: ["--config", "-c", "--ext", "--format", "-f", "--max-warnings", "--rulesdir", "--resolve-plugins-relative-to"],
+  { tool: "eslint", lang: "node", re: /eslint$/, scope: "paths", arg: "{paths}", bool: ["--fix", "--quiet", "--cache", "--no-warn-ignored", "--no-eslintrc"], strip: ["--fix"], skip: /--prune-suppressions/, value: ["--config", "-c", "--ext", "--format", "-f", "--max-warnings", "--rulesdir", "--resolve-plugins-relative-to"],
     note: "add --no-warn-ignored when a changed path is ignored by the configuration" },
   { tool: "biome", lang: "node", re: /biome$/, scope: "paths", arg: "{paths}", sub: ["check", "lint", "format", "ci"], value: ["--config-path"] },
-  { tool: "stylelint", lang: "node", re: /stylelint$/, scope: "paths", arg: "{paths}", bool: ["--fix", "--quiet"], value: ["--config", "--custom-syntax", "--formatter"] },
-  { tool: "prettier", lang: "node", re: /prettier$/, scope: "paths", arg: "{paths}", bool: ["--check", "-c", "--write", "-w", "--list-different", "-l"], value: ["--config", "--ignore-path", "--parser"] },
+  { tool: "stylelint", lang: "node", re: /stylelint$/, scope: "paths", arg: "{paths}", bool: ["--fix", "--quiet"], strip: ["--fix"], value: ["--config", "--custom-syntax", "--formatter"] },
+  { tool: "prettier", lang: "node", re: /prettier$/, scope: "paths", arg: "--check {paths}", bool: ["--check", "-c", "--write", "-w", "--list-different", "-l"], strip: ["--write", "-w"], value: ["--config", "--ignore-path", "--parser"] },
   { tool: "phpunit", lang: "php", re: /phpunit$/, scope: "tests-by-path", arg: "{test paths}", bool: ["--testdox", "--no-coverage", "--stop-on-failure", "--fail-on-warning"], value: ["--configuration", "-c", "--testsuite", "--filter", "--group", "--bootstrap"],
     note: "takes test files or directories, never source paths; map a changed unit to its test by the suite's own mirror convention and widen when no test claims it" },
   { tool: "artisan test", lang: "php", re: /artisan$/, bin: "php artisan", sub: ["test"], scope: "tests-by-path", arg: "{test paths}", value: ["--testsuite", "--filter", "--group"],
     note: "forwards its arguments to phpunit: test paths, never source paths" },
-  { tool: "pint", lang: "php", re: /pint$/, scope: "paths", arg: "{paths}", bool: ["--test", "--dirty"], value: ["--config"] },
+  { tool: "pint", lang: "php", re: /pint$/, scope: "paths", arg: "--test {paths}", bool: ["--test", "--dirty"], value: ["--config"] },
   { tool: "phpcs", lang: "php", re: /phpcs$/, scope: "paths", arg: "{paths}", value: ["--standard", "--report"] },
-  { tool: "php-cs-fixer", lang: "php", re: /php-cs-fixer$/, scope: "paths", arg: "--path-mode=intersection {paths}", sub: ["fix"], value: ["--config", "--path-mode"],
-    note: "without --path-mode=intersection the given paths replace the finder of the configuration instead of narrowing it" },
+  { tool: "php-cs-fixer", lang: "php", re: /php-cs-fixer$/, scope: "paths", arg: "--dry-run --path-mode=intersection {paths}", sub: ["fix"], bool: ["--dry-run"], value: ["--config", "--path-mode"],
+    note: "without --path-mode=intersection the given paths replace the finder of the configuration instead of narrowing it; only --dry-run is a check" },
   { tool: "rector", lang: "php", re: /rector$/, scope: "paths", arg: "--dry-run {paths}", sub: ["process"], bool: ["--dry-run", "--clear-cache", "-n"], value: ["--config", "-c", "--memory-limit"],
     note: "rector rewrites files; only the --dry-run form is a check" },
-  { tool: "phpstan", lang: "php", re: /phpstan$/, scope: "none", sub: ["analyse", "analyze"], value: ["-c", "--configuration", "--memory-limit", "-a", "--autoload-file", "-l", "--level", "--error-format"],
-    note: "narrowing to changed paths drops the errors the change causes in the files that consume it; the review pack runner pins its result cache per workspace, so only the first run in a worktree is cold" },
+  { tool: "phpstan", lang: "php", re: /phpstan$/, scope: "none", sub: ["analyse", "analyze"], skip: /--generate-baseline/, value: ["-c", "--configuration", "--memory-limit", "-a", "--autoload-file", "-l", "--level", "--error-format"],
+    note: "narrowing to changed paths drops the errors the change causes in the files that consume it; its result cache makes the second run in a workspace cheap, so only the first is cold" },
   { tool: "psalm", lang: "php", re: /psalm$/, scope: "none", note: "same as phpstan: a partial run loses the consumers of the change; use its own cache instead" },
   { tool: "tsc", lang: "node", re: /tsc$/, scope: "none", note: "passing files to tsc ignores tsconfig.json and type-checks them with default options, so a narrowed run says nothing about the project" },
 ];
@@ -166,20 +166,23 @@ const unquote = (token) => token.replace(/^["']|["']$/g, "");
 
 // Keeps the flags the script already carries — a check run without its own
 // configuration is a different check — and drops the targets it hardcodes.
-// A bare flag whose value looks like a path and is not a known value flag is
+// A flag that makes the tool rewrite files is dropped (`strip`), and a script
+// whose whole purpose is a rewrite is not a check at all (`skip`). A bare flag
+// whose value looks like a path and is not a known value flag is
 // indistinguishable from a target, so that check is reported as unnarrowable
 // rather than guessed at.
 function narrowSegment(segment, spec, runner) {
   const tokens = tokenize(segment);
   const at = tokens.findIndex((token) => spec.re.test(unquote(token)));
   if (at < 0) return null;
+  if (spec.skip && spec.skip.test(segment)) return null;
   const binary = unquote(tokens[at]);
   const kept = [spec.bin ?? (binary.includes("/") ? binary : spec.lang === "php" ? `vendor/bin/${binary}` : `${runner} ${binary}`)];
   let pending = null;
   for (const raw of tokens.slice(at + 1)) {
     const token = unquote(raw);
     if (token.startsWith("-")) {
-      kept.push(raw);
+      if (!(spec.strip ?? []).includes(token)) kept.push(raw);
       pending = token.includes("=") ? null : token;
       continue;
     }
@@ -211,18 +214,21 @@ function narrowSegment(segment, spec, runner) {
         if (spec.lang !== lang) continue;
         const parsed = narrowSegment(segment, spec, runner);
         if (!parsed) continue;
-        const key = `${spec.tool}:${parsed.command ?? source}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
+        let check;
         if (spec.scope === "none") {
-          checks.push({ tool: spec.tool, source, scope: "none", command: source, run: parsed.command, reason: spec.note });
+          check = { tool: spec.tool, lang: spec.lang, source, scope: "none", command: source, run: parsed.command, reason: spec.note };
         } else if (parsed.ambiguous) {
-          checks.push({ tool: spec.tool, source, scope: "none", command: source, reason: `cannot tell the target from the value of ${parsed.ambiguous}; run it as the script defines it` });
+          check = { tool: spec.tool, lang: spec.lang, source, scope: "none", command: source, reason: `cannot tell the target from the value of ${parsed.ambiguous}; run it as the script defines it` };
         } else {
           const already = new Set(tokenize(parsed.command).map(unquote));
           const arg = spec.arg.split(" ").filter((token) => !already.has(token)).join(" ");
-          checks.push({ tool: spec.tool, source, scope: spec.scope, command: `${parsed.command} ${arg}`, ...(spec.note ? { note: spec.note } : {}) });
+          check = { tool: spec.tool, lang: spec.lang, source, scope: spec.scope, command: `${parsed.command} ${arg}`, ...(spec.note ? { note: spec.note } : {}) };
         }
+        // Two scripts that resolve to the same run are one check.
+        const key = `${spec.tool}:${check.run ?? check.command}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        checks.push(check);
       }
     }
   };
@@ -253,7 +259,7 @@ function narrowSegment(segment, spec, runner) {
   if (!checks.length && !suite.length) notes.push("no validation commands derived; check project manifests or repository docs");
   else if (!checks.some(c => c.scope !== "none")) notes.push("nothing here narrows to changed paths; the suite is the check, and its width is a stated gap, not coverage");
   snapshot.validation = {
-    scope_source: "the paths this assignment changed against its base: git diff --name-only <base>...HEAD, plus the working tree (git diff --name-only HEAD and untracked entries of git status --short); a review takes them from its pack instead",
+    scope_source: "the paths this assignment changed against its base: git diff --name-only <base>...HEAD, plus the working tree (git diff --name-only HEAD and untracked entries of git status --short); the QA role takes them from its plan instead",
     checks,
     suite,
     notes,

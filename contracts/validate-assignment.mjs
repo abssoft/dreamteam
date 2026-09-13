@@ -7,10 +7,11 @@
 //   ok:true  → {ok, role, assignment_id, materials: [{name, kind, path}]}
 //   ok:false → {ok, code, detail}: bad_args | bad_packet (detail lists every problem)
 // Beyond the JSON Schema: the role is a launched one; `code-reviewer` names
-// `repository.base_ref`; both roles carry a material named `issue` with the
-// task text — inline (`kind: text`) or as the file the wrapper wrote (`kind:
-// attachment_reference`, content an absolute path that exists; `issue` and
-// `parent_issue` files are non-empty).
+// `repository.base_ref` and carries a material named `qa_result` (the QA
+// role's result file, or its JSON inline); both roles carry a material named
+// `issue` with the task text — inline (`kind: text`) or as the file the
+// wrapper wrote (`kind: attachment_reference`, content an absolute path that
+// exists; `issue`, `parent_issue` and `qa_result` files are non-empty).
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
@@ -20,7 +21,7 @@ export const LAUNCHED_ROLES = ["software-developer", "code-reviewer"];
 export const PACKET_FIELDS = ["contract_version", "assignment_id", "role", "objective", "scope", "repository", "verification", "required_fixes", "accepted_decisions", "source_materials"];
 export const MATERIAL_FIELDS = ["kind", "name", "content", "provenance"];
 export const MATERIAL_KINDS = ["text", "repository_evidence", "attachment_reference"];
-const TEXT_FILE_MATERIALS = ["issue", "parent_issue"];
+const TEXT_FILE_MATERIALS = ["issue", "parent_issue", "qa_result"];
 
 const isText = (value) => typeof value === "string" && value.trim() !== "";
 const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -61,7 +62,7 @@ export function packetProblems(assignment) {
 
   const materials = assignment.source_materials;
   if (materials !== undefined && !Array.isArray(materials)) problems.push("source_materials must be an array");
-  let issueSeen = false;
+  const seen = new Set();
   for (const [index, item] of (Array.isArray(materials) ? materials : []).entries()) {
     const name = isPlainObject(item) && isText(item.name) ? item.name : "unnamed";
     const label = `source_materials[${index}] (${name})`;
@@ -74,9 +75,10 @@ export function packetProblems(assignment) {
       const problem = fileProblem(label, item.content, TEXT_FILE_MATERIALS.includes(name));
       if (problem) problems.push(problem);
     }
-    if (name === "issue") issueSeen = true;
+    seen.add(name);
   }
-  if (!issueSeen) problems.push("source_materials entry named issue missing");
+  if (!seen.has("issue")) problems.push("source_materials entry named issue missing");
+  if (role === "code-reviewer" && !seen.has("qa_result")) problems.push("source_materials entry named qa_result missing (code-reviewer)");
   return problems;
 }
 

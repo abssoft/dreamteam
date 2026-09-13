@@ -16,24 +16,23 @@
 //   --check                wrapper pre-launch gate: validate the packet strictly
 //                          (contracts/validate-assignment.mjs), resolve the base
 //                          and the diff, write nothing
-//   --no-checks            list the checks in the pack without starting them
 //   --usage                print this contract as prose
 // Output: one JSON line; exit 0 on ok:true, exit 1 on ok:false.
 //   ok:true  → {ok, pack, lens_pack (children mode only), base, head, files,
 //               changed_lines, test_files, risk_hits: [{path, line, match}],
 //               mode: "children"|"in_context", diff_context,
-//               checks (results file of the detached checks-run.mjs, null when
-//               nothing runs), checks_started, checks_error?,
 //               truncations: [text], warnings: [text], pack_chars}
 //               (--check: {ok, check: true, base, head, files, changed_lines,
 //               test_files, risk_hits, mode, issue_chars, warnings})
 //   ok:false → {ok, code, detail?}: bad_args | bad_packet (--check only; detail
 //               lists every problem) | missing_base_ref | missing_issue |
-//               not_a_git_repository | base_ref_not_found | empty_diff |
-//               pack_write_failed
+//               missing_qa_result | not_a_git_repository | base_ref_not_found |
+//               empty_diff | pack_write_failed
 // Task text: the source_materials entry named `issue` (a subtask also
 // `parent_issue`) is read inline when it is text, or from the file its content
 // names when the wrapper wrote the tracker text to disk (attachment_reference).
+// The gate: the material named `qa_result` — the QA role's result file (or its
+// JSON inline) — goes into the pack whole; the review runs no check of its own.
 // The diff is `git diff` from the merge base of <base> and HEAD (the three-dot
 // range), at the widest context of 10, 6, 3 or 0 lines that fits the budget;
 // a diff that does not fit even at 0 is cut and the files after the cut are
@@ -50,7 +49,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { packetProblems } from "../../../contracts/validate-assignment.mjs";
 
 // The ceiling answers one question — does the change fit one reviewer? — so it
@@ -60,7 +59,6 @@ const DIFF_WIDTHS = [10, 6, 3, 0];
 const RULES_RESERVE = 20000;
 const DIFF_FLOOR_SHARE = 0.4;
 const RISK_HIT_CAP = 40;
-const CHECK_PATH_CAP = 40;
 const DOCS_LIST_CAP = 150;
 const SHORT_ISSUE_CHARS = 300;
 // The instruction chain a repository publishes: the agent entry files and the
@@ -72,7 +70,7 @@ const RULES_ENTRIES = ["AGENTS.md", "CLAUDE.md", "docs/engineering/README.md"];
 const RULES_DIR = "docs/engineering/rules";
 const RULES_ROUTE_CAP = 40;
 const ROUTE_HINT_CHARS = 160;
-const LENS_NOTE = "This pack is your whole review context: settle every doubt by reading the code it names, and collect no environment snapshot, rules or diff of your own — the environment and its checks belong to the parent review.";
+const LENS_NOTE = "This pack is your whole review context: settle every doubt by reading the code it names, and collect no environment snapshot, rules or diff of your own — the environment and the gate's result belong to the parent review.";
 // A markdown link or bare path naming a document of this repository; a URL, an
 // absolute path or a traversal is not one.
 const DOC_LINK = /(?:^|[\s(<"'`[])([A-Za-z0-9._][A-Za-z0-9._/-]*\.md)\b/g;
@@ -83,7 +81,7 @@ const GIT_MAX_BUFFER = 256 * 1024 * 1024;
 // deserialization, migrations and destructive data operations, in the
 // English and Russian the codebases mix.
 const RISK = /\b(?:auth[a-z]*|login|logout|sessions?|tokens?|passw(?:or)?ds?|secrets?|credentials?|api[_-]?keys?|crypt[a-z]*|hmac|jwt|oauth|permissions?|acl|roles?|privileges?|tenants?|sql|unserialize|deserializ[a-z]*|uploads?|multipart|migrat[a-z]*|backfill|retention|truncate|purge)\b|alter\s+table|drop\s+(?:table|column|index)|delete\s+from|rm\s+-rf|парол|токен|шифр|полномоч|миграц|удал[её]н/i;
-const TEST_PATH = /(?:^|\/)(?:tests?|__tests__|specs?)\/|\.(?:test|spec)\.[a-z]+$|Test\.php$|_test\.[a-z]+$/;
+export const TEST_PATH = /(?:^|\/)(?:tests?|__tests__|specs?)\/|\.(?:test|spec)\.[a-z]+$|Test\.php$|_test\.[a-z]+$/;
 // A test declaration, in the shapes the common runners use. The pack carries
 // these names instead of the test bodies: the review judges the code, and opens
 // a test file when it doubts the strength of a test or the cover of a scenario.
@@ -97,35 +95,31 @@ branch). Pipe the Assignment v1 JSON on stdin:
   { …assignment… }
   JSON
 Flags: --base <ref> (default repository.base_ref), --budget <chars> (300000),
---no-checks (list the checks without starting them),
 --out <path> (pack file, default beside the packet file, or under the OS temp
-dir for stdin), --skip=<sections> (passed
-to env-snapshot), --check (wrapper
+dir for stdin), --skip=<sections> (passed to env-snapshot), --check (wrapper
 pre-launch gate: strict packet validation, base and diff resolution, nothing
 written), --usage.
-Requires repository.base_ref (or --base) and a source_materials entry named
-issue carrying the task text inline (kind text) or as a file path the wrapper
-wrote (kind attachment_reference); a subtask also carries name parent_issue.
+Requires repository.base_ref (or --base), a source_materials entry named issue
+carrying the task text inline (kind text) or as a file path the wrapper wrote
+(kind attachment_reference; a subtask also carries name parent_issue), and one
+named qa_result — the QA role's result file (attachment_reference) or its JSON
+inline (text).
 Pack sections, in order: attention (cuts and notes), signals, scope, decisions
 (only when the packet carries any), issue, parent_issue, materials, repository,
-development_result and previous_review (the Result files those materials name,
-whole), method (the shared engineering reference), rules (the repository
+development_result, previous_review and qa_result (the files those materials
+name, whole), method (the shared engineering reference), rules (the repository
 instruction chain: the entry files and the rule directory whole, then routes to
-the documents they name), env, checks (the snapshot's check templates with this
-diff's paths already in them, plus the packet's verification commands; the
-runnable ones start in a detached checks-run.mjs as the pack is written, and
-the note names the results file to read with checks-run.mjs --wait), files,
-diff. In children mode a second pack, named -lens beside the first,
-carries the same context without env or checks, for the lens children.
+the documents they name), env, files, tests (declared cases of the changed test
+files), diff. In children mode a second pack, named -lens beside the first,
+carries the same context without env, for the lens children.
 Output: one JSON line {ok, pack, lens_pack (children mode), base, head, files,
 changed_lines, test_files, risk_hits[{path,line,match}], mode
-children|in_context, diff_context, checks (results file, null when nothing
-runs), checks_started, checks_error?, truncations[], warnings[], pack_chars};
+children|in_context, diff_context, truncations[], warnings[], pack_chars};
 --check returns {ok, check, base, head, files, changed_lines, test_files,
 risk_hits, mode, issue_chars, warnings}.
 ok:false codes: bad_args | bad_packet (--check; detail lists the problems) |
-missing_base_ref | missing_issue | not_a_git_repository | base_ref_not_found |
-empty_diff | pack_write_failed. Exit 1 on ok:false.
+missing_base_ref | missing_issue | missing_qa_result | not_a_git_repository |
+base_ref_not_found | empty_diff | pack_write_failed. Exit 1 on ok:false.
 `;
 
 function out(value) {
@@ -138,7 +132,7 @@ function fail(code, detail) {
 }
 
 function parseArgs(argv) {
-  const opts = { assignment: null, base: null, budget: DEFAULTS.budget, out: null, skip: null, check: false, checks: true };
+  const opts = { assignment: null, base: null, budget: DEFAULTS.budget, out: null, skip: null, check: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = () => { i += 1; return argv[i]; };
@@ -148,7 +142,6 @@ function parseArgs(argv) {
     else if (arg === "--budget") opts.budget = Number(next());
     else if (arg === "--out") opts.out = next();
     else if (arg === "--check") opts.check = true;
-    else if (arg === "--no-checks") opts.checks = false;
     else if (arg.startsWith("--skip=")) opts.skip = arg;
     else return { error: `unknown argument ${arg}` };
   }
@@ -216,7 +209,7 @@ function section(name, body, attrs = {}) {
 
 const bullets = (items) => items.map((item) => `- ${item}`).join("\n");
 
-function parseNameStatus(text) {
+export function parseNameStatus(text) {
   const files = [];
   for (const line of (text ?? "").split("\n")) {
     if (!line.trim()) continue;
@@ -291,7 +284,7 @@ function routes(text, root, seen, state) {
   }
 }
 
-function collectRules(root, cwd, budget) {
+export function collectRules(root, cwd, budget) {
   const seen = new Set();
   const entries = [];
   for (const entry of RULES_ENTRIES) {
@@ -377,83 +370,6 @@ function envSnapshot(cwd, skip) {
   }
 }
 
-// The width of a check is a fact of the pack, not a choice the reviewer makes
-// mid-run: the templates come from the environment snapshot, the paths from the
-// diff this pack was built on. Past the cap the list collapses to the
-// directories it came from, so a wide change still runs one narrowed command.
-function checkItems(env, codePaths, testPaths, verification) {
-  const checks = Array.isArray(env?.validation?.checks) ? env.validation.checks : [];
-  const quote = (path) => (/[\s]|^-/.test(path) ? `'${path}'` : path);
-  const collapse = (paths) => {
-    if (paths.length <= CHECK_PATH_CAP) return { list: paths.map(quote).join(" "), note: "" };
-    const dirs = [...new Set(paths.map((path) => path.split("/").slice(0, -1).join("/") || "."))];
-    return { list: dirs.slice(0, CHECK_PATH_CAP).map(quote).join(" "), note: ` (${paths.length} paths collapsed to their directories)` };
-  };
-  const code = collapse(codePaths);
-  const tests = collapse(testPaths);
-  const items = [];
-  const add = (item) => items.push({ id: `c${items.length + 1}`, ...item });
-  for (const check of checks) {
-    if (!isPlainObject(check) || !isText(check.command)) continue;
-    const detail = check.note ?? check.reason ?? "";
-    if (check.scope === "none") {
-      add({ tool: check.tool, command: check.command, run: isText(check.run) ? check.run : check.command, scope: "none", width: "full", source: check.source, runnable: true,
-        row: `${check.command} — ${check.tool}, full width only${detail ? `: ${detail}` : ""}` });
-      continue;
-    }
-    const wanted = check.scope === "tests-by-path" ? tests : code;
-    if (!wanted.list) {
-      add({ tool: check.tool, command: check.command, scope: check.scope, width: "unscoped", source: check.source, runnable: false,
-        row: `${check.command} — ${check.tool}: this change carries no ${check.scope === "tests-by-path" ? "test" : "code"} path, derive the scope from the files above` });
-      continue;
-    }
-    const command = check.command.replace(/\{test paths\}|\{paths\}/g, wanted.list);
-    add({ tool: check.tool, command, scope: check.scope, width: `narrowed to the diff${wanted.note}`, source: check.source, runnable: true,
-      row: `${command} — ${check.tool}, from ${check.source}${wanted.note}${detail ? `; ${detail}` : ""}` });
-  }
-  // The wrapper's own commands run at the width it gave them; one that is
-  // already a derived check's source is that check, not a second run.
-  for (const command of asList(verification)) {
-    if (items.some((item) => item.command === command || item.source === command)) continue;
-    add({ tool: "assignment", command, scope: "none", width: "as given", source: "assignment verification", runnable: true, row: `${command} — assignment verification, as given` });
-  }
-  for (const command of env?.validation?.suite ?? []) {
-    if (isText(command)) items.push({ id: null, tool: "suite", command, scope: "none", width: "full", source: "project suite", runnable: false, row: `${command} — project suite, full width only` });
-  }
-  return items;
-}
-
-// The runnable items execute in a detached checks-run.mjs while the review
-// reads: every check is a fact of the pack, the reviewer only reads the result.
-function checksSection(items, results) {
-  if (!items.length) return "";
-  const rows = items.map((item) => (item.id ? `[${item.id}] ${item.row}${item.runnable ? "" : " (not started)"}` : item.row));
-  const running = results
-    ? `; the items with an id are running now — read their results with node ${join(scriptDir, "checks-run.mjs")} --wait ${results} (each item: status, exit, log, tail), rerun a check yourself only for a doubt the result leaves`
-    : "";
-  return section("checks", bullets(rows), {
-    note: `scope is the diff of this pack${running}; widen a check only for a reason the shared method names, and record the command you ran with its actual scope`,
-  });
-}
-
-function startChecks(items, cwd, target, slug) {
-  const runnable = items.filter((item) => item.runnable);
-  if (!runnable.length) return { spec: null, results: null, error: null, count: 0 };
-  const spec = join(dirname(target), `checks-${slug}.json`);
-  const results = join(dirname(target), `checks-${slug}-results.json`);
-  const checks = runnable.map(({ id, tool, command, run, scope, width, source }) => ({ id, tool, command, ...(run && run !== command ? { run } : {}), scope, width, source }));
-  try {
-    mkdirSync(dirname(spec), { recursive: true });
-    writeFileSync(spec, `${JSON.stringify({ cwd, results, checks }, null, 1)}\n`);
-    const line = execFileSync(process.execPath, [join(scriptDir, "checks-run.mjs"), "--spec", spec, "--detach"], { cwd, encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "ignore"] });
-    const started = JSON.parse(line.trim().split("\n").pop());
-    if (!started.ok) return { spec, results, error: started.code ?? "checks_start_failed", count: 0 };
-    return { spec, results, error: null, count: runnable.length, pid: started.pid };
-  } catch (error) {
-    return { spec, results, error: `checks_start_failed: ${error.message}`, count: 0 };
-  }
-}
-
 function renderMaterials(items) {
   const parts = [];
   for (const item of items) {
@@ -490,6 +406,12 @@ function main() {
   // JSON goes into the pack whole, claims for the lenses to reconcile.
   const developmentResult = material(assignment, "development_result");
   const previousReview = material(assignment, "previous_review");
+  // The gate's result is the QA role's file; a packet without it predates the
+  // QA stage, and a review that ran its own checks would hide that.
+  const qaResult = material(assignment, "qa_result");
+  if (!qaResult) fail("missing_qa_result");
+  if (qaResult.error) fail("missing_qa_result", qaResult.error);
+  if (!isText(qaResult.text)) fail("missing_qa_result", qaResult.path ? `empty file: ${qaResult.path}` : "empty content");
 
   const cwd = process.cwd();
   const root = git(["rev-parse", "--show-toplevel"], cwd);
@@ -564,7 +486,7 @@ function main() {
   if (parent && isText(parent.text)) {
     fixed.push(section("parent_issue", parent.text, { name: parent.name, provenance: parent.provenance, ...(parent.path ? { file: parent.path } : {}) }));
   }
-  const taken = new Set(["issue", "parent_issue", "development_result", "previous_review"]);
+  const taken = new Set(["issue", "parent_issue", "development_result", "previous_review", "qa_result"]);
   const others = assignment.source_materials.filter((item) => !(isPlainObject(item) && taken.has(item.name)));
   if (others.length) fixed.push(section("materials", renderMaterials(others)));
   fixed.push(section("repository", JSON.stringify(repository, null, 1)));
@@ -574,11 +496,11 @@ function main() {
   if (previousReview && isText(previousReview.text)) {
     fixed.push(section("previous_review", previousReview.text.trimEnd(), previousReview.path ? { file: previousReview.path } : {}));
   }
+  fixed.push(section("qa_result", qaResult.text.trimEnd(), { note: "the gate, run once by the QA role: passed, failed, broken and skipped items at the width named on each; a failed item is a defect of the change unless its attribution says baseline, a broken one is residual risk, never coverage", ...(qaResult.path ? { file: qaResult.path } : {}) }));
   fixed.push(section("method", methodReference()));
 
   const env = envSnapshot(cwd, opts.skip);
-  // The checks section is where the width of a run is settled, so the snapshot
-  // rides without its own path-less templates: one list, already scoped.
+  // The gate is the QA role's: the snapshot rides without its check templates.
   const { validation, ...envRest } = env;
   const envText = section("env", JSON.stringify(envRest, null, 1));
   const filesText = section("files", bullets(files.map((file) => `${file.status} ${file.from ? `${file.from} → ` : ""}${file.path}${TEST_PATH.test(file.path) ? " (test)" : ""}`)));
@@ -627,13 +549,9 @@ function main() {
   const slug = assignment.assignment_id.replace(/[^A-Za-z0-9._-]+/g, "-");
   const packDir = opts.assignment === "-" ? tmpdir() : dirname(resolve(opts.assignment));
   const target = opts.out ? resolve(opts.out) : join(packDir, `review-pack-${slug}.md`);
-  // The checks start before the pack is written, so the note the pack carries
-  // about them is a fact by the time the reviewer reads it.
-  const items = checkItems(env, diffPaths, tests.map((file) => file.path), assignment.verification);
-  const started = opts.checks ? startChecks(items, cwd, target, slug) : { spec: null, results: null, error: null, count: 0 };
-  const pack = build([], [envText, checksSection(items, started.count && !started.error ? started.results : null)].filter(Boolean));
+  const pack = build([], [envText]);
   // The lenses judge the change, not the runtime: their pack carries the whole
-  // review context without the environment snapshot the parent's checks need.
+  // review context without the environment snapshot.
   const lensPack = mode === "children" ? build([LENS_NOTE], []) : null;
   const lensTarget = lensPack ? (target.endsWith(".md") ? `${target.slice(0, -3)}-lens.md` : `${target}-lens`) : null;
   try {
@@ -656,13 +574,10 @@ function main() {
     risk_hits: hits,
     mode,
     diff_context: diff.context,
-    checks: started.count && !started.error ? started.results : null,
-    checks_started: started.count,
-    ...(started.error ? { checks_error: started.error } : {}),
     truncations,
     warnings,
     pack_chars: pack.length,
   });
 }
 
-main();
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main();
