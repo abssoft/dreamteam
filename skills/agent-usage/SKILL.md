@@ -42,7 +42,7 @@ A run's terminal report is one `launches` call over every launch collected in th
   rendered: {
     block,           // the complete «Затрачено» table for the call's scope
     table_header,
-    rows,            // one line per launch × model × service tier, launch order
+    rows,            // one line per thread × model × service tier: the launch root, then every subagent it spawned under its own name, launch order
     total_row,       // «ИТОГО»; omitted when the table has a single row
     analysis_block?  // analyze: true only
   },
@@ -94,4 +94,4 @@ When `analyze: true`, paste `rendered.analysis_block` after `rendered.block`. Th
 
 `ok: false` returns `{code, warning_line}`. Possible codes: `bad_args`, `logs_not_found`, `root_not_found`, `ambiguous_root`, `workflow_run_incomplete`, `timestamps_missing`, `log_limit_exceeded`, `collector_error`.
 
-Paste script-owned renderings verbatim. Collection is best-effort: failure never blocks the hosting workflow.
+Paste script-owned renderings verbatim and whole: a launch that spawned subagents (a reviewer's lenses, a developer's helpers) renders each of them as its own row after the launch row, and the «ИТОГО» is the sum of every row printed — a table with rows dropped understates the run. Collection is best-effort: failure never blocks the hosting workflow.
