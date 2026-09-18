@@ -39,19 +39,19 @@ The frontier is empty when every branch of the design tree is visited, both clos
 
 ## Document
 
-One Markdown document in Russian, readable prose: short sentences, no introductions, no filler — a sentence that could be pasted unchanged into another issue's PRD is filler: put this issue's fact in its place or cut it. The size sets the document's volume, never the research: XS–S — it reads in one screen: «Проблематика» in two or three sentences, «Краткое описание доработки» in one, flat numbering; M — a paragraph each, numbered groups; L and up — the full form: titled groups, «Краткое описание доработки» up to three paragraphs, and the split is a round question («Рекомендация по разбивке»). Every section but «Scope» addresses the reader who approves paid work and has never opened the code: each interface element goes by its interface label (research reads it from the repository's localization and interface sources) and by its interface class — «настройка», «поле», «роль», «право», «пункт меню» — whatever the shape of its value. One canonical term per concept: the terminology document's name or the interface label there, the repository identifier unchanged in «Scope», the only section carrying code keys, paths, and symbols. Numbering: every item of «Что дорабатываем», «Что НЕ дорабатываем», and «Критерии приемки доработки» is numbered — `1.` flat, `1.1)` under a numbered group — so anyone cites «п. 2.2»; a `####` heading marks a group only when it carries a title and its own paragraph, plain numbered lines otherwise. Headings exactly these, in this order; the first four `###` are required, the rest appear only when they carry content:
+One Markdown document in Russian, readable prose: short sentences, no introductions, no filler — a sentence that could be pasted unchanged into another issue's PRD is filler: put this issue's fact in its place or cut it. The size sets the document's volume, never the research: XS–S — it reads in one screen: «Проблематика» in two or three sentences, «Краткое описание доработки» in one, flat numbering; M — a paragraph each, numbered groups; L and up — the full form: titled groups, «Краткое описание доработки» up to three paragraphs, and the split is a round question («Рекомендация по разбивке»). Every section but «Scope» addresses the reader who approves paid work and has never opened the code: each interface element goes by its interface label (research reads it from the repository's localization and interface sources) and by its interface class — «настройка», «поле», «роль», «право», «пункт меню» — whatever the shape of its value. One canonical term per concept: the terminology document's name or the interface label there, the repository identifier unchanged in «Scope», the only section carrying code keys, paths, and symbols. Numbering: every item of «Что дорабатываем», «Что НЕ дорабатываем», and «Критерии приемки доработки» is numbered — `1.` flat, `1.1)` under a numbered group — so anyone cites «п. 2.2»; a `###` heading marks a group only when it carries a title and its own paragraph, plain numbered lines otherwise. Headings exactly these, in this order; the first four `##` are required, the rest appear only when they carry content:
 
 ```markdown
 # Проблематика
 # Продуктовое решение
-### Краткое описание доработки
-### Что дорабатываем
-### Что НЕ дорабатываем
-### Критерии приемки доработки
-### Риски
-### Scope
-### Рекомендация по разбивке
-### Аналитика
+## Краткое описание доработки
+## Что дорабатываем
+## Что НЕ дорабатываем
+## Критерии приемки доработки
+## Риски
+## Scope
+## Рекомендация по разбивке
+## Аналитика
 ```
 
 - «Проблематика» — the problem statement: who is affected, what happens today, what it costs; full enough to make the request text redundant.
