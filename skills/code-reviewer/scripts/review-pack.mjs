@@ -31,8 +31,8 @@
 // Task text: the source_materials entry named `issue` (a subtask also
 // `parent_issue`) is read inline when it is text, or from the file its content
 // names when the wrapper wrote the tracker text to disk (attachment_reference).
-// The gate: the material named `qa_result` — the QA role's result file (or its
-// JSON inline) — goes into the pack whole; the review runs no check of its own.
+// The gate: qa_result keeps statuses, widths and evidence links. Full logs
+// stay in its source file; the review runs no check of its own.
 // The diff is `git diff` from the merge base of <base> and HEAD (the three-dot
 // range), at the widest context of 10, 6, 3 or 0 lines that fits the budget;
 // a diff that does not fit even at 0 is cut and the files after the cut are
@@ -51,6 +51,8 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { packetProblems } from "../../../contracts/validate-assignment.mjs";
+import { resultProblems } from "../../../contracts/validate-result.mjs";
+import { compactQa, compactResult, digest, parseResult, previousManifest } from "./review-state.mjs";
 
 // The ceiling answers one question — does the change fit one reviewer? — so it
 // tracks the model window rather than an older, smaller pack.
@@ -81,6 +83,7 @@ const GIT_MAX_BUFFER = 256 * 1024 * 1024;
 // deserialization, migrations and destructive data operations, in the
 // English and Russian the codebases mix.
 const RISK = /\b(?:auth[a-z]*|login|logout|sessions?|tokens?|passw(?:or)?ds?|secrets?|credentials?|api[_-]?keys?|crypt[a-z]*|hmac|jwt|oauth|permissions?|acl|roles?|privileges?|tenants?|sql|unserialize|deserializ[a-z]*|uploads?|multipart|migrat[a-z]*|backfill|retention|truncate|purge)\b|alter\s+table|drop\s+(?:table|column|index)|delete\s+from|rm\s+-rf|парол|токен|шифр|полномоч|миграц|удал[её]н/i;
+const OUTBOUND = /\b(?:Guzzle\w*|HttpClient|curl_\w+|CURLOPT_\w+|fetch|allow_redirects|redirects?|recordings_url|downloadFile)\b|(?:http|client|axios)\w*\s*(?:->|\.)\s*(?:request|get|post)\s*\(|https?:\/\//i;
 export const TEST_PATH = /(?:^|\/)(?:tests?|__tests__|specs?)\/|\.(?:test|spec)\.[a-z]+$|Test\.php$|_test\.[a-z]+$/;
 // A test declaration, in the shapes the common runners use. The pack carries
 // these names instead of the test bodies: the review judges the code, and opens
@@ -107,7 +110,7 @@ inline (text).
 Pack sections, in order: attention (cuts and notes), signals, scope, decisions
 (only when the packet carries any), issue, parent_issue, materials, repository,
 development_result, previous_review and qa_result (the files those materials
-name, whole), method (the shared engineering reference), rules (the repository
+name, projected without duplicate history), method (the shared engineering reference), rules (the repository
 instruction chain: the entry files and the rule directory whole, then routes to
 the documents they name), env, files, tests (declared cases of the changed test
 files), diff. In children mode a second pack, named -lens beside the first,
@@ -249,7 +252,8 @@ function riskHits(narrowDiff, files) {
     if (hunk) { line = Number(hunk[1]); continue; }
     if (!raw.startsWith("+") || raw.startsWith("+++")) continue;
     const match = RISK.exec(raw.slice(1));
-    if (match) hits.push({ path: file, line, match: match[0] });
+    const network = OUTBOUND.exec(raw.slice(1));
+    if (match || network) hits.push({ path: file, line, match: (match ?? network)[0], ...(network ? { rule: "outbound_url" } : {}) });
     line += 1;
   }
   return hits;
@@ -402,8 +406,7 @@ function main() {
   if (issue.error) fail("missing_issue", issue.error);
   if (!isText(issue.text)) fail("missing_issue", issue.path ? `empty file: ${issue.path}` : "empty content");
   const parent = material(assignment, "parent_issue");
-  // The developer's Result and the previous review arrive as files too; their
-  // JSON goes into the pack whole, claims for the lenses to reconcile.
+  // Prior Results remain claims, projected without repeated lens output.
   const developmentResult = material(assignment, "development_result");
   const previousReview = material(assignment, "previous_review");
   // The gate's result is the QA role's file; a packet without it predates the
@@ -422,8 +425,38 @@ function main() {
   if (!mergeBase) fail("base_ref_not_found", base);
   const range = `${mergeBase}..HEAD`;
 
+  const headCommit = git(["rev-parse", "HEAD"], cwd);
+  const priorResult = parseResult(previousReview);
+  const prior = previousManifest(priorResult);
+  const materials = assignment.source_materials.filter((item) => !["issue", "parent_issue", "qa_result", "previous_review", "development_result"].includes(item.name)).map((item) => {
+    if (item.kind !== "attachment_reference") return item;
+    try { return { ...item, hash: digest(readFileSync(item.content)) }; } catch { return { ...item, hash: null }; }
+  });
+  const inputHash = digest({ objective: assignment.objective, scope: assignment.scope, verification: assignment.verification, decisions: assignment.accepted_decisions, issue: issue.text, parent: parent?.text, materials });
+  const policy = collectRules(root, cwd, Number.MAX_SAFE_INTEGER);
+  const policyPaths = [...new Set([...policy.items.map((item) => item.path), ...policy.paths, ...policy.routes.map((route) => route.split(" — ")[0]), ...policy.routes_cut])];
+  const policyHash = digest([methodReference(), readFileSync(join(scriptDir, "..", "SKILL.md"), "utf8"), policyPaths.map((path) => {
+    try { return [path, digest(readFileSync(join(root, path)))]; } catch { return [path, null]; }
+  })]);
+  const priorMatches = prior?.version === 1 && prior.root === root && prior.input_hash === inputHash && prior.policy_hash === policyHash && prior.assignment_id === priorResult?.assignment_id;
+
   const files = parseNameStatus(git(["diff", "--name-status", range], cwd));
-  if (files.length === 0) fail("empty_diff", `no changes between ${base} and HEAD`);
+  let reviewKind = previousReview ? "fix_delta" : "full";
+  if (prior && mergeBase === prior.head && !priorMatches) fail("review_state_mismatch", "task or rules changed since the previous review; prepare a fresh full review");
+  if (files.length === 0) {
+    if (!previousReview) fail("empty_diff", `no changes between ${base} and HEAD`);
+    if (!priorMatches || prior.head !== headCommit || priorResult.status !== "done" || priorResult.deliverable?.content?.review_complete !== true || resultProblems(priorResult).length || git(["status", "--porcelain"], cwd) !== "") {
+      fail("review_state_mismatch", "QA-only review requires a complete previous review of this unchanged code, task and rules");
+    }
+    const qaHead = parseResult(qaResult)?.workspace?.head;
+    if (typeof qaHead !== "string" || qaHead.length < 7 || !headCommit.startsWith(qaHead)) fail("review_state_mismatch", "QA evidence must identify the reviewed HEAD");
+    reviewKind = "evidence_only";
+  } else if (previousReview && (!priorMatches || mergeBase !== prior.head)) {
+    reviewKind = "full";
+  }
+  const originalBase = priorMatches && reviewKind !== "full" ? prior.base : mergeBase;
+  const coveredFiles = parseNameStatus(git(["diff", "--name-status", `${originalBase}..HEAD`], cwd));
+  const manifest = { version: 1, assignment_id: assignment.assignment_id, root, head: headCommit, base: originalBase, input_hash: inputHash, policy_hash: policyHash, review_kind: reviewKind, files: coveredFiles.map((file) => file.path), previous_fixes: Array.isArray(priorResult?.required_fixes) ? priorResult.required_fixes.map((fix) => /^\s*([A-Za-z]+\d+)\b/.exec(fix)?.[1]).filter(Boolean) : [] };
   const lines = changedLines(git(["diff", "--numstat", range], cwd));
   // Tests ride as a digest, not as diff: the review judges the code the tests
   // exercise. A change that is only tests has no code to judge instead, so
@@ -433,7 +466,7 @@ function main() {
   const diffFiles = code.length ? code : files;
   const digestFiles = code.length ? tests : [];
   const diffPaths = diffFiles.map((file) => file.path);
-  const narrow = git(["diff", "-U0", range, "--", ...diffPaths], cwd) ?? "";
+  const narrow = diffPaths.length ? git(["diff", "-U0", range, "--", ...diffPaths], cwd) ?? "" : "";
   // Risk signals steer the security review of the change; a fixture naming a
   // password or a table is not that change.
   const hits = riskHits(narrow, diffFiles);
@@ -454,7 +487,7 @@ function main() {
     // against the floor the pack guarantees it.
     const mode = narrow.length > Math.floor(opts.budget * DIFF_FLOOR_SHARE) ? "children" : "in_context";
     out({
-      ok: true, check: true, base, head, files: files.length, changed_lines: lines, test_files: testFiles, risk_hits: hits, mode, issue_chars: issueChars, warnings,
+      ok: true, check: true, base, head, files: files.length, changed_lines: lines, test_files: testFiles, risk_hits: hits, mode, review_kind: reviewKind, issue_chars: issueChars, warnings,
     });
     return;
   }
@@ -468,6 +501,8 @@ function main() {
     `changed_lines: ${lines}`,
     `test_files: ${testFiles}`,
     `mode: ${packMode}`,
+    `review_kind: ${reviewKind}`,
+    ...(hits.some((hit) => hit.rule === "outbound_url") ? ["outbound_url: read the project's outbound URL/SSRF rule and central validator; trace URL ownership, redirects, transport and any preload in callers, including newly added fix code"] : []),
     hits.length ? `risk_hits:\n${bullets(hits.map((hit) => `${hit.path}${hit.line ? `:${hit.line}` : ""} — ${hit.match}`))}` : "risk_hits: none",
   ].join("\n"));
   const signalsAt = fixed.length;
@@ -491,17 +526,17 @@ function main() {
   if (others.length) fixed.push(section("materials", renderMaterials(others)));
   fixed.push(section("repository", JSON.stringify(repository, null, 1)));
   if (developmentResult && isText(developmentResult.text)) {
-    fixed.push(section("development_result", developmentResult.text.trimEnd(), developmentResult.path ? { file: developmentResult.path } : {}));
+    fixed.push(section("development_result", compactResult(developmentResult), developmentResult.path ? { file: developmentResult.path } : {}));
   }
   if (previousReview && isText(previousReview.text)) {
-    fixed.push(section("previous_review", previousReview.text.trimEnd(), previousReview.path ? { file: previousReview.path } : {}));
+    fixed.push(section("previous_review", compactResult(previousReview), previousReview.path ? { file: previousReview.path } : {}));
   }
-  fixed.push(section("qa_result", qaResult.text.trimEnd(), { note: "the gate, run once by the QA role: passed, failed, broken and skipped items at the width named on each; a failed item is a defect of the change unless its attribution says baseline, a broken one is residual risk, never coverage", ...(qaResult.path ? { file: qaResult.path } : {}) }));
+  fixed.push(section("qa_result", compactQa(qaResult), { note: "the gate, run once by the QA role: passed, failed, broken and skipped items at the width named on each; a failed item is a defect of the change unless its attribution says baseline, a broken one is residual risk, never coverage", ...(qaResult.path ? { file: qaResult.path } : {}) }));
   fixed.push(section("method", methodReference()));
 
-  const env = envSnapshot(cwd, opts.skip);
+  const env = envSnapshot(cwd, `--skip=rules,docs${opts.skip ? `,${opts.skip.slice(7)}` : ""}`);
   // The gate is the QA role's: the snapshot rides without its check templates.
-  const { validation, ...envRest } = env;
+  const envRest = { ok: env.ok, runtime: env.runtime, workspace: { head: headCommit, base: mergeBase } };
   const envText = section("env", JSON.stringify(envRest, null, 1));
   const filesText = section("files", bullets(files.map((file) => `${file.status} ${file.from ? `${file.from} → ` : ""}${file.path}${TEST_PATH.test(file.path) ? " (test)" : ""}`)));
   const testsText = digestFiles.length
@@ -549,6 +584,8 @@ function main() {
   const slug = assignment.assignment_id.replace(/[^A-Za-z0-9._-]+/g, "-");
   const packDir = opts.assignment === "-" ? tmpdir() : dirname(resolve(opts.assignment));
   const target = opts.out ? resolve(opts.out) : join(packDir, `review-pack-${slug}.md`);
+  const manifestTarget = `${target}.json`;
+  fixed.push(section("review_manifest", JSON.stringify({ path: manifestTarget, review_kind: reviewKind, files: manifest.files }), { note: "copy path to deliverable.content.review_manifest; coverage uses one exact file path per item; review_complete records completion of code inspection, separately from QA" }));
   const pack = build([], [envText]);
   // The lenses judge the change, not the runtime: their pack carries the whole
   // review context without the environment snapshot.
@@ -557,6 +594,7 @@ function main() {
   try {
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, `${pack}\n`);
+    writeFileSync(manifestTarget, `${JSON.stringify(manifest)}\n`);
     if (lensPack) writeFileSync(lensTarget, `${lensPack}\n`);
   } catch (error) {
     fail("pack_write_failed", String(error.message));
@@ -573,6 +611,8 @@ function main() {
     test_files: testFiles,
     risk_hits: hits,
     mode,
+    review_kind: reviewKind,
+    review_manifest: manifestTarget,
     diff_context: diff.context,
     truncations,
     warnings,

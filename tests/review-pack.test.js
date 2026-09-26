@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, writeFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { resultProblems } from '../contracts/validate-result.mjs';
 
 const scriptPath = join(process.cwd(), 'skills', 'code-reviewer', 'scripts', 'review-pack.mjs');
 
@@ -131,7 +132,7 @@ test('a small clean change packs in_context with every section in order', async 
   assert.match(pack, /#### docs\/engineering\/rules\/money\.md\n\n# Money\nRound once, at the end\./);
   assert.match(pack, /- M src\/totals\.js\n- A src\/totals\.test\.js/);
   assert.match(pack, /&lt;\/diff&gt; early/);
-  assert.match(pack, /"content_skipped": true/);
+  assert.equal(pack.includes('"content_skipped"'), false, 'the compact env omits rules entirely');
   assert.equal(json.pack_chars, pack.length - 1);
 });
 
@@ -452,4 +453,94 @@ test('a change that is only tests keeps them as the diff', async () => {
   const pack = await readFile(json.pack, 'utf8');
   assert.equal(pack.includes('<tests '), false);
   assert.match(pack.slice(pack.indexOf('<diff ')), /src\/totals\.test\.js/);
+});
+
+test('repeat packs omit duplicate lens reports, passing logs and environment rules', async () => {
+  const dir = await repo();
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = () => 0;\n');
+  commit(dir, 'change');
+  const large = 'REDUNDANT_HISTORY'.repeat(5000);
+  const { json } = run(dir, assignment({ source_materials: [...assignment().source_materials, { name: 'previous_review', kind: 'text', provenance: 'review', content: JSON.stringify({ role: 'code-reviewer', required_fixes: ['B1: preserve me'], findings: [{ id: 'B1', evidence: 'keep proof' }], deliverable: { content: { lenses: { behavior: large }, coverage: [{ item: 'src/totals.js', status: 'reviewed', evidence: 'keep coverage' }] } } }) }] }));
+  const text = await readFile(json.pack, 'utf8');
+  assert.equal(text.includes('REDUNDANT_HISTORY'), false);
+  assert.match(text, /keep proof/);
+  assert.match(text, /keep coverage/);
+  const env = text.slice(text.indexOf('<env>'), text.indexOf('</env>'));
+  assert.equal(env.includes('AGENTS.md'), false);
+  assert.equal(env.includes('docs_index'), false);
+  assert.equal(text.split('# Repository rules').length, 2);
+});
+
+test('QA-only review reuses verified code coverage and refuses changed inputs or stale evidence', async () => {
+  const dir = await repo();
+  await writeFile(join(dir, '.git', 'info', 'exclude'), 'CLAUDE.md\n');
+  await writeFile(join(dir, 'CLAUDE.md'), '# Local rules\nRead the changed code.\n');
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = () => 0;\n');
+  commit(dir, 'change');
+  const head = sh(dir, 'git', ['rev-parse', 'HEAD']).trim();
+  const initial = run(dir, assignment({ assignment_id: 'review-initial' }));
+  const result = {
+    contract_version: 1, assignment_id: 'review-initial', role: 'code-reviewer', status: 'done', summary: 'Code reviewed',
+    deliverable: { kind: 'review_report', content: { review_complete: true, review_manifest: initial.json.review_manifest, coverage: [{ item: 'src/totals.js', status: 'reviewed', evidence: 'src/totals.js:1 read' }] } },
+    verification: [{ command: 'tests', status: 'broken', evidence: 'runner unavailable' }], findings: [], required_fixes: [],
+  };
+  assert.deepEqual(resultProblems(result), []);
+  const savedManifest = await readFile(initial.json.review_manifest, 'utf8');
+  await writeFile(initial.json.review_manifest, JSON.stringify({ ...JSON.parse(savedManifest), files: [] }));
+  assert.ok(resultProblems(result).some((problem) => problem.includes('manifest files differ')));
+  await writeFile(initial.json.review_manifest, savedManifest);
+  const incomplete = { ...result, deliverable: { ...result.deliverable, content: { ...result.deliverable.content, coverage: [] } } };
+  assert.ok(resultProblems(incomplete).some((problem) => problem.includes('coverage must contain')));
+  const blocked = { ...result, deliverable: { ...result.deliverable, content: { ...result.deliverable.content, coverage: [{ item: 'src/totals.js', status: 'blocked', evidence: 'unread' }] } } };
+  assert.ok(resultProblems(blocked).some((problem) => problem.includes('contradicts blocked')));
+  const wrongLine = { ...result, findings: [{ id: 'B1', severity: 'P2', confidence: 'confirmed', category: 'correctness', path: 'src/totals.js', line: 999, problem: 'wrong', impact: 'wrong result', fix: 'correct bound', evidence: 'read source' }], required_fixes: ['B1: correct bound'] };
+  assert.ok(resultProblems(wrongLine).some((problem) => problem.includes('coordinates outside')));
+  const qa = { ...QA_MATERIAL, content: JSON.stringify({ kind: 'qa_result', workspace: { head }, verdict: 'green', checks: [] }) };
+  const previous = { kind: 'text', name: 'previous_review', content: JSON.stringify(result), provenance: 'previous review' };
+  const packet = assignment({ assignment_id: 'review-evidence', repository: { base_ref: head }, source_materials: [assignment().source_materials[0], qa, previous] });
+  const check = run(dir, packet, ['--check']);
+  assert.equal(check.json.review_kind, 'evidence_only', JSON.stringify(check));
+  const next = run(dir, packet);
+  assert.equal(next.json.review_kind, 'evidence_only', JSON.stringify(next));
+  assert.equal(next.json.files, 0);
+  assert.deepEqual(JSON.parse(await readFile(next.json.review_manifest, 'utf8')).files, ['src/totals.js']);
+  assert.equal(run(dir, { ...packet, accepted_decisions: ['different contract'] }).json.code, 'review_state_mismatch');
+  const stale = { ...packet, source_materials: [packet.source_materials[0], QA_MATERIAL, previous] };
+  assert.equal(run(dir, stale).json.code, 'review_state_mismatch');
+  await writeFile(join(dir, 'CLAUDE.md'), '# Local rules\nAdditional security constraint.\n');
+  assert.equal(sh(dir, 'git', ['status', '--porcelain']).trim(), '');
+  assert.equal(run(dir, packet).json.code, 'review_state_mismatch', 'ignored local rules must also invalidate reuse');
+  await writeFile(join(dir, 'CLAUDE.md'), '# Local rules\nRead the changed code.\n');
+  await writeFile(join(dir, 'docs', 'style.md'), 'Changed rules without commit\n');
+  assert.equal(run(dir, packet).json.code, 'review_state_mismatch');
+
+  // A new network path in a fix delta is examined even after earlier coverage.
+  await writeFile(join(dir, 'docs', 'style.md'), sh(dir, 'git', ['show', 'HEAD:docs/style.md']));
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = () => fetch(url);\n');
+  commit(dir, 'new network path');
+  const delta = run(dir, { ...packet, assignment_id: 'review-delta' });
+  assert.equal(delta.json.review_kind, 'fix_delta');
+  assert.ok(delta.json.risk_hits.some((hit) => hit.rule === 'outbound_url'));
+  assert.match(await readFile(delta.json.pack, 'utf8'), /central validator/);
+});
+
+test('bounded reader preserves long lines and page boundaries without omissions', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'review-read-'));
+  const file = join(dir, 'evidence.md');
+  const source = 'Ж'.repeat(30001) + '\n' + 'short line\n'.repeat(401);
+  await writeFile(file, source);
+  let offset = 0;
+  let restored = '';
+  do {
+    const page = JSON.parse(sh(process.cwd(), process.execPath, [join(dirname(scriptPath), 'review-read.mjs'), '--file', file, '--offset', String(offset), '--limit', '50000']));
+    assert.ok(page.text.length <= 12000);
+    assert.ok(page.text.split('\n').length <= 200);
+    restored += page.text;
+    if (!page.complete) assert.ok(page.next_offset > offset);
+    offset = page.next_offset;
+  } while (offset !== null);
+  assert.equal(restored, source);
+  const second = JSON.parse(sh(process.cwd(), process.execPath, [join(dirname(scriptPath), 'review-read.mjs'), '--file', file, '--line', '2']));
+  assert.equal(second.start_line, 2);
+  assert.ok(second.text.startsWith('short line\n'));
 });

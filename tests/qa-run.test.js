@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { attribute, deriveChecks } from '../skills/qa-engineer/scripts/qa-run.mjs';
+import { attribute, deriveChecks, executedTestPaths } from '../skills/qa-engineer/scripts/qa-run.mjs';
 
 const scriptPath = join(process.cwd(), 'skills', 'qa-engineer', 'scripts', 'qa-run.mjs');
 
@@ -81,6 +81,56 @@ test('attribute names the change from the output paths, or from a narrowed width
   assert.equal(attribute({ status: 'failed', width: 'full', tail: '/abs/repo/src/totals.js:3:1 error' }, changed), 'in_change');
   assert.equal(attribute({ status: 'failed', width: 'full', tail: 'Line  lib/legacy.php\n  12  Call to undefined method' }, changed), 'outside_change');
   assert.equal(attribute({ status: 'failed', width: 'full', tail: 'Error: something broke' }, changed), 'unknown');
+});
+
+test('PHPUnit gets one invocation per file and JUnit proves executed targets', () => {
+  const paths = ['tests/FirstTest.php', "tests/a'bTest.php"];
+  const items = deriveChecks({ validation: { checks: [{ tool: 'phpunit', scope: 'tests-by-path', command: 'vendor/bin/phpunit {test paths}' }] } }, [], paths);
+  assert.equal(items.length, 2);
+  assert.deepEqual(items.map((item) => item.expected_test_paths), paths.map((path) => [path]));
+  assert.ok(!items[0].command.includes(paths[1]));
+  assert.equal(sh(process.cwd(), '/bin/sh', ['-c', `printf '%s' ${items[1].command.slice('vendor/bin/phpunit '.length)}`]), paths[1]);
+  assert.deepEqual(executedTestPaths('<testcase file="/repo/tests/FirstTest.php"/><testcase file="/repo/tests/a&apos;bTest.php"><skipped/></testcase>', paths), [paths[0]]);
+  assert.deepEqual(executedTestPaths('OK (1 test)', paths), []);
+});
+
+test('configured PHPUnit keeps its suite while separate targets really execute through the executor', async () => {
+  const dir = await repo();
+  await mkdir(join(dir, 'vendor', 'bin'), { recursive: true });
+  await mkdir(join(dir, 'tests'), { recursive: true });
+  for (const name of ['FirstTest', 'SecondTest']) await writeFile(join(dir, 'tests', `${name}.php`), '<?php\n');
+  await writeFile(join(dir, 'composer.json'), JSON.stringify({ name: 'fixture/php', scripts: { test: 'vendor/bin/phpunit', 'test-rector': 'vendor/bin/phpunit -c phpunit.rector.xml.dist rector/tests' } }));
+  const executable = join(dir, 'vendor', 'bin', 'phpunit');
+  await writeFile(executable, '#!/usr/bin/env node\n' + `
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const target = args.find((arg) => arg.endsWith('Test.php'));
+const report = args[args.indexOf('--log-junit') + 1];
+if (target && report) fs.writeFileSync(report, '<testsuites><testsuite><testcase file="' + process.cwd() + '/' + target + '"/></testsuite></testsuites>');
+process.exit(target?.endsWith('SecondTest.php') ? 1 : 0);
+`);
+  await chmod(executable, 0o755);
+  commit(dir, 'php tests');
+  const { json: planned } = run(dir, ['--plan', '--base', 'main', '--out', join(dir, '..', `qa-php-${Date.now()}`)]);
+  const spec = JSON.parse(await readFile(planned.spec, 'utf8'));
+  const suite = spec.checks.find((item) => item.source === 'composer test-rector');
+  assert.equal(suite.run, 'vendor/bin/phpunit -c phpunit.rector.xml.dist rector/tests');
+  assert.equal(suite.scope, 'none');
+  const drop = spec.checks.filter((item) => !item.expected_test_paths).map((item) => item.id).join(',');
+  const started = run(dir, ['--run', '--spec', planned.spec, '--exec', 'sh -c', '--drop', drop]);
+  assert.equal(started.json.ok, true, JSON.stringify(started));
+  const reported = run(dir, ['--report', '--results', started.json.results, '--timeout', '30']);
+  assert.equal(reported.json.verdict, 'red');
+  const result = JSON.parse(await readFile(reported.json.result, 'utf8'));
+  assert.deepEqual(result.checks.map((item) => item.status), ['passed', 'failed']);
+  assert.deepEqual(result.checks.map((item) => item.executed_test_paths), [['tests/FirstTest.php'], ['tests/SecondTest.php']]);
+
+  // Exit 0 with no JUnit must never claim either target passed.
+  await writeFile(executable, '#!/bin/sh\nexit 0\n');
+  const empty = run(dir, ['--run', '--spec', planned.spec]);
+  const unconfirmed = run(dir, ['--report', '--results', empty.json.results, '--timeout', '30']);
+  assert.equal(unconfirmed.json.verdict, 'unconfirmed');
+  assert.equal(unconfirmed.json.broken, 2);
 });
 
 test('--plan derives the checks at the width of the change, writes the plan with the rules and a ready spec', async () => {

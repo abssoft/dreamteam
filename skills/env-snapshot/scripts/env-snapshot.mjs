@@ -178,6 +178,7 @@ function narrowSegment(segment, spec, runner) {
   if (spec.skip && spec.skip.test(segment)) return null;
   const binary = unquote(tokens[at]);
   const kept = [spec.bin ?? (binary.includes("/") ? binary : spec.lang === "php" ? `vendor/bin/${binary}` : `${runner} ${binary}`)];
+  const targets = [];
   let pending = null;
   for (const raw of tokens.slice(at + 1)) {
     const token = unquote(raw);
@@ -195,6 +196,12 @@ function narrowSegment(segment, spec, runner) {
     }
     pending = null;
     if ((spec.sub ?? []).includes(token)) { kept.push(raw); continue; }
+    targets.push(raw);
+  }
+  // A configured PHPUnit suite owns its bootstrap and targets. Replacing
+  // those with application tests runs a different suite, often with exit 0.
+  if (["phpunit", "artisan test"].includes(spec.tool) && (targets.length || /(?:^|\s)(?:-c|--configuration|--testsuite|--group)(?:=|\s)/.test(segment))) {
+    return { command: [...kept, ...targets].join(" "), configuredSuite: true };
   }
   return { command: kept.join(" ") };
 }
@@ -215,7 +222,9 @@ function narrowSegment(segment, spec, runner) {
         const parsed = narrowSegment(segment, spec, runner);
         if (!parsed) continue;
         let check;
-        if (spec.scope === "none") {
+        if (parsed.configuredSuite) {
+          check = { tool: spec.tool, lang: spec.lang, source, scope: "none", command: source, run: parsed.command, reason: "preserves the declared PHPUnit suite, configuration and bootstrap" };
+        } else if (spec.scope === "none") {
           check = { tool: spec.tool, lang: spec.lang, source, scope: "none", command: source, run: parsed.command, reason: spec.note };
         } else if (parsed.ambiguous) {
           check = { tool: spec.tool, lang: spec.lang, source, scope: "none", command: source, reason: `cannot tell the target from the value of ${parsed.ambiguous}; run it as the script defines it` };
