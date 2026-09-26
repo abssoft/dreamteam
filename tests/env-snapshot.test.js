@@ -106,7 +106,8 @@ test('a target that cannot be told from a flag value is reported, never guessed'
     'composer.json': { name: 'acme/fixture', scripts: { test: 'vendor/bin/phpunit --configuration phpunit.xml' } },
   });
   const narrowed = byTool(snapshot(dir).validation, 'phpunit');
-  assert.equal(narrowed.command, 'vendor/bin/phpunit --configuration phpunit.xml {test paths}');
+  assert.equal(narrowed.scope, 'none');
+  assert.equal(narrowed.run, 'vendor/bin/phpunit --configuration phpunit.xml');
 
   const odd = await repo({
     'composer.json': { name: 'acme/fixture', scripts: { test: 'vendor/bin/phpunit --unknown-flag tests/Unit' } },

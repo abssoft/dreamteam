@@ -43,6 +43,7 @@
 //   running | results_missing | write_failed.
 
 import { execFileSync, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -100,7 +101,7 @@ function fail(code, detail) {
 const isText = (value) => typeof value === "string" && value.trim() !== "";
 const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const bullets = (items) => items.map((item) => `- ${item}`).join("\n");
-const quotePath = (path) => (/[\s]|^-/.test(path) ? `'${path}'` : path);
+const quotePath = (path) => (/^[A-Za-z0-9_./-]+$/.test(path) && !path.startsWith("-") ? path : shellArg(path));
 
 function section(name, body, attrs = {}) {
   const head = Object.entries(attrs).map(([key, value]) => ` ${key}="${String(value).replace(/"/g, "&quot;")}"`).join("");
@@ -201,6 +202,12 @@ export function deriveChecks(env, codePaths, testPaths) {
       continue;
     }
     const pool = check.scope === "tests-by-path" ? testPaths : codePaths;
+    if (["phpunit", "artisan test"].includes(check.tool) && check.scope === "tests-by-path" && pool.some((path) => ext.test(path))) {
+      for (const path of pool.filter((path) => ext.test(path))) {
+        add({ ...base, command: check.command.replace(/\{test paths\}/g, quotePath(path)), scope: check.scope, width: `narrowed to ${path}`, expected_test_paths: [path], runnable: true });
+      }
+      continue;
+    }
     const wanted = collapse(pool.filter((path) => ext.test(path)));
     if (!wanted.list) {
       add({ ...base, command: check.command, scope: check.scope, width: "not run", runnable: false, reason: `the change carries no ${check.scope === "tests-by-path" ? "test" : "code"} path this tool reads (${lang})` });
@@ -274,7 +281,7 @@ function plan(opts) {
   const spec = {
     cwd, results: resultsPath, exec: null, base, head, merge_base: mergeBase,
     changed_paths: files.map((file) => file.path),
-    checks: runnable.map(({ id: checkId, tool, command, run, scope, width, source }) => ({ id: checkId, tool, command, ...(run && run !== command ? { run } : {}), scope, width, source })),
+    checks: runnable.map(({ id: checkId, tool, command, run, scope, width, source, expected_test_paths }) => ({ id: checkId, tool, command, ...(run && run !== command ? { run } : {}), scope, width, source, ...(expected_test_paths ? { expected_test_paths } : {}) })),
   };
   try {
     mkdirSync(outDir, { recursive: true });
@@ -328,6 +335,12 @@ function run(opts) {
   if (Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0) spec.timeout_ms = opts.timeoutMs;
   const resultsPath = resolve(dirname(specPath), spec.results ?? `${specPath.replace(/\.json$/, "")}-results.json`);
   spec.results = resultsPath;
+  // The report is created and read inside the executor, so a container needs
+  // no extra shared mount. A unique file prevents reuse of an earlier pass.
+  for (const check of spec.checks.filter((item) => item.expected_test_paths?.length)) {
+    const junit = `/tmp/dream-team-qa-${randomUUID()}.xml`;
+    check.run = `${check.command} --log-junit ${shellArg(junit)}; qa_exit=$?; cat ${shellArg(junit)}; rm -f ${shellArg(junit)}; exit "$qa_exit"`;
+  }
   const executor = isText(spec.exec) ? probeExecutor(spec.exec, spec) : { status: "host" };
   spec.executor = executor;
   try { writeJson(specPath, spec); } catch (error) { fail("write_failed", String(error.message)); }
@@ -368,6 +381,17 @@ export function attribute(item, changedPaths) {
   return "outside_change";
 }
 
+export function executedTestPaths(log, expected) {
+  const decode = (text) => text.replace(/&(amp|quot|apos|lt|gt);/g, (_, entity) => ({ amp: "&", quot: '"', apos: "'", lt: "<", gt: ">" })[entity]);
+  const files = [];
+  for (const match of String(log).matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)) {
+    if (/<skipped\b/.test(match[2] ?? "")) continue;
+    const file = /\bfile="([^"]+)"/.exec(match[1]);
+    if (file) files.push(decode(file[1]).replaceAll("\\", "/"));
+  }
+  return expected.filter((path) => files.some((file) => file === path || file.endsWith(`/${path}`)));
+}
+
 async function report(opts) {
   const resultsPath = resolve(opts.results);
   const results = await waitResults(resultsPath, opts.timeout);
@@ -386,6 +410,17 @@ async function report(opts) {
   const checks = results.checks.map((item) => {
     const row = { id: item.id, tool: item.tool, command: item.command, ran: item.ran, scope: item.scope, width: item.width, source: item.source, status: item.status, exit: item.exit, seconds: item.seconds, log: item.log, tail: String(item.tail ?? "").slice(-RESULT_TAIL_CHARS) };
     if (item.reason) row.reason = item.reason;
+    const expected = spec.checks?.find((check) => check.id === item.id)?.expected_test_paths;
+    if (expected?.length) {
+      let log = "";
+      try { log = readFileSync(item.log, "utf8"); } catch { /* Missing evidence stays unconfirmed. */ }
+      row.expected_test_paths = expected;
+      row.executed_test_paths = executedTestPaths(log, expected);
+      if (row.status === "passed" && row.executed_test_paths.length !== expected.length) {
+        row.status = "broken";
+        row.reason = "JUnit does not confirm execution of every selected test file";
+      }
+    }
     if (item.status === "pending") { row.status = "broken"; row.reason = "runner ended before this check"; }
     const attribution = attribute(row, changed);
     if (attribution) row.attribution = attribution;

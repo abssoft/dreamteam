@@ -20,8 +20,8 @@ function review(overrides = {}) {
       content: { verdict: 'Нужна правка B1', lenses_mode: 'children', path: '/tmp/x/result-review-eval.json', coverage: [{ item: 'a', status: 'reviewed' }] },
     },
     verification: [{ command: 'npm test', status: 'failed', evidence: 'один тест красный' }],
-    findings: [{ id: 'B1', severity: 'P1', problem: 'x' }],
-    required_fixes: ['B1: починить цикл', 'починить без идентификатора'],
+    findings: [{ id: 'B1', severity: 'P1', category: 'correctness', path: 'src/a.js', line: 1, problem: 'x', impact: 'wrong result', fix: 'correct bound', evidence: 'src/a.js:1', confidence: 'confirmed', failure_scenario: 'two items skip the last' }],
+    required_fixes: ['B1: починить цикл'],
     ...overrides,
   };
 }
@@ -46,7 +46,7 @@ test('a valid review result yields its envelope: no findings, fix IDs, verificat
       summary: 'Ревью завершено: одна правка.',
       deliverable: { kind: 'review_report', content: { path: '/tmp/x/result-review-eval.json', verdict: 'Нужна правка B1', lenses_mode: 'children' } },
       verification: [{ command: 'npm test', status: 'failed' }],
-      required_fixes: ['B1', 'починить без идентификатора'],
+      required_fixes: ['B1'],
       findings: [{ count: 1 }],
     },
   });
@@ -76,7 +76,7 @@ test('problems are listed at once, identity mismatches included', () => {
 
 test('done gates: evidence required; a failed item needs a required fix (review) or fails the developer', () => {
   assert.deepEqual(resultProblems(review({ verification: [] })), ['done requires verification evidence']);
-  assert.deepEqual(resultProblems(review({ required_fixes: [] })), ['done with a failed verification item (npm test) and no required fix']);
+  assert.deepEqual(resultProblems(review({ required_fixes: [] })), ['done with a failed verification item (npm test) and no required fix', 'B1: confirmed P1 requires a fix']);
   assert.deepEqual(resultProblems(review({ changed_paths: ['x'] })), ['changed_paths must be empty for code-reviewer']);
   const developer = {
     contract_version: 1, assignment_id: 'dev-eval', role: 'software-developer', status: 'done', summary: 'ok',
@@ -98,4 +98,12 @@ test('reads a file and rejects malformed input', async () => {
   assert.equal(run('', ['--result', file]).json.ok, true);
   assert.equal(run('not json').json.code, 'bad_args');
   assert.equal(run('{}', ['--nope']).json.code, 'bad_args');
+});
+
+test('required fixes reference evidence-backed findings and critical findings have a scenario', () => {
+  assert.ok(resultProblems(review({ required_fixes: ['B404: missing'] })).some((problem) => problem.includes('has no finding')));
+  const finding = review().findings[0];
+  assert.ok(resultProblems(review({ findings: [{ ...finding, evidence: '' }] })).some((problem) => problem.includes('evidence missing')));
+  assert.ok(resultProblems(review({ findings: [{ ...finding, failure_scenario: '' }] })).some((problem) => problem.includes('failure scenario')));
+  assert.ok(resultProblems(review({ findings: [{ ...finding, confidence: 'plausible' }] })).some((problem) => problem.includes('must be a confirmed')));
 });

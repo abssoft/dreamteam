@@ -15,6 +15,7 @@
 // evidence and no failed item unless a required fix names it (review).
 
 import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -63,6 +64,69 @@ export function resultProblems(result, { expectId = null, expectRole = null } = 
     const fixCount = Array.isArray(fixes) ? fixes.length : 0;
     if (failed.length > 0 && (role !== "code-reviewer" || fixCount === 0)) {
       problems.push(`done with a failed verification item (${failed.join(", ")})${role === "code-reviewer" ? " and no required fix" : ""}`);
+    }
+    if (role === "code-reviewer") problems.push(...reviewProblems(result));
+  }
+  return problems;
+}
+
+function reviewProblems(result) {
+  const problems = [];
+  const findings = Array.isArray(result.findings) ? result.findings : [];
+  const content = isPlainObject(result.deliverable?.content) ? result.deliverable.content : {};
+  const fixes = Array.isArray(result.required_fixes) ? result.required_fixes.filter(isText) : [];
+  const ids = new Set();
+  const evidence = (value) => isText(value) || (Array.isArray(value) && value.length > 0 && value.every(isText));
+  for (const finding of findings) {
+    if (!isPlainObject(finding)) { problems.push("review finding must be an object"); continue; }
+    if (!/^[A-Za-z]+\d+$/.test(finding.id ?? "") || ids.has(finding.id)) problems.push("review finding IDs must be unique letter/number identifiers");
+    ids.add(finding.id);
+    for (const key of ["category", "path", "problem", "impact", "fix"]) if (!isText(finding[key])) problems.push(`${finding.id}: ${key} missing`);
+    if (!Number.isInteger(finding.line) || finding.line < 1) problems.push(`${finding.id}: positive line required`);
+    if (!evidence(finding.evidence)) problems.push(`${finding.id}: evidence missing`);
+    if (!["P0", "P1", "P2", "P3"].includes(finding.severity)) problems.push(`${finding.id}: invalid severity`);
+    if (!["confirmed", "plausible"].includes(finding.confidence)) problems.push(`${finding.id}: invalid confidence`);
+    if (["P0", "P1"].includes(finding.severity)) {
+      if (!isText(finding.failure_scenario ?? finding.scenario)) problems.push(`${finding.id}: failure scenario required`);
+      if (finding.confidence === "confirmed" && !fixes.some((fix) => fixId(fix) === finding.id)) problems.push(`${finding.id}: confirmed ${finding.severity} requires a fix`);
+    }
+  }
+  for (const fix of fixes) {
+    const finding = findings.find((item) => item?.id === fixId(fix));
+    if (!finding) problems.push(`required fix ${fixId(fix)} has no finding`);
+    else if (finding.confidence !== "confirmed" || finding.severity === "P3") problems.push(`required fix ${finding.id} must be a confirmed P0/P1/P2 finding`);
+  }
+  // Older Result v1 files still validate by shape. New runs bind their
+  // coverage and coordinates to the manifest the pack actually wrote.
+  if (content.review_manifest !== undefined) {
+    let manifest;
+    try { manifest = JSON.parse(readFileSync(content.review_manifest, "utf8")); } catch { return [...problems, "review manifest unreadable"]; }
+    if (manifest.version !== 1 || manifest.assignment_id !== result.assignment_id || !Array.isArray(manifest.files) || !manifest.files.every(isText) || !isText(manifest.root) || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(manifest.head ?? "") || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(manifest.base ?? "")) return [...problems, "review manifest invalid or belongs to another assignment"];
+    const git = (args) => {
+      try { return execFileSync("git", args, { cwd: manifest.root, encoding: "utf8", timeout: 10000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }).trimEnd(); } catch { return null; }
+    };
+    if (git(["rev-parse", "HEAD"]) !== manifest.head) problems.push("review manifest HEAD changed");
+    if (git(["status", "--porcelain"]) !== "") problems.push("review workspace changed after the committed input");
+    const changed = git(["diff", "--name-only", "-z", `${manifest.base}..${manifest.head}`]);
+    if (changed === null || JSON.stringify(changed.split("\0").filter(Boolean).sort()) !== JSON.stringify([...manifest.files].sort())) problems.push("review manifest files differ from the committed change");
+    const coverage = Array.isArray(content.coverage) ? content.coverage : [];
+    for (const path of manifest.files) {
+      const entries = coverage.filter((item) => item?.item === path);
+      if (entries.length !== 1) { problems.push(`coverage must contain exactly one entry for ${path}`); continue; }
+      const entry = entries[0];
+      if (!["reviewed", "not_applicable", "blocked"].includes(entry.status) || !evidence(entry.evidence)) problems.push(`coverage invalid for ${path}`);
+      if (entry.status === "blocked" && content.review_complete === true) problems.push(`review_complete contradicts blocked coverage for ${path}`);
+    }
+    if (typeof content.review_complete !== "boolean") problems.push("review_complete boolean required");
+    for (const id of manifest.previous_fixes ?? []) {
+      const entries = (Array.isArray(content.fix_resolution) ? content.fix_resolution : []).filter((item) => item?.id === id);
+      if (entries.length !== 1 || !["resolved", "unresolved", "regressed"].includes(entries[0]?.status) || !evidence(entries[0]?.evidence)) problems.push(`fix_resolution missing or invalid for ${id}`);
+      else if (entries[0].status !== "resolved" && !fixes.some((fix) => fixId(fix) === id)) problems.push(`unresolved fix ${id} must remain required`);
+    }
+    for (const finding of findings.filter(isPlainObject)) {
+      if (!isText(finding.path) || /^verification(?:\/|$)/.test(finding.category ?? "")) continue;
+      const source = git(["show", `${manifest.head}:${finding.path}`]) ?? git(["show", `${manifest.base}:${finding.path}`]);
+      if (source === null || finding.line > source.split("\n").length) problems.push(`${finding.id}: coordinates outside reviewed source`);
     }
   }
   return problems;
