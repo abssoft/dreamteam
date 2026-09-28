@@ -178,8 +178,8 @@ const LIMITS = Object.freeze({
 // Tool-call fees and ChatGPT/Codex subscription billing are deliberately out
 // of scope; the rendered column is therefore named "$ токены".
 const PRICING_CATALOG = Object.freeze({
-    version: "2026-09-05",
-    checked_at: "2026-09-05",
+    version: "2026-09-28",
+    checked_at: "2026-09-28",
     basis: "official_api_model_token_rates",
     sources: Object.freeze([
         "https://developers.openai.com/api/docs/models/gpt-6-astra",
@@ -225,6 +225,11 @@ const PRICING_CATALOG = Object.freeze({
             key: "claude-fable-5", provider: "claude", ids: Object.freeze(["claude-fable-5"]),
             snapshot: /^claude-fable-5-\d{8}$/,
             standard: Object.freeze({ uncached_input: 10_000, cache_read_input: 1_000, cache_write_5m: 12_500, cache_write_1h: 20_000, output: 50_000 })
+        },
+        {
+            key: "claude-opus-5-5", provider: "claude", ids: Object.freeze(["claude-opus-5-5"]),
+            snapshot: /^claude-opus-5-5-\d{8}$/,
+            standard: Object.freeze({ uncached_input: 4_000, cache_read_input: 200, cache_write_5m: 5_000, cache_write_1h: 8_000, output: 20_000 })
         },
         {
             key: "claude-opus-5", provider: "claude", ids: Object.freeze(["claude-opus-5"]),
