@@ -17,7 +17,7 @@ function review(overrides = {}) {
     summary: 'Ревью завершено: одна правка.',
     deliverable: {
       kind: 'review_report',
-      content: { verdict: 'Нужна правка B1', lenses_mode: 'children', path: '/tmp/x/result-review-eval.json', coverage: [{ item: 'a', status: 'reviewed' }] },
+      content: { verdict: 'Нужна правка B1', path: '/tmp/x/result-review-eval.json', coverage: [{ item: 'a', status: 'reviewed' }] },
     },
     verification: [{ command: 'npm test', status: 'failed', evidence: 'один тест красный' }],
     findings: [{ id: 'B1', severity: 'P1', category: 'correctness', path: 'src/a.js', line: 1, problem: 'x', impact: 'wrong result', fix: 'correct bound', evidence: 'src/a.js:1', confidence: 'confirmed', failure_scenario: 'two items skip the last' }],
@@ -44,7 +44,7 @@ test('a valid review result yields its envelope: no findings, fix IDs, verificat
       role: 'code-reviewer',
       status: 'done',
       summary: 'Ревью завершено: одна правка.',
-      deliverable: { kind: 'review_report', content: { path: '/tmp/x/result-review-eval.json', verdict: 'Нужна правка B1', lenses_mode: 'children' } },
+      deliverable: { kind: 'review_report', content: { path: '/tmp/x/result-review-eval.json', verdict: 'Нужна правка B1' } },
       verification: [{ command: 'npm test', status: 'failed' }],
       required_fixes: ['B1'],
       findings: [{ count: 1 }],
@@ -106,4 +106,12 @@ test('required fixes reference evidence-backed findings and critical findings ha
   assert.ok(resultProblems(review({ findings: [{ ...finding, evidence: '' }] })).some((problem) => problem.includes('evidence missing')));
   assert.ok(resultProblems(review({ findings: [{ ...finding, failure_scenario: '' }] })).some((problem) => problem.includes('failure scenario')));
   assert.ok(resultProblems(review({ findings: [{ ...finding, confidence: 'plausible' }] })).some((problem) => problem.includes('must be a confirmed')));
+});
+
+test('a refuted finding stays for audit, asks for no fix and cannot be required', () => {
+  const refuted = { id: 'B2', severity: 'P1', category: 'correctness', path: 'src/a.js', line: 2, problem: 'y', impact: 'lost row', fix: 'guard', evidence: 'src/a.js:2', confidence: 'confirmed', failure_scenario: 'empty list', status: 'refuted', verdict_reason: 'the caller filters empty lists' };
+  const base = review();
+  assert.deepEqual(resultProblems({ ...base, findings: [...base.findings, refuted] }), []);
+  assert.ok(resultProblems({ ...base, findings: [...base.findings, refuted], required_fixes: [...base.required_fixes, 'B2: guard'] })
+    .includes('required fix B2 must be a confirmed P0/P1/P2 finding the sceptic did not refute'));
 });
