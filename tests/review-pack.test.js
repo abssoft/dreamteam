@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { accessSync, constants } from 'node:fs';
 import { mkdir, mkdtemp, readFile, writeFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -58,9 +58,13 @@ function base(overrides) {
   };
 }
 
-function run(dir, input, args = []) {
+// The host's own lsd must not start an index over every fixture repository.
+const hasLsd = (directory) => { try { accessSync(join(directory, 'lsd'), constants.X_OK); return true; } catch { return false; } };
+const PLAIN_PATH = process.env.PATH.split(':').filter((directory) => !hasLsd(directory)).join(':');
+
+function run(dir, input, args = [], path = PLAIN_PATH) {
   const result = spawnSync(process.execPath, [scriptPath, '--assignment', '-', ...args], {
-    cwd: dir, input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8',
+    cwd: dir, input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8', env: { ...process.env, PATH: path },
   });
   const line = result.stdout.trim().split('\n').pop();
   return { code: result.status, json: line ? JSON.parse(line) : null, stderr: result.stderr };
@@ -72,7 +76,7 @@ test('--usage prints the contract as prose', () => {
   assert.match(usage, /entry named issue/);
   assert.match(usage, /named qa_result/);
   assert.match(usage, /--check/);
-  assert.match(usage, /children\|in_context/);
+  assert.match(usage, /depth\{level,reason\}/);
 });
 
 test('refuses malformed input and packets without base_ref, issue text or the QA result', async () => {
@@ -106,7 +110,8 @@ test('a small clean change packs in_context with every section in order', async 
   const { code, json } = run(dir, assignment(), ['--skip=rules']);
   assert.equal(code, 0);
   assert.equal(json.ok, true);
-  assert.equal(json.mode, 'in_context');
+  assert.deepEqual(json.depth, { level: 2, reason: 'behavior change without a risk signal' });
+  assert.equal(json.navigation, 'none');
   assert.equal(json.files, 2);
   assert.equal(json.test_files, 1);
   assert.equal(json.changed_lines, 5);
@@ -136,21 +141,42 @@ test('a small clean change packs in_context with every section in order', async 
   assert.equal(json.pack_chars, pack.length - 1);
 });
 
-test('a fitting diff stays in_context whatever its size or risk; only a cut diff goes to children', async () => {
+test('depth follows the most expensive hunk, never the size, and a cut diff stays with the one reviewer', async () => {
   const dir = await repo();
   await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.length;\nexport const login = (password) => password === "x";\n');
   commit(dir, 'auth');
   const risky = run(dir, assignment()).json;
-  assert.equal(risky.mode, 'in_context');
   assert.deepEqual(risky.risk_hits, [{ path: 'src/totals.js', line: 2, match: 'login' }]);
+  assert.deepEqual(risky.depth, { level: 4, reason: 'risk category: access' });
+
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const login = (password) => password === "x";\nexport const purge = () => db.query("delete from orders");\n');
+  commit(dir, 'destructive');
+  assert.deepEqual(run(dir, assignment()).json.depth, { level: 5, reason: 'risk categories: access, data' });
 
   const big = Array.from({ length: 300 }, (_, i) => `export const value${i} = "${'x'.repeat(40)}";`).join('\n');
   await writeFile(join(dir, 'src', 'totals.js'), `${big}\n`);
   commit(dir, 'many lines');
-  assert.equal(run(dir, assignment()).json.mode, 'in_context');
+  assert.equal(run(dir, assignment()).json.depth.level, 2);
   const cut = run(dir, assignment(), ['--budget', '9000', '--skip=rules,docs,runtime,tooling']).json;
-  assert.equal(cut.mode, 'children');
-  assert.ok(cut.truncations.some((note) => /diff cut/.test(note)), cut.truncations.join(' | '));
+  assert.equal(Object.hasOwn(cut, 'lens_pack'), false);
+  assert.ok(cut.truncations.some((note) => /diff cut .*page through the rest with `git diff [0-9a-f]+\.\.HEAD -- <path>`/.test(note)), cut.truncations.join(' | '));
+});
+
+test('documentation, generated, whitespace-only and test changes buy the lowest depth, one lower again on a repeat', async () => {
+  const dir = await repo();
+  await mkdir(join(dir, 'src', 'generated'), { recursive: true });
+  await writeFile(join(dir, 'docs', 'style.md'), '# Style\nName a total after what it sums; drop the password field.\n');
+  await writeFile(join(dir, 'src', 'generated', 'Model.php'), '<?php class Model { public $password; }\n');
+  await writeFile(join(dir, 'src', 'totals.js'), 'export  const total = (items) =>  items.length;\n');
+  await writeFile(join(dir, 'src', 'auth.test.js'), 'it("rejects a bad password", () => {});\n');
+  commit(dir, 'inert');
+  assert.deepEqual(run(dir, assignment()).json.depth, { level: 1, reason: 'documentation, generated, formatting or test files only' });
+
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.reduce((sum, item) => sum + item.amount, 0);\n');
+  commit(dir, 'behavior');
+  const previous = { kind: 'text', name: 'previous_review', content: JSON.stringify({ role: 'code-reviewer', required_fixes: [] }), provenance: 'previous review' };
+  const repeat = run(dir, assignment({ source_materials: [...assignment().source_materials, previous] }), ['--check']).json;
+  assert.deepEqual(repeat.depth, { level: 1, reason: 'behavior change without a risk signal; repeat review, one level lower' });
 });
 
 test('a tight budget narrows the diff, then cuts it and drops rules with notes', async () => {
@@ -266,7 +292,7 @@ test('--check validates the packet strictly and writes nothing', async () => {
   assert.equal(good.code, 0);
   assert.equal(good.json.ok, true);
   assert.equal(good.json.check, true);
-  assert.equal(good.json.mode, 'in_context');
+  assert.equal(good.json.depth.level, 2);
   assert.equal(good.json.files, 1);
   assert.equal(good.json.issue_chars, 11);
   assert.match(good.json.warnings[0], /issue text is 11 characters/);
@@ -367,36 +393,65 @@ test('the QA result rides in the pack whole, as a file or inline, between the re
   assert.match(await readFile(inline.json.pack, 'utf8'), /<qa_result note="[^"]+">\n\{"kind":"qa_result","verdict":"green"/);
 });
 
-test('children mode writes a lens pack: the same context without env, and no environment work for the lenses', async () => {
+test('rules that declare paths ride whole only when a changed file matches them', async () => {
   const dir = await repo();
-  const big = Array.from({ length: 300 }, (_, i) => `export const value${i} = "${'x'.repeat(40)}";`).join('\n');
-  await writeFile(join(dir, 'src', 'totals.js'), `${big}\n`);
-  commit(dir, 'bulk');
+  await mkdir(join(dir, '.claude', 'rules', 'db'), { recursive: true });
+  await writeFile(join(dir, 'docs', 'engineering', 'rules', 'sql.md'), '---\npaths: ["db/**/*.sql", "migrations/*"]\n---\n# SQL\nNo raw deletes.\n');
+  await writeFile(join(dir, '.claude', 'rules', 'db', 'money.md'), '---\npaths:\n  - "src/**/{totals,prices}.js"\n---\n# Totals\nRound at the end.\n');
+  await writeFile(join(dir, '.claude', 'rules', 'always.md'), '# Always\nKeep changes bounded.\n');
+  await writeFile(join(dir, 'docs', 'style.md'), '---\npaths: src/*.js\n---\n# Style\nName a total after what it sums.\n');
+  await writeFile(join(dir, 'docs', 'ui.md'), '---\npaths: ["web/**"]\n---\n# UI\nNo inline styles.\n');
+  await writeFile(join(dir, 'AGENTS.md'), '# Repository rules\n- naming lives in docs/style.md\n- screens follow docs/ui.md\n');
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.reduce((sum, item) => sum + item.amount, 0);\n');
+  commit(dir, 'rules with paths');
 
-  const { json } = run(dir, assignment(), ['--budget', '9000', '--skip=rules,docs,runtime,tooling']);
-  assert.equal(json.mode, 'children');
-  assert.equal(json.lens_pack, `${json.pack.slice(0, -3)}-lens.md`);
+  const { json } = run(dir, assignment({ assignment_id: 'assignment-review-paths' }), ['--skip=rules']);
   const pack = await readFile(json.pack, 'utf8');
-  const lens = await readFile(json.lens_pack, 'utf8');
-  assert.match(pack, /<env>/);
-  assert.equal(lens.includes('<env>'), false);
-  assert.match(lens, /- This pack is your whole review context: settle every doubt by reading the code it names, and collect no environment snapshot, rules or diff of your own/);
-  assert.ok(lens.endsWith('</review_pack>\n'));
-  for (const marker of ['<signals>', '<issue ', '<method>', '<rules>', '<files>', '<diff context=']) {
-    assert.ok(lens.includes(marker), `${marker} missing from the lens pack`);
-  }
+  const rules = pack.slice(pack.indexOf('<rules>'), pack.indexOf('</rules>'));
+  assert.deepEqual(
+    [...rules.matchAll(/^#### (.+)$/gm)].map((match) => match[1]),
+    ['AGENTS.md', 'docs/engineering/README.md', 'docs/engineering/rules/money.md', '.claude/rules/always.md', '.claude/rules/db/money.md', 'docs/style.md'],
+  );
+  assert.match(rules, /#### docs\/style\.md\n\n# Style\nName a total/, 'an applicable routed document rides whole, without its front matter');
+  assert.equal(rules.includes('No raw deletes'), false);
+  assert.equal(rules.includes('No inline styles') || /^- docs\/ui\.md/m.test(rules), false, 'a routed document whose paths miss the change is neither body nor route');
+  assert.match(pack, /rules: 6 carried whole, 2 left out by their paths/);
 });
 
-test('in_context mode writes one pack only', async () => {
+test('the pack seeds an empty journal and hands over the harness bound to it', async () => {
   const dir = await repo();
   await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.reduce((sum, item) => sum + item.amount, 0);\n');
   commit(dir, 'sum amounts');
 
-  // Its own id: the shared temp directory still holds the lens pack of the children-mode run.
-  const { json } = run(dir, assignment({ assignment_id: 'assignment-review-in-context' }), ['--skip=rules']);
-  assert.equal(json.mode, 'in_context');
-  assert.equal(Object.hasOwn(json, 'lens_pack'), false);
-  assert.equal(existsSync(`${json.pack.slice(0, -3)}-lens.md`), false);
+  const { json } = run(dir, assignment({ assignment_id: 'assignment-review-harness' }), ['--skip=rules']);
+  const manifest = JSON.parse(await readFile(json.review_manifest, 'utf8'));
+  assert.deepEqual(JSON.parse(await readFile(manifest.journal, 'utf8')), { findings: [], coverage: {}, phases: {}, fix_resolution: {} });
+  assert.equal(manifest.result, join(tmpdir(), 'result-assignment-review-harness.json'));
+  assert.deepEqual(manifest.qa_checks, [{ id: 'c1', command: 'npx vitest related src/totals.js', status: 'passed', width: 'narrowed to the change' }]);
+  assert.equal(json.harness, `node '${join(dirname(scriptPath), 'review-findings.mjs')}' --manifest '${json.review_manifest}'`);
+  assert.match(await readFile(json.pack, 'utf8'), /<harness note="[^"]+">\nnode '/);
+});
+
+test('with the navigation lsd on the PATH the pack starts its index and says so', async () => {
+  const dir = await repo();
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.reduce((sum, item) => sum + item.amount, 0);\n');
+  commit(dir, 'sum amounts');
+  const bin = await mkdtemp(join(tmpdir(), 'lsd-bin-'));
+  const marker = join(bin, 'reindexed');
+  await writeFile(join(bin, 'lsd'), `#!/bin/sh\nif [ "$1" = "--help" ]; then echo "  def   Where a symbol is declared"; exit 0; fi\necho "$@" > '${marker}'\n`);
+  await chmod(join(bin, 'lsd'), 0o755);
+
+  const { json } = run(dir, assignment({ assignment_id: 'assignment-review-lsd' }), ['--skip=rules'], `${bin}:${PLAIN_PATH}`);
+  assert.equal(json.navigation, 'lsd');
+  assert.match(await readFile(json.pack, 'utf8'), /navigation: lsd — its index was started/);
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try { accessSync(marker); break; } catch { await new Promise((done) => { setTimeout(done, 20); }); }
+  }
+  assert.equal((await readFile(marker, 'utf8')).trim(), `reindex ${sh(dir, 'git', ['rev-parse', '--show-toplevel']).trim()}`);
+
+  // The ls replacement of the same name is not a navigator.
+  await writeFile(join(bin, 'lsd'), '#!/bin/sh\necho "An ls command with a lot of pretty colors"\n');
+  assert.equal(run(dir, assignment({ assignment_id: 'assignment-review-lsd' }), ['--skip=rules'], `${bin}:${PLAIN_PATH}`).json.navigation, 'none');
 });
 
 test('routes past the cap are named in the truncations, never dropped in silence', async () => {
@@ -455,12 +510,12 @@ test('a change that is only tests keeps them as the diff', async () => {
   assert.match(pack.slice(pack.indexOf('<diff ')), /src\/totals\.test\.js/);
 });
 
-test('repeat packs omit duplicate lens reports, passing logs and environment rules', async () => {
+test('repeat packs omit duplicate phase reports, passing logs and environment rules', async () => {
   const dir = await repo();
   await writeFile(join(dir, 'src', 'totals.js'), 'export const total = () => 0;\n');
   commit(dir, 'change');
   const large = 'REDUNDANT_HISTORY'.repeat(5000);
-  const { json } = run(dir, assignment({ source_materials: [...assignment().source_materials, { name: 'previous_review', kind: 'text', provenance: 'review', content: JSON.stringify({ role: 'code-reviewer', required_fixes: ['B1: preserve me'], findings: [{ id: 'B1', evidence: 'keep proof' }], deliverable: { content: { lenses: { behavior: large }, coverage: [{ item: 'src/totals.js', status: 'reviewed', evidence: 'keep coverage' }] } } }) }] }));
+  const { json } = run(dir, assignment({ source_materials: [...assignment().source_materials, { name: 'previous_review', kind: 'text', provenance: 'review', content: JSON.stringify({ role: 'code-reviewer', required_fixes: ['B1: preserve me'], findings: [{ id: 'B1', evidence: 'keep proof' }], deliverable: { content: { phases: { behavior: large }, coverage: [{ item: 'src/totals.js', status: 'reviewed', evidence: 'keep coverage' }] } } }) }] }));
   const text = await readFile(json.pack, 'utf8');
   assert.equal(text.includes('REDUNDANT_HISTORY'), false);
   assert.match(text, /keep proof/);

@@ -6,7 +6,7 @@
 // Output: one JSON line; exit 0 on ok:true, exit 1 on ok:false.
 //   ok:true  → {ok, envelope}: the slim form the wrapper routes on — findings
 //               dropped, deliverable content reduced to its decision fields
-//               (path, verdict, behavior, why, lenses_mode), required_fixes
+//               (path, verdict, behavior, why), required_fixes
 //               reduced to finding IDs, verification to command and status
 //   ok:false → {ok, code, detail}: bad_args | bad_result (detail lists every problem)
 // Beyond the JSON Schema: the role is a launched one and the deliverable kind
@@ -23,7 +23,7 @@ export const RESULT_FIELDS = ["contract_version", "assignment_id", "role", "stat
 export const DELIVERABLE_KINDS = { "software-developer": "implementation_summary", "code-reviewer": "review_report" };
 export const STATUSES = ["done", "blocked", "needs_human", "failed"];
 export const VERIFICATION_STATUSES = ["passed", "failed", "skipped", "broken"];
-const ENVELOPE_CONTENT = ["path", "verdict", "behavior", "why", "lenses_mode"];
+const ENVELOPE_CONTENT = ["path", "verdict", "behavior", "why"];
 
 const isText = (value) => typeof value === "string" && value.trim() !== "";
 const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -88,13 +88,14 @@ function reviewProblems(result) {
     if (!["confirmed", "plausible"].includes(finding.confidence)) problems.push(`${finding.id}: invalid confidence`);
     if (["P0", "P1"].includes(finding.severity)) {
       if (!isText(finding.failure_scenario ?? finding.scenario)) problems.push(`${finding.id}: failure scenario required`);
-      if (finding.confidence === "confirmed" && !fixes.some((fix) => fixId(fix) === finding.id)) problems.push(`${finding.id}: confirmed ${finding.severity} requires a fix`);
+      // A finding the sceptic refuted stays for audit and asks for nothing.
+      if (finding.confidence === "confirmed" && finding.status !== "refuted" && !fixes.some((fix) => fixId(fix) === finding.id)) problems.push(`${finding.id}: confirmed ${finding.severity} requires a fix`);
     }
   }
   for (const fix of fixes) {
     const finding = findings.find((item) => item?.id === fixId(fix));
     if (!finding) problems.push(`required fix ${fixId(fix)} has no finding`);
-    else if (finding.confidence !== "confirmed" || finding.severity === "P3") problems.push(`required fix ${finding.id} must be a confirmed P0/P1/P2 finding`);
+    else if (finding.confidence !== "confirmed" || finding.severity === "P3" || finding.status === "refuted") problems.push(`required fix ${finding.id} must be a confirmed P0/P1/P2 finding the sceptic did not refute`);
   }
   // Older Result v1 files still validate by shape. New runs bind their
   // coverage and coordinates to the manifest the pack actually wrote.

@@ -94,4 +94,4 @@ When `analyze: true`, paste `rendered.analysis_block` after `rendered.block`. Th
 
 `ok: false` returns `{code, warning_line}`. Possible codes: `bad_args`, `logs_not_found`, `root_not_found`, `ambiguous_root`, `workflow_run_incomplete`, `timestamps_missing`, `log_limit_exceeded`, `collector_error`.
 
-Paste script-owned renderings verbatim and whole: a launch that spawned subagents (a reviewer's lenses, a developer's helpers) renders each of them as its own row after the launch row, and the «ИТОГО» is the sum of every row printed — a table with rows dropped understates the run. Collection is best-effort: failure never blocks the hosting workflow.
+Paste script-owned renderings verbatim and whole: a launch that spawned subagents (a developer's helpers, a PRD interview's research children) renders each of them as its own row after the launch row, and the «ИТОГО» is the sum of every row printed — a table with rows dropped understates the run. Collection is best-effort: failure never blocks the hosting workflow.

@@ -18,12 +18,12 @@
 //                          and the diff, write nothing
 //   --usage                print this contract as prose
 // Output: one JSON line; exit 0 on ok:true, exit 1 on ok:false.
-//   ok:true  → {ok, pack, lens_pack (children mode only), base, head, files,
-//               changed_lines, test_files, risk_hits: [{path, line, match}],
-//               mode: "children"|"in_context", diff_context,
-//               truncations: [text], warnings: [text], pack_chars}
+//   ok:true  → {ok, pack, harness, base, head, files, changed_lines, test_files,
+//               risk_hits: [{path, line, match}], depth: {level, reason},
+//               navigation: "lsd"|"none", diff_context, truncations: [text],
+//               warnings: [text], pack_chars}
 //               (--check: {ok, check: true, base, head, files, changed_lines,
-//               test_files, risk_hits, mode, issue_chars, warnings})
+//               test_files, risk_hits, depth, issue_chars, warnings})
 //   ok:false → {ok, code, detail?}: bad_args | bad_packet (--check only; detail
 //               lists every problem) | missing_base_ref | missing_issue |
 //               missing_qa_result | not_a_git_repository | base_ref_not_found |
@@ -35,17 +35,18 @@
 // stay in its source file; the review runs no check of its own.
 // The diff is `git diff` from the merge base of <base> and HEAD (the three-dot
 // range), at the widest context of 10, 6, 3 or 0 lines that fits the budget;
-// a diff that does not fit even at 0 is cut and the files after the cut are
-// listed. Mode: the diff fits → in_context, one reviewer applying the three
-// lenses over one reading; the diff had to be cut → children, the only case
-// where a second reader earns its own copy of the pack. Rules: the repository instruction chain — the agent entry
-// files and the engineering rule directory whole, then routes (path plus the
-// line naming it) to the documents those entries name — or, with no entry file,
-// the documentation paths to route reads by. In children mode a
-// second `-lens` pack is written beside the first, the same context without the
-// environment snapshot, for the lens children.
+// a diff that does not fit even at 0 is cut, the files after the cut are
+// listed, and the same reviewer pages through the rest. Rules: the repository
+// instruction chain — the agent entry files whole, the rule directories whole
+// minus the rules whose `paths:` front matter matches no changed file, the
+// documents the entries name whole when their `paths:` match and as routes
+// (path plus the line naming it) when they declare none — or, with no entry
+// file, the documentation paths to route reads by. Depth: the review depth 1–5
+// the change's most expensive hunk buys, for the wrapper to launch the reviewer
+// at. The pack also warms the tree's `lsd` index in the background and seeds
+// the findings journal the harness (review-findings.mjs) records into.
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -64,21 +65,35 @@ const RISK_HIT_CAP = 40;
 const DOCS_LIST_CAP = 150;
 const SHORT_ISSUE_CHARS = 300;
 // The instruction chain a repository publishes: the agent entry files and the
-// engineering rule directory go in whole, and the documents those entries name
-// go in as routes — path plus the line that names it. A route costs one line
-// where the document costs its whole length in every context that holds the
-// pack, and only the lens that needs it pays the read.
+// rule directories go in whole, and the documents those entries name go in as
+// routes — path plus the line that names it. A rule that declares `paths:` in
+// its front matter (the Claude Code rules convention) is in only when a changed
+// file matches one of them, and then whole: the rules phase walks the diff for
+// it without a read of its own.
 const RULES_ENTRIES = ["AGENTS.md", "CLAUDE.md", "docs/engineering/README.md"];
-const RULES_DIR = "docs/engineering/rules";
+const RULES_DIRS = ["docs/engineering/rules", ".claude/rules"];
 const RULES_ROUTE_CAP = 40;
 const ROUTE_HINT_CHARS = 160;
-const LENS_NOTE = "This pack is your whole review context: settle every doubt by reading the code it names, and collect no environment snapshot, rules or diff of your own — the environment and the gate's result belong to the parent review.";
+// Files whose change buys no behavior of its own: documentation, generated
+// code and tests (the gate ran them). A whitespace-only change is the same.
+const DOC_PATH = /(?:^|\/)docs?\/|\.(?:md|mdx|rst|adoc|txt)$/i;
+const GENERATED_PATH = /(?:^|\/)(?:generated|__generated__)\/|\.generated\.[a-z]+$/i;
+// Risk categories of a hit; `access` takes whatever the others do not name.
+// Irreversible data work, or two categories meeting in one change, buy the top
+// depth.
+const RISK_CATEGORIES = [
+  ["data", /migrat|backfill|retention|truncate|purge|alter\s+table|drop\s+(?:table|column|index)|delete\s+from|rm\s+-rf|миграц|удал[её]н/i],
+  ["secrets", /passw|secret|credential|api[_-]?key|парол/i],
+  ["crypto", /crypt|hmac|шифр/i],
+  ["injection", /sql|unserialize|deserializ/i],
+  ["upload", /upload|multipart/i],
+];
 // A markdown link or bare path naming a document of this repository; a URL, an
 // absolute path or a traversal is not one.
 const DOC_LINK = /(?:^|[\s(<"'`[])([A-Za-z0-9._][A-Za-z0-9._/-]*\.md)\b/g;
 const METHOD_REFERENCE = ["..", "..", "..", "references", "engineering-evidence.md"];
 const GIT_MAX_BUFFER = 256 * 1024 * 1024;
-// Signals that raise the review to children mode and the security escalation:
+// Signals that raise the review depth and the security escalation:
 // access control, secrets, cryptography, injection surfaces, uploads,
 // deserialization, migrations and destructive data operations, in the
 // English and Russian the codebases mix.
@@ -100,8 +115,8 @@ branch). Pipe the Assignment v1 JSON on stdin:
 Flags: --base <ref> (default repository.base_ref), --budget <chars> (300000),
 --out <path> (pack file, default beside the packet file, or under the OS temp
 dir for stdin), --skip=<sections> (passed to env-snapshot), --check (wrapper
-pre-launch gate: strict packet validation, base and diff resolution, nothing
-written), --usage.
+pre-launch gate: strict packet validation, base and diff resolution, the review
+depth, nothing written), --usage.
 Requires repository.base_ref (or --base), a source_materials entry named issue
 carrying the task text inline (kind text) or as a file path the wrapper wrote
 (kind attachment_reference; a subtask also carries name parent_issue), and one
@@ -111,15 +126,19 @@ Pack sections, in order: attention (cuts and notes), signals, scope, decisions
 (only when the packet carries any), issue, parent_issue, materials, repository,
 development_result, previous_review and qa_result (the files those materials
 name, projected without duplicate history), method (the shared engineering reference), rules (the repository
-instruction chain: the entry files and the rule directory whole, then routes to
+instruction chain: the entry files and the applicable rules whole, then routes to
 the documents they name), env, files, tests (declared cases of the changed test
-files), diff. In children mode a second pack, named -lens beside the first,
-carries the same context without env, for the lens children.
-Output: one JSON line {ok, pack, lens_pack (children mode), base, head, files,
-changed_lines, test_files, risk_hits[{path,line,match}], mode
-children|in_context, diff_context, truncations[], warnings[], pack_chars};
+files), diff.
+Depth: 1 documentation, generated, formatting or test files only; 2 behavior
+without a risk signal; 4 one risk category; 5 irreversible data work or two risk
+categories; one lower on a repeat review, never below 1. The wrapper maps the
+level to its runtime's model and effort.
+Output: one JSON line {ok, pack, harness, base, head, files, changed_lines,
+test_files, risk_hits[{path,line,match}], depth{level,reason}, navigation
+lsd|none, diff_context, truncations[], warnings[], pack_chars}; harness is the
+command prefix of review-findings.mjs bound to this review's journal.
 --check returns {ok, check, base, head, files, changed_lines, test_files,
-risk_hits, mode, issue_chars, warnings}.
+risk_hits, depth, review_kind, issue_chars, warnings}.
 ok:false codes: bad_args | bad_packet (--check; detail lists the problems) |
 missing_base_ref | missing_issue | missing_qa_result | not_a_git_repository |
 base_ref_not_found | empty_diff | pack_write_failed. Exit 1 on ok:false.
@@ -288,7 +307,53 @@ function routes(text, root, seen, state) {
   }
 }
 
-export function collectRules(root, cwd, budget) {
+// The front matter's `paths:` globs — an inline list, a YAML list or one scalar.
+export function rulePaths(text) {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
+  if (!front) return { paths: null, body: text };
+  const body = text.slice(front[0].length);
+  const lines = front[1].split(/\r?\n/);
+  const at = lines.findIndex((line) => /^paths:/.test(line));
+  if (at < 0) return { paths: null, body };
+  const unquote = (value) => value.trim().replace(/^["']|["']$/g, "").trim();
+  const inline = lines[at].slice("paths:".length).trim();
+  let paths;
+  if (inline.startsWith("[")) paths = inline.replace(/^\[|\]$/g, "").split(",").map(unquote);
+  else if (inline) paths = [unquote(inline)];
+  else {
+    paths = [];
+    for (const line of lines.slice(at + 1)) {
+      const item = /^\s+-\s+(.+)$/.exec(line);
+      if (!item) break;
+      paths.push(unquote(item[1]));
+    }
+  }
+  return { paths: paths.filter(Boolean), body };
+}
+
+export function globRegExp(glob) {
+  let source = "";
+  let braces = 0;
+  for (let i = 0; i < glob.length; i += 1) {
+    const char = glob[i];
+    if (char === "*" && glob[i + 1] === "*") {
+      i += 1;
+      if (glob[i + 1] === "/") { i += 1; source += "(?:.*/)?"; } else source += ".*";
+    } else if (char === "*") source += "[^/]*";
+    else if (char === "?") source += "[^/]";
+    else if (char === "{") { braces += 1; source += "(?:"; }
+    else if (char === "}" && braces > 0) { braces -= 1; source += ")"; }
+    else if (char === "," && braces > 0) source += "|";
+    else source += char.replace(/[.+^$(){}|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${source.replace(/^\/+/, "")}$`);
+}
+
+// null changed paths: no applicability filter (the policy hash enumerates every
+// candidate rule, applicable or not).
+const applies = (paths, changed) => changed === null || paths.map(globRegExp).some((glob) => changed.some((path) => glob.test(path)));
+
+export function collectRules(root, cwd, budget, changed = null) {
   const seen = new Set();
   const entries = [];
   for (const entry of RULES_ENTRIES) {
@@ -298,23 +363,35 @@ export function collectRules(root, cwd, budget) {
   }
   if (entries.length === 0) {
     const paths = (git(["ls-files", "docs/*.md", "docs/**/*.md"], cwd) ?? "").split("\n").filter(Boolean).slice(0, DOCS_LIST_CAP);
-    return { mode: "paths", paths, routes: [], routes_cut: [], items: [], dropped: [] };
+    return { mode: "paths", paths, routes: [], routes_cut: [], items: [], dropped: [], skipped: [] };
   }
   const items = [...entries];
-  const dir = join(root, RULES_DIR);
-  if (existsSync(dir)) {
-    for (const name of readdirSync(dir).filter((entry) => entry.endsWith(".md")).sort()) {
-      const relative = `${RULES_DIR}/${name}`;
+  const skipped = [];
+  for (const dirPath of RULES_DIRS) {
+    const dir = join(root, dirPath);
+    if (!existsSync(dir)) continue;
+    for (const name of readdirSync(dir, { recursive: true }).map(String).filter((entry) => entry.endsWith(".md")).sort()) {
+      const relative = `${dirPath}/${name}`;
       if (seen.has(relative)) continue;
       seen.add(relative);
-      items.push({ path: relative, text: readFileSync(join(dir, name), "utf8") });
+      const { paths, body } = rulePaths(readFileSync(join(dir, name), "utf8"));
+      if (paths && !applies(paths, changed)) { skipped.push(relative); continue; }
+      items.push({ path: relative, text: body });
     }
   }
   // Routes are drawn from the entry files only, and never repeat a document the
-  // pack already carries whole.
+  // pack already carries whole. A routed document that declares its paths is no
+  // longer a route: applicable, it rides whole; otherwise it stays out.
   const state = { list: [], cut: [] };
   for (const entry of entries) routes(entry.text, root, seen, state);
-  const routed = state.list;
+  const routed = [];
+  for (const route of state.list) {
+    const path = route.split(" — ")[0];
+    const { paths, body } = rulePaths(readFileSync(join(root, path), "utf8"));
+    if (!paths || changed === null) routed.push(route);
+    else if (applies(paths, changed)) items.push({ path, text: body });
+    else skipped.push(path);
+  }
   const kept = [];
   const dropped = [];
   // Routes come first: when the budget is tight, knowing where a rule lives
@@ -324,7 +401,58 @@ export function collectRules(root, cwd, budget) {
     const size = item.path.length + item.text.length + 8;
     if (used + size <= budget) { kept.push(item); used += size; } else dropped.push(item.path);
   }
-  return { mode: "content", paths: [], routes: routed, routes_cut: state.cut, items: kept, dropped };
+  return { mode: "content", paths: [], routes: routed, routes_cut: state.cut, items: kept, dropped, skipped };
+}
+
+// The depth the most expensive hunk buys; size never raises it. Only code
+// counts: a password in a fixture or a table named in a document is not a
+// change of that kind.
+export function reviewDepth(files, hits, inert, repeat) {
+  const code = new Set(files.map((file) => file.path).filter((path) => !inert.has(path)));
+  const categories = [...new Set(hits.filter((hit) => code.has(hit.path)).map((hit) => (
+    hit.rule === "outbound_url" ? "outbound" : (RISK_CATEGORIES.find(([, pattern]) => pattern.test(hit.match))?.[0] ?? "access")
+  )))].sort();
+  let level;
+  let reason;
+  if (code.size === 0) { level = 1; reason = "documentation, generated, formatting or test files only"; }
+  else if (categories.length === 0) { level = 2; reason = "behavior change without a risk signal"; }
+  else if (categories.includes("data") || categories.length > 1) { level = 5; reason = `risk categories: ${categories.join(", ")}`; }
+  else { level = 4; reason = `risk category: ${categories[0]}`; }
+  if (repeat && level > 1) { level -= 1; reason += "; repeat review, one level lower"; }
+  return { level, reason };
+}
+
+// Paths whose change carries no behavior of its own; a file whose diff is
+// whitespace only joins them.
+function inertPaths(files, range, cwd) {
+  const inert = new Set(files.filter((file) => TEST_PATH.test(file.path) || DOC_PATH.test(file.path) || GENERATED_PATH.test(file.path)).map((file) => file.path));
+  const touched = new Set();
+  for (const line of (git(["diff", "-w", "--ignore-blank-lines", "--numstat", range], cwd) ?? "").split("\n")) {
+    const [added, removed, path] = line.split("\t");
+    if (path && (added !== "0" || removed !== "0")) touched.add(path);
+  }
+  for (const file of files) if (file.status === "M" && !touched.has(file.path)) inert.add(file.path);
+  return inert;
+}
+
+// The `lsd` of this skill, not the ls replacement of the same name: its help
+// names the declaration lookup.
+function lsdAvailable(cwd) {
+  try {
+    return /Where a symbol is declared/.test(execFileSync("lsd", ["--help"], { cwd, encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "ignore"] }));
+  } catch {
+    return false;
+  }
+}
+
+// The first question in a tree waits for its index; the rebuild starts now,
+// detached, so it walks while the reviewer reads the pack.
+function warmLsd(root) {
+  try {
+    spawn("lsd", ["reindex", root], { cwd: root, detached: true, stdio: "ignore" }).unref();
+  } catch {
+    // A warm index is a saving, never a precondition.
+  }
 }
 
 // Every test file of the change, each with its declared cases: enough to see
@@ -406,7 +534,7 @@ function main() {
   if (issue.error) fail("missing_issue", issue.error);
   if (!isText(issue.text)) fail("missing_issue", issue.path ? `empty file: ${issue.path}` : "empty content");
   const parent = material(assignment, "parent_issue");
-  // Prior Results remain claims, projected without repeated lens output.
+  // Prior Results remain claims, projected without repeated phase output.
   const developmentResult = material(assignment, "development_result");
   const previousReview = material(assignment, "previous_review");
   // The gate's result is the QA role's file; a packet without it predates the
@@ -470,6 +598,7 @@ function main() {
   // Risk signals steer the security review of the change; a fixture naming a
   // password or a table is not that change.
   const hits = riskHits(narrow, diffFiles);
+  const depth = reviewDepth(files, hits, inertPaths(files, range, cwd), Boolean(previousReview));
   const testFiles = tests.length;
   const head = git(["rev-parse", "--short", "HEAD"], cwd);
 
@@ -483,30 +612,35 @@ function main() {
   }
 
   if (opts.check) {
-    // No pack is built here, so the fit is estimated from the narrowest diff
-    // against the floor the pack guarantees it.
-    const mode = narrow.length > Math.floor(opts.budget * DIFF_FLOOR_SHARE) ? "children" : "in_context";
     out({
-      ok: true, check: true, base, head, files: files.length, changed_lines: lines, test_files: testFiles, risk_hits: hits, mode, review_kind: reviewKind, issue_chars: issueChars, warnings,
+      ok: true, check: true, base, head, files: files.length, changed_lines: lines, test_files: testFiles, risk_hits: hits, depth, review_kind: reviewKind, issue_chars: issueChars, warnings,
     });
     return;
   }
 
   const truncations = [];
   const fixed = [];
-  // The mode follows from the diff, which is sized further down; the placeholder
+  const navigation = lsdAvailable(root) ? "lsd" : "none";
+  if (navigation === "lsd") warmLsd(root);
+  const changedPaths = files.flatMap((file) => (file.from ? [file.path, file.from] : [file.path]));
+  const applicable = collectRules(root, cwd, Number.MAX_SAFE_INTEGER, changedPaths);
+  // The rules line follows from the budget cut further down; the placeholder
   // differs from the final line by a few characters and cannot move the budget.
-  const signals = (packMode) => section("signals", [
+  const signals = (kept) => section("signals", [
     `files: ${files.length}`,
     `changed_lines: ${lines}`,
     `test_files: ${testFiles}`,
-    `mode: ${packMode}`,
     `review_kind: ${reviewKind}`,
+    `depth: ${depth.level} — ${depth.reason}`,
+    navigation === "lsd"
+      ? "navigation: lsd — its index was started before your first turn; the first question may wait up to a minute"
+      : "navigation: none — settle symbol questions with Grep and the page reader",
+    `rules: ${kept} carried whole, ${applicable.skipped.length} left out by their paths`,
     ...(hits.some((hit) => hit.rule === "outbound_url") ? ["outbound_url: read the project's outbound URL/SSRF rule and central validator; trace URL ownership, redirects, transport and any preload in callers, including newly added fix code"] : []),
     hits.length ? `risk_hits:\n${bullets(hits.map((hit) => `${hit.path}${hit.line ? `:${hit.line}` : ""} — ${hit.match}`))}` : "risk_hits: none",
   ].join("\n"));
   const signalsAt = fixed.length;
-  fixed.push(signals("in_context"));
+  fixed.push(signals(applicable.items.length));
 
   const scope = isPlainObject(assignment.scope) ? assignment.scope : {};
   fixed.push(section("scope", [
@@ -546,15 +680,14 @@ function main() {
   const fixedLength = fixed.join("\n\n").length + envText.length + filesText.length + testsText.length;
   const diffBudget = Math.max(opts.budget - fixedLength - RULES_RESERVE, Math.floor(opts.budget * DIFF_FLOOR_SHARE));
   const diff = widestDiff(range, cwd, diffBudget, narrow, diffPaths);
-  // A cut diff is the one case a single reviewer cannot hold the change: the
-  // lenses then read it as children, each in its own context.
-  const mode = diff.cut ? "children" : "in_context";
-  fixed[signalsAt] = signals(mode);
+  // A cut diff stays with the same reviewer: it pages through the rest, and the
+  // journal keeps findings and coverage across any compaction on the way.
   if (diff.cut) {
-    truncations.push(`diff cut at ${diffBudget} characters (context 0); read the rest yourself${diff.hidden.length ? `, starting with: ${diff.hidden.join(", ")}` : ""}`);
+    truncations.push(`diff cut at ${diffBudget} characters (context 0); page through the rest with \`git diff ${range} -- <path>\`${diff.hidden.length ? `, starting with: ${diff.hidden.join(", ")}` : ""}`);
   }
 
-  const rules = collectRules(root, cwd, Math.max(opts.budget - fixedLength - diff.text.length, 0));
+  const rules = collectRules(root, cwd, Math.max(opts.budget - fixedLength - diff.text.length, 0), changedPaths);
+  fixed[signalsAt] = signals(rules.items.length);
   if (rules.dropped.length) truncations.push(`rules omitted for budget, read them yourself: ${rules.dropped.join(", ")}`);
   if (rules.routes_cut.length) truncations.push(`rule routes past the cap of ${RULES_ROUTE_CAP}, follow the entry files for them: ${rules.routes_cut.join(", ")}`);
   const rulesText = rules.mode === "content"
@@ -585,17 +718,39 @@ function main() {
   const packDir = opts.assignment === "-" ? tmpdir() : dirname(resolve(opts.assignment));
   const target = opts.out ? resolve(opts.out) : join(packDir, `review-pack-${slug}.md`);
   const manifestTarget = `${target}.json`;
-  fixed.push(section("review_manifest", JSON.stringify({ path: manifestTarget, review_kind: reviewKind, files: manifest.files }), { note: "copy path to deliverable.content.review_manifest; coverage uses one exact file path per item; review_complete records completion of code inspection, separately from QA" }));
+  // The harness records into the journal and writes the Result from it; the
+  // manifest tells it what the change is, what the gate said and what the
+  // previous round required.
+  const qa = parseResult(qaResult);
+  manifest.journal = join(dirname(target), `review-journal-${slug}.json`);
+  manifest.result = join(packDir, `result-${slug}.json`);
+  manifest.repeat = Boolean(previousReview);
+  manifest.qa_checks = Array.isArray(qa?.checks) ? qa.checks.map((item) => ({ id: item.id, command: item.command ?? item.tool ?? item.id, status: item.status, width: item.width })) : [];
+  manifest.previous_ids = Array.isArray(priorResult?.findings) ? priorResult.findings.map((item) => item?.id).filter(isText) : [];
+  const journal = { findings: [], coverage: {}, phases: {}, fix_resolution: {} };
+  // Coverage the previous round established outside what changed since stays
+  // established; the reviewer overrides any item it judges again.
+  if (reviewKind !== "full") {
+    const delta = new Set(files.map((file) => file.path));
+    for (const item of Array.isArray(priorResult?.deliverable?.content?.coverage) ? priorResult.deliverable.content.coverage : []) {
+      if (!isPlainObject(item) || !isText(item.item) || delta.has(item.item) || !["reviewed", "not_applicable"].includes(item.status)) continue;
+      journal.coverage[item.item] = { status: item.status, evidence: `carried from the previous review: ${Array.isArray(item.evidence) ? item.evidence.join("; ") : item.evidence}` };
+    }
+    const phases = priorResult?.deliverable?.content?.phases;
+    if (reviewKind === "evidence_only" && isPlainObject(phases)) {
+      for (const [name, status] of Object.entries(phases)) journal.phases[name] = `carried from the previous review: ${status}`;
+    }
+  }
+  const quote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`;
+  const harness = `node ${quote(join(scriptDir, "review-findings.mjs"))} --manifest ${quote(manifestTarget)}`;
+  fixed.push(section("review_manifest", JSON.stringify({ path: manifestTarget, review_kind: reviewKind, files: manifest.files }), { note: "coverage names these exact paths, one item each; the harness writes this manifest into the Result" }));
+  fixed.push(section("harness", harness, { note: "the command prefix of every review-findings call: append the command and its flags" }));
   const pack = build([], [envText]);
-  // The lenses judge the change, not the runtime: their pack carries the whole
-  // review context without the environment snapshot.
-  const lensPack = mode === "children" ? build([LENS_NOTE], []) : null;
-  const lensTarget = lensPack ? (target.endsWith(".md") ? `${target.slice(0, -3)}-lens.md` : `${target}-lens`) : null;
   try {
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, `${pack}\n`);
     writeFileSync(manifestTarget, `${JSON.stringify(manifest)}\n`);
-    if (lensPack) writeFileSync(lensTarget, `${lensPack}\n`);
+    writeFileSync(manifest.journal, `${JSON.stringify(journal)}\n`);
   } catch (error) {
     fail("pack_write_failed", String(error.message));
   }
@@ -603,14 +758,15 @@ function main() {
   out({
     ok: true,
     pack: target,
-    ...(lensTarget ? { lens_pack: lensTarget } : {}),
+    harness,
     base,
     head,
     files: files.length,
     changed_lines: lines,
     test_files: testFiles,
     risk_hits: hits,
-    mode,
+    depth,
+    navigation,
     review_kind: reviewKind,
     review_manifest: manifestTarget,
     diff_context: diff.context,
