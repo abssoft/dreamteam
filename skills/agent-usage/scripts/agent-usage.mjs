@@ -566,10 +566,10 @@ function out(value) {
 // rendered.rows for a multi-launch table) and warning_line verbatim.
 // «Токены всего» is the full input (uncached + cache read + cache write —
 // writes have no column of their own: Codex logs report them as 0),
-// «В т.ч. кэш» its cache-read part, «Выход» separate. No input+output grand
+// «Токены выход» separate. No input+output grand
 // total is rendered: the buckets carry different tariffs, so their sum
 // prices nothing. tokens.total in the machine fields still holds it.
-const TABLE_HEADER = "| Роль | Время | Шаги | Токены всего | В т.ч. кэш | Выход | $ |\n|---|---:|---:|---:|---:|---:|---:|";
+const TABLE_HEADER = "| Роль | Время | Шаги | Токены всего | Токены выход | $ |\n|---|---:|---:|---:|---:|---:|";
 
 let launchLabel = "";
 
@@ -630,7 +630,6 @@ function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd }
                 formatWall(entry.wall_seconds),
                 formatThousands(entry.steps),
                 formatTokens(entry.tokens.input),
-                formatTokens(entry.tokens.cache_read_input),
                 formatThousands(entry.tokens.output),
                 formatCost(entry.cost_usd),
                 ""
@@ -651,7 +650,6 @@ function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd }
             formatWall(wall_seconds),
             formatThousands(steps),
             formatTokens(tokens.input),
-            formatTokens(tokens.cache_read_input),
             formatThousands(tokens.output),
             totalCost,
             ""
@@ -663,7 +661,7 @@ function renderUsage({ label, wall_seconds, by_launch, tokens, steps, cost_usd }
         .map((entry) =>
             `<li><b>${escapeHtml(entry.launch)} · ${escapeHtml(entry.model)} · ${escapeHtml(entry.service_tier)}</b>: ${formatWall(entry.wall_seconds)} · ` +
             `шаги ${formatThousands(entry.steps)} · токены всего ${formatTokens(entry.tokens.input)} · ` +
-            `в т.ч. кэш ${formatTokens(entry.tokens.cache_read_input)} · выход ${formatThousands(entry.tokens.output)}` +
+            `токены выход ${formatThousands(entry.tokens.output)}` +
             `${entry.cost_usd === null ? " · тариф не определён" : ` · $ ${formatCost(entry.cost_usd)}`}</li>`
         )
         .join("");
