@@ -1175,7 +1175,7 @@ test('pricing matches documented snapshots and fails the report closed on an unk
   assert.match(first, /\| 1 \| 1 000 \| 100 \| 0\.003 \|$/);
   assert.match(second, /^\| PRD<br>\*mystery-9 · standard\* \| 0м 0с \| /);
   assert.match(second, /\| 1 \| 50 \| 5 \| тариф не определён \|$/);
-  assert.match(result.rendered.total_row, /^\| \*\*ИТОГО\*\* \| .* \| 2 \| 1 050 \| 0 \| 105 \| тариф не определён \|$/);
+  assert.match(result.rendered.total_row, /^\| \*\*ИТОГО\*\* \| .* \| 2 \| 1 050 \| 105 \| тариф не определён \|$/);
 });
 
 // --- rendering ----------------------------------------------------------------
