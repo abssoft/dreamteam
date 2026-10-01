@@ -933,6 +933,32 @@ test('Claude failure codes: root_not_found beside the session transcript, logs_n
 
 // --- pricing ----------------------------------------------------------------
 
+test('Codex prices GPT-6.1 Sol at the official standard token rates', async () => {
+  const usage = { input_tokens: 1000, cached_input_tokens: 200, cache_write_input_tokens: 100, output_tokens: 50, total_tokens: 1050 };
+  const sessionsRoot = await makeLogs({
+    'gpt-6.1-sol.jsonl': [
+      { timestamp: '2026-10-01T10:00:00.000Z', type: 'session_meta', payload: { id: 'gpt-6.1-sol-pricing' } },
+      codexTurnContext('gpt-6.1-sol'),
+      codexStep(usage, usage, '2026-10-01T10:00:02.000Z')
+    ]
+  });
+
+  const result = await runCollector({
+    runtime: 'codex', sessionId: 'gpt-6.1-sol-pricing', full: true,
+    codexRoot: sessionsRoot, codexArchivedRoot: await emptyDir()
+  });
+
+  assert.equal(result.pricing.status, 'priced');
+  assert.equal(result.cost_usd, 0.00217);
+  assert.deepEqual(result.cost_breakdown_usd, {
+    uncached_input: 0.0014,
+    cache_read_input: 0.00002,
+    cache_write_input: 0.00025,
+    output: 0.0005,
+    total: 0.00217
+  });
+});
+
 test('Codex modern last_token_usage prices uncached, cache read, cache write, and output exactly', async () => {
   const sessionsRoot = await makeLogs({
     'modern.jsonl': await loadFixture('codex-token-count-modern.json')

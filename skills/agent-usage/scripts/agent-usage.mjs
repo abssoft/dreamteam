@@ -178,10 +178,11 @@ const LIMITS = Object.freeze({
 // Tool-call fees and ChatGPT/Codex subscription billing are deliberately out
 // of scope; the rendered column is therefore named "$ токены".
 const PRICING_CATALOG = Object.freeze({
-    version: "2026-09-28",
-    checked_at: "2026-09-28",
+    version: "2026-10-01",
+    checked_at: "2026-10-01",
     basis: "official_api_model_token_rates",
     sources: Object.freeze([
+        "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
         "https://developers.openai.com/api/docs/models/gpt-6-astra",
         "https://developers.openai.com/api/docs/models/gpt-6-sol",
         "https://developers.openai.com/api/docs/models/gpt-6-luna",
@@ -196,6 +197,13 @@ const PRICING_CATALOG = Object.freeze({
             key: "gpt-6-astra", provider: "openai", ids: Object.freeze(["gpt-6-astra", "gpt-6"]),
             snapshot: /^gpt-6-astra-\d{4}-\d{2}-\d{2}$/,
             standard: Object.freeze({ uncached_input: 10_000, cache_read_input: 1_000, cache_write_input: 12_500, output: 50_000 }),
+            fast_multiplier: 2,
+            long_context: Object.freeze({ threshold: 272_000, input_multiplier: 2, output_multiplier: 1.5 })
+        },
+        {
+            key: "gpt-6.1-sol", provider: "openai", ids: Object.freeze(["gpt-6.1-sol"]),
+            snapshot: /^gpt-6\.1-sol-\d{4}-\d{2}-\d{2}$/,
+            standard: Object.freeze({ uncached_input: 2_000, cache_read_input: 100, cache_write_input: 2_500, output: 10_000 }),
             fast_multiplier: 2,
             long_context: Object.freeze({ threshold: 272_000, input_multiplier: 2, output_multiplier: 1.5 })
         },
