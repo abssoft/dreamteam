@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { attribute, deriveChecks, executedTestPaths } from '../skills/qa-engineer/scripts/qa-run.mjs';
+import { attribute, deriveChecks, executedTestPaths, skippedCases, skippedCount } from '../skills/qa-engineer/scripts/qa-run.mjs';
 
 const scriptPath = join(process.cwd(), 'skills', 'qa-engineer', 'scripts', 'qa-run.mjs');
 
@@ -81,6 +81,110 @@ test('attribute names the change from the output paths, or from a narrowed width
   assert.equal(attribute({ status: 'failed', width: 'full', tail: '/abs/repo/src/totals.js:3:1 error' }, changed), 'in_change');
   assert.equal(attribute({ status: 'failed', width: 'full', tail: 'Line  lib/legacy.php\n  12  Call to undefined method' }, changed), 'outside_change');
   assert.equal(attribute({ status: 'failed', width: 'full', tail: 'Error: something broke' }, changed), 'unknown');
+  // An empty run is broken, so a narrowed width never blames the change for it.
+  assert.equal(attribute({ status: 'broken', width: 'narrowed to the change', tail: 'No tests found, exiting with code 1' }, changed), null);
+});
+
+test('skips are read from JUnit for the selected files, else from the runner\'s summary line', () => {
+  const junit = '<testsuite><testcase name="testSums" file="/repo/tests/TotalsTest.php"/>'
+    + '<testcase name="testRounds &quot;half&quot;" file="/repo/tests/TotalsTest.php"><skipped/></testcase>'
+    + '<testcase name="testOther" file="/repo/tests/OtherTest.php"><skipped/></testcase></testsuite>';
+  assert.deepEqual(skippedCases(junit, ['tests/TotalsTest.php']), [{ file: 'tests/TotalsTest.php', name: 'testRounds "half"' }]);
+  assert.deepEqual(skippedCases('OK (2 tests)', ['tests/TotalsTest.php']), []);
+  // The tests line wins over the files line; colour codes do not hide it.
+  assert.equal(skippedCount(' Test Files  1 passed | 1 skipped (2)\n      Tests  4 passed | 3 skipped (7)\n'), 3);
+  assert.equal(skippedCount('\x1b[2m      Tests \x1b[22m \x1b[1m\x1b[32m1 passed\x1b[39m\x1b[22m\x1b[2m | \x1b[22m\x1b[33m6 skipped\x1b[39m\x1b[90m (7)\x1b[39m'), 6);
+  assert.equal(skippedCount('Test Suites: 1 skipped, 1 passed, 1 of 2 total\nTests:       2 skipped, 5 passed, 7 total\n'), 2);
+  assert.equal(skippedCount('==== 6 passed, 4 skipped in 0.12s ====\n'), 4);
+  assert.equal(skippedCount('OK, but some tests were skipped!\nTests: 9, Assertions: 12, Skipped: 5.\n'), 5);
+  assert.equal(skippedCount('ℹ tests 2\nℹ pass 1\nℹ skipped 1\nℹ todo 0\n'), 1);
+  assert.equal(skippedCount('ℹ tests 2\nℹ pass 2\nℹ skipped 0\n'), 0);
+  assert.equal(skippedCount('      Tests  7 passed (7)\n'), 0);
+  assert.equal(skippedCount(null), 0);
+});
+
+test('--report carries the skips into the result and leaves every status as it was', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qa-report-'));
+  const item = (id, tail) => ({ id, tool: 'tests', command: `run ${id}`, ran: `run ${id}`, scope: 'none', width: 'full', source: 'fixture', status: 'passed', exit: 0, seconds: 0.1, log: join(dir, `${id}.log`), tail });
+  await writeFile(join(dir, 'c1.log'), '<testsuite><testcase name="testSums" file="/repo/tests/TotalsTest.php"/>'
+    + '<testcase name="testRounds" file="/repo/tests/TotalsTest.php"><skipped/></testcase>'
+    + '<testcase name="testOther" file="/repo/tests/OtherTest.php"><skipped/></testcase></testsuite>\n');
+  // A data provider skipped case by case: the names stop at 20, the total rides beside them.
+  await writeFile(join(dir, 'c7.log'), `<testsuite><testcase name="testPersists" file="/repo/tests/OrderTest.php"/>${Array.from({ length: 25 }, (_, index) => `<testcase name="testPersists with data set #${index}" file="/repo/tests/OrderTest.php"><skipped/></testcase>`).join('')}</testsuite>\n`);
+  await writeFile(join(dir, 'qa-spec-skips.json'), JSON.stringify({ cwd: dir, changed_paths: ['src/Totals.php', 'tests/TotalsTest.php'], checks: [{ id: 'c1', expected_test_paths: ['tests/TotalsTest.php'] }, { id: 'c7', expected_test_paths: ['tests/OrderTest.php'] }] }));
+  const results = join(dir, 'qa-checks-skips-results.json');
+  await writeFile(results, JSON.stringify({ ok: true, status: 'complete', cwd: dir, exec: null, pid: null, checks: [
+    item('c1', 'Tests: 3, Assertions: 1, Skipped: 2.'),
+    item('c2', ' Test Files  1 passed | 1 skipped (2)\n      Tests  4 passed | 3 skipped (7)\n'),
+    item('c3', 'Tests:       2 skipped, 5 passed, 7 total\n'),
+    item('c4', '==== 6 passed, 4 skipped in 0.12s ====\n'),
+    item('c5', 'Tests: 9, Assertions: 12, Skipped: 5.\n'),
+    item('c6', '      Tests  7 passed (7)\n'),
+    item('c7', 'Tests: 26, Assertions: 1, Skipped: 25.'),
+  ] }));
+  const reported = run(dir, ['--report', '--results', results, '--timeout', '5']);
+  assert.equal(reported.json.verdict, 'green', JSON.stringify(reported));
+  assert.deepEqual([reported.json.passed, reported.json.failed, reported.json.broken], [7, 0, 0]);
+  const result = JSON.parse(await readFile(reported.json.result, 'utf8'));
+  assert.deepEqual(result.checks.map((check) => [check.id, check.skipped_cases ?? null, check.skipped_count ?? null]), [
+    ['c1', [{ file: 'tests/TotalsTest.php', name: 'testRounds' }], null],
+    ['c2', null, 3],
+    ['c3', null, 2],
+    ['c4', null, 4],
+    ['c5', null, 5],
+    ['c6', null, null],
+    ['c7', Array.from({ length: 20 }, (_, index) => ({ file: 'tests/OrderTest.php', name: `testPersists with data set #${index}` })), 25],
+  ]);
+  assert.equal(Object.hasOwn(result.checks[5], 'skipped_count'), false);
+  assert.equal(Object.hasOwn(result.checks[5], 'skipped_cases'), false);
+});
+
+test('a gate where no check ran is unconfirmed, unless the change is documentation only', async () => {
+  assert.deepEqual(deriveChecks({ ok: false, error: 'env-snapshot failed' }, ['app/job.py'], []), []);
+  const dir = await mkdtemp(join(tmpdir(), 'qa-empty-'));
+  sh(dir, 'git', ['init', '-q', '-b', 'main']);
+  sh(dir, 'git', ['config', 'user.email', 'fixture@example.invalid']);
+  sh(dir, 'git', ['config', 'user.name', 'Fixture']);
+  await writeFile(join(dir, 'README.md'), '# Fixture\n');
+  commit(dir, 'base');
+  const gate = (id) => {
+    const { json: planned } = run(dir, ['--plan', '--base', 'main', '--out', join(dir, '..', `qa-empty-out-${Date.now()}`), '--id', id]);
+    assert.equal(planned.checks, 0, JSON.stringify(planned));
+    const started = run(dir, ['--run', '--spec', planned.spec]);
+    assert.equal(started.json.checks, 0, JSON.stringify(started));
+    return run(dir, ['--report', '--results', started.json.results, '--timeout', '5']).json;
+  };
+
+  sh(dir, 'git', ['checkout', '-qb', 'code']);
+  await mkdir(join(dir, 'app'), { recursive: true });
+  await writeFile(join(dir, 'app', 'job.py'), 'print("job")\n');
+  commit(dir, 'a job');
+  const code = gate('code');
+  assert.equal(code.verdict, 'unconfirmed');
+  assert.deepEqual([code.passed, code.failed, code.broken, code.skipped], [0, 0, 0, 0]);
+  assert.deepEqual(JSON.parse(await readFile(code.result, 'utf8')).obstacles, ['gate: no check ran over the change']);
+
+  // One code path beside the documentation is enough to need a check.
+  await writeFile(join(dir, 'README.md'), '# Fixture\n\nRuns a job.\n');
+  commit(dir, 'describe the job');
+  assert.equal(gate('mixed').verdict, 'unconfirmed');
+
+  // A .txt manifest is not prose: the dependencies changed.
+  sh(dir, 'git', ['checkout', '-q', 'main']);
+  sh(dir, 'git', ['checkout', '-qb', 'deps']);
+  await writeFile(join(dir, 'requirements.txt'), 'requests==2.32.3\n');
+  commit(dir, 'pin requests');
+  assert.equal(gate('deps').verdict, 'unconfirmed');
+
+  sh(dir, 'git', ['checkout', '-q', 'main']);
+  sh(dir, 'git', ['checkout', '-qb', 'docs']);
+  await mkdir(join(dir, 'docs'), { recursive: true });
+  await writeFile(join(dir, 'README.md'), '# Fixture\n\nHow to run.\n');
+  await writeFile(join(dir, 'docs', 'guide.md'), '# Guide\n');
+  commit(dir, 'docs only');
+  const docs = gate('docs');
+  assert.equal(docs.verdict, 'green');
+  assert.deepEqual(JSON.parse(await readFile(docs.result, 'utf8')).obstacles, []);
 });
 
 test('PHPUnit gets one invocation per file and JUnit proves executed targets', () => {

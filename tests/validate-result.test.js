@@ -115,3 +115,13 @@ test('a refuted finding stays for audit, asks for no fix and cannot be required'
   assert.ok(resultProblems({ ...base, findings: [...base.findings, refuted], required_fixes: [...base.required_fixes, 'B2: guard'] })
     .includes('required fix B2 must be a confirmed P0/P1/P2 finding the sceptic did not refute'));
 });
+
+test('a done review carries no standing plausible P0/P1 outside the gate', () => {
+  const plausible = { ...review().findings[0], confidence: 'plausible' };
+  const result = (finding, overrides = {}) => review({ findings: [finding], required_fixes: [], verification: [{ command: 'npm test', status: 'passed', evidence: 'зелёный' }], ...overrides });
+  assert.deepEqual(resultProblems(result(plausible)), ['B1: done with a standing plausible P1 — confirm it, re-weigh its severity, refute it or return needs_human']);
+  assert.deepEqual(resultProblems(result({ ...plausible, category: 'verification/broken' })), [], 'a gate finding rests on the QA result');
+  assert.deepEqual(resultProblems(result({ ...plausible, status: 'refuted' })), []);
+  assert.deepEqual(resultProblems(result({ ...plausible, severity: 'P2' })), []);
+  assert.deepEqual(resultProblems(result(plausible, { status: 'needs_human', blocker: 'открытый вопрос' })), []);
+});

@@ -35,9 +35,15 @@
 //   changed_paths}, executor, verdict, checks: [{id, tool, command, ran,
 //   scope, width, source, status: passed|failed|broken|skipped, reason?,
 //   attribution?: in_change|outside_change|unknown|baseline, exit, seconds,
-//   log, tail}], obstacles: [text], summary: {passed, failed, broken,
-//   skipped}}. verdict: red when any item failed; unconfirmed when none
-//   failed and any is broken; green otherwise.
+//   log, tail, skipped_cases?: [{file, name}], skipped_count?}], obstacles:
+//   [text], summary: {passed, failed, broken, skipped}}. skipped_cases: the
+//   cases JUnit marks skipped in the selected test files, the first 20;
+//   skipped_count: their total when the list is cut, else the runner's own
+//   total from its summary line where no JUnit was read; neither changes a
+//   status. verdict: red when any item failed; unconfirmed when none failed
+//   and any is broken, or when nothing passed, failed or broke over a change
+//   that is not prose only — .md, .mdx, .rst, .adoc (obstacle `gate: no check
+//   ran over the change`); green otherwise.
 // ok:false codes: bad_args | not_a_git_repository | base_ref_not_found |
 //   empty_diff | bad_spec | not_a_command (detail: the offending commands) |
 //   running | results_missing | write_failed.
@@ -57,6 +63,11 @@ const RULES_BUDGET = 120000;
 const CHECK_PATH_CAP = 40;
 const WAIT_SECONDS = 540;
 const RESULT_TAIL_CHARS = 1500;
+// Skipped cases kept by name; past it the total rides in skipped_count.
+const SKIPPED_CASES_CAP = 20;
+// Prose a gate has nothing to run over. Narrower than review-pack's DOC_PATH,
+// which also takes every .txt (requirements.txt, CMakeLists.txt) and all of docs/.
+const PROSE_PATH = /\.(?:md|mdx|rst|adoc)$/i;
 // Files a tool of this language reads; a path outside the set is not that
 // tool's evidence, and a run over it is a green that says nothing.
 const LANG_EXT = {
@@ -84,9 +95,12 @@ const USAGE = `qa-run.mjs — the mechanical half of the gate, for the qa-engine
 Plan: <qa_plan> with attention, workspace, files, checks, rules. Spec: {cwd, results,
 exec, base, head, merge_base, changed_paths, checks[]}. Result: {kind: qa_result, workspace,
 executor, verdict green|red|unconfirmed, checks[{id, tool, command, ran, width, source,
-status passed|failed|broken|skipped, reason?, attribution?, exit, seconds, log, tail}],
-obstacles[], summary}. ok:false codes: bad_args | not_a_git_repository | base_ref_not_found |
-empty_diff | bad_spec | not_a_command | running | results_missing | write_failed.
+status passed|failed|broken|skipped, reason?, attribution?, exit, seconds, log, tail,
+skipped_cases?[{file, name}] (first 20), skipped_count? (total)}], obstacles[], summary}.
+No check ran over a change that is not prose only (.md .mdx .rst .adoc): unconfirmed.
+ok:false codes: bad_args |
+not_a_git_repository | base_ref_not_found | empty_diff | bad_spec | not_a_command | running |
+results_missing | write_failed.
 `;
 
 function out(value) {
@@ -235,7 +249,7 @@ function plan(opts) {
   const baseRef = [base, `origin/${base}`].find((candidate) => git(["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`], cwd) !== null);
   const mergeBase = baseRef ? git(["merge-base", baseRef, "HEAD"], cwd) : null;
   if (!mergeBase) fail("base_ref_not_found", base);
-  const head = git(["rev-parse", "--short", "HEAD"], cwd);
+  const head = git(["rev-parse", "HEAD"], cwd);
   const files = changedPaths(mergeBase, cwd);
   if (!files.length) fail("empty_diff", `no changes between ${base} and the working tree`);
   const present = files.filter((file) => file.status !== "D");
@@ -381,15 +395,42 @@ export function attribute(item, changedPaths) {
   return "outside_change";
 }
 
-export function executedTestPaths(log, expected) {
+// Every <testcase> of a JUnit report that names its file.
+function junitCases(log) {
   const decode = (text) => text.replace(/&(amp|quot|apos|lt|gt);/g, (_, entity) => ({ amp: "&", quot: '"', apos: "'", lt: "<", gt: ">" })[entity]);
-  const files = [];
+  const cases = [];
   for (const match of String(log).matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)) {
-    if (/<skipped\b/.test(match[2] ?? "")) continue;
     const file = /\bfile="([^"]+)"/.exec(match[1]);
-    if (file) files.push(decode(file[1]).replaceAll("\\", "/"));
+    if (file) cases.push({ file: decode(file[1]).replaceAll("\\", "/"), name: decode(/\bname="([^"]*)"/.exec(match[1])?.[1] ?? ""), skipped: /<skipped\b/.test(match[2] ?? "") });
   }
-  return expected.filter((path) => files.some((file) => file === path || file.endsWith(`/${path}`)));
+  return cases;
+}
+const sameFile = (file, path) => file === path || file.endsWith(`/${path}`);
+
+export function executedTestPaths(log, expected) {
+  const ran = junitCases(log).filter((item) => !item.skipped);
+  return expected.filter((path) => ran.some((item) => sameFile(item.file, path)));
+}
+
+// The cases the runner skipped inside the selected test files, by selected path.
+export function skippedCases(log, expected) {
+  return junitCases(log).filter((item) => item.skipped).flatMap((item) => {
+    const path = expected.find((candidate) => sameFile(item.file, candidate));
+    return path ? [{ file: path, name: item.name }] : [];
+  });
+}
+
+// The runner's own total of skipped tests, most specific line first, the last
+// match being the final summary: vitest and jest `Tests  1 passed | 2 skipped`,
+// phpunit `Skipped: 2`, node --test `ℹ skipped 2`, pytest `2 skipped in 0.1s`.
+const SKIPPED_TOTALS = [/^\s*Tests:?\s.*?\b(\d+) skipped\b/gm, /\bSkipped: (\d+)/g, /^[ℹ#] skipped (\d+)$/gm, /\b(\d+) skipped\b/g];
+export function skippedCount(tail) {
+  const text = String(tail ?? "").replace(/\x1b\[[0-9;]*m/g, "");
+  for (const pattern of SKIPPED_TOTALS) {
+    const last = [...text.matchAll(pattern)].pop();
+    if (last) return Number(last[1]);
+  }
+  return 0;
 }
 
 async function report(opts) {
@@ -411,6 +452,7 @@ async function report(opts) {
     const row = { id: item.id, tool: item.tool, command: item.command, ran: item.ran, scope: item.scope, width: item.width, source: item.source, status: item.status, exit: item.exit, seconds: item.seconds, log: item.log, tail: String(item.tail ?? "").slice(-RESULT_TAIL_CHARS) };
     if (item.reason) row.reason = item.reason;
     const expected = spec.checks?.find((check) => check.id === item.id)?.expected_test_paths;
+    let junit = false;
     if (expected?.length) {
       let log = "";
       try { log = readFileSync(item.log, "utf8"); } catch { /* Missing evidence stays unconfirmed. */ }
@@ -420,7 +462,14 @@ async function report(opts) {
         row.status = "broken";
         row.reason = "JUnit does not confirm execution of every selected test file";
       }
+      junit = /<testcase\b/.test(log);
+      const cases = skippedCases(log, expected);
+      if (cases.length) row.skipped_cases = cases.slice(0, SKIPPED_CASES_CAP);
+      if (cases.length > SKIPPED_CASES_CAP) row.skipped_count = cases.length;
     }
+    // A skip the runner made is visible, never a status: the reader weighs it.
+    const skipped = junit ? 0 : skippedCount(item.tail);
+    if (skipped) row.skipped_count = skipped;
     if (item.status === "pending") { row.status = "broken"; row.reason = "runner ended before this check"; }
     const attribution = attribute(row, changed);
     if (attribution) row.attribution = attribution;
@@ -434,8 +483,11 @@ async function report(opts) {
   });
   const count = (status) => checks.filter((item) => item.status === status).length;
   const summary = { passed: count("passed"), failed: count("failed"), broken: count("broken"), skipped: count("skipped") };
-  const verdict = summary.failed ? "red" : summary.broken ? "unconfirmed" : "green";
+  // A gate where nothing ran is not a green one — unless the change is documentation only.
+  const empty = summary.passed + summary.failed + summary.broken === 0 && !(changed.length && changed.every((path) => PROSE_PATH.test(path)));
+  const verdict = summary.failed ? "red" : summary.broken || empty ? "unconfirmed" : "green";
   const obstacles = [...new Set(checks.filter((item) => item.status === "broken").map((item) => `${item.id}: ${item.reason ?? "did not run"}`))];
+  if (empty) obstacles.push("gate: no check ran over the change");
   const id = basename(resultsPath).replace(/^qa-checks-/, "").replace(/-results\.json$/, "");
   const target = isText(opts.out) ? resolve(opts.out) : join(dirname(resultsPath), `qa-result-${id}.json`);
   const result = {

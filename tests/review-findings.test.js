@@ -15,10 +15,10 @@ const hasLsd = (directory) => { try { accessSync(join(directory, 'lsd'), constan
 const env = { ...process.env, PATH: process.env.PATH.split(':').filter((directory) => !hasLsd(directory)).join(':') };
 
 const ISSUE = `Totals must sum amounts. ${'The order total is the sum of every line amount; an empty order sums to zero. '.repeat(5)}`;
-const qa = (checks) => ({ kind: 'text', name: 'qa_result', provenance: 'QA', content: JSON.stringify({ kind: 'qa_result', verdict: 'green', checks }) });
+const qa = (checks, head, gate) => ({ kind: 'text', name: 'qa_result', provenance: 'QA', content: JSON.stringify({ kind: 'qa_result', verdict: 'green', workspace: { head }, checks, ...gate }) });
 const PASSED = [{ id: 'c1', command: 'npm test', width: 'full', status: 'passed' }];
 
-async function review(id, { checks = PASSED, previous = null } = {}) {
+async function review(id, { checks = PASSED, previous = null, gate = {} } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'review-findings-'));
   sh(dir, 'git', ['init', '-q', '-b', 'main']);
   sh(dir, 'git', ['config', 'user.email', 'fixture@example.invalid']);
@@ -33,7 +33,7 @@ async function review(id, { checks = PASSED, previous = null } = {}) {
   const packet = {
     contract_version: 1, assignment_id: id, role: 'code-reviewer', objective: 'review', scope: { included: ['src'] },
     repository: { base_ref: 'main' },
-    source_materials: [{ kind: 'text', name: 'issue', content: ISSUE, provenance: 'issue' }, qa(checks), ...(previous ? [previous] : [])],
+    source_materials: [{ kind: 'text', name: 'issue', content: ISSUE, provenance: 'issue' }, qa(checks, sh(dir, 'git', ['rev-parse', 'HEAD']).trim(), gate), ...(previous ? [previous] : [])],
   };
   const pack = spawnSync(process.execPath, [join(scripts, 'review-pack.mjs'), '--assignment', '-', '--skip=rules,docs,runtime,tooling'], { cwd: dir, input: JSON.stringify(packet), encoding: 'utf8', env });
   const json = JSON.parse(pack.stdout.trim().split('\n').pop());
@@ -46,7 +46,9 @@ async function review(id, { checks = PASSED, previous = null } = {}) {
 }
 
 const FINDING = ['--phase', 'behavior', '--severity', 'P1', '--category', 'correctness', '--file', 'src/totals.js', '--line', '1', '--problem', 'Пустой item.amount даёт NaN.', '--impact', 'Итог заказа становится NaN.', '--fix', 'Считать отсутствующую сумму нулём.', '--related', 'src/totals.js:1', '--scenario', 'Строка без amount: ожидается 0, получается NaN.', '--confidence', 'confirmed'];
+// A full review closes its behavior phase only with a scenario accounted for.
 const closePhases = (call) => {
+  assert.equal(call('covered', '--item', 'Сценарий: пустой заказ даёт ноль', '--status', 'reviewed', '--evidence', 'src/totals.js:1 сворачивает с нуля').code, 0);
   for (const name of ['behavior', 'rules', 'quality', 'comments', 'sceptic']) assert.equal(call('phase', '--name', name, '--status', 'done').code, 0);
 };
 
@@ -159,4 +161,68 @@ test('a blocked summary needs its cause and keeps what was established', async (
   const result = JSON.parse(await readFile(blocked.json.deliverable.content.path, 'utf8'));
   assert.equal(result.deliverable.content.review_complete, false);
   assert.equal(result.findings[0].status, 'unjudged');
+});
+
+test('a full review closes behavior only with an acceptance scenario accounted for', async () => {
+  const { call, json } = await review('review-scenario');
+  const refusal = /behavior closes with at least one acceptance-scenario `covered` item — one per scenario, `blocked` for a fact you could not confirm/;
+  const bare = call('phase', '--name', 'behavior', '--status', 'прочитано');
+  assert.equal(bare.code, 1);
+  assert.match(bare.json.refused, refusal);
+  assert.equal(call('covered', '--item', 'src/totals.js', '--status', 'reviewed', '--evidence', 'прочитан').code, 0);
+  assert.match(call('phase', '--name', 'behavior', '--status', 'прочитано').json.refused, refusal, 'a manifest file is not a scenario');
+  assert.equal(call('phase', '--name', 'rules', '--status', 'правил нет').code, 0, 'the other phases close on their own');
+  assert.deepEqual(call('list').json.phases_open, ['behavior', 'quality', 'comments', 'sceptic']);
+
+  // A fix delta carries its scenarios from the previous round.
+  const manifest = await readFile(json.review_manifest, 'utf8');
+  await writeFile(json.review_manifest, JSON.stringify({ ...JSON.parse(manifest), review_kind: 'fix_delta' }));
+  assert.equal(call('phase', '--name', 'behavior', '--status', 'дельта').code, 0);
+  await writeFile(json.review_manifest, manifest);
+
+  assert.equal(call('covered', '--item', 'Сценарий: строка без суммы', '--status', 'blocked', '--evidence', 'вызывающий код вне рабочей копии').code, 0);
+  assert.equal(call('phase', '--name', 'behavior', '--status', 'один сценарий не подтверждён').code, 0);
+});
+
+test('a standing plausible P0/P1 keeps a done review open until it is proven, re-weighed or refuted', async () => {
+  const { call } = await review('review-plausible');
+  assert.equal(call('finding', ...FINDING.map((arg) => (arg === 'confirmed' ? 'plausible' : arg))).json.id, 'B1');
+  call('verdict', '--id', 'B1', '--holds', '--reason', 'защиты от пустого amount не найдено');
+  call('covered', '--item', 'src/totals.js', '--status', 'reviewed', '--evidence', 'прочитан');
+  closePhases(call);
+  const summary = ['--summary', 'Ревью завершено.', '--verdict', 'Нужна правка B1.'];
+  const open = call('summary', '--status', 'done', ...summary);
+  assert.equal(open.code, 1);
+  assert.equal(open.json.refused, 'a done review accounts for everything — P0/P1 still plausible: B1 — prove it (amend --confidence confirmed), re-weigh its severity in verdict with the reason, refute it with code, or return needs_human naming the open question');
+  assert.equal(call('summary', '--status', 'needs_human', ...summary, '--blocker', 'приходит ли строка без amount').code, 0);
+  assert.equal(call('amend', '--id', 'B1', '--confidence', 'confirmed').code, 0);
+  const done = call('summary', '--status', 'done', ...summary);
+  assert.equal(done.code, 0, JSON.stringify(done.json));
+  assert.deepEqual(done.json.required_fixes, ['B1']);
+});
+
+test('a plausible P1 of the gate does not hold a done review', async () => {
+  const { call } = await review('review-plausible-gate', { checks: [{ id: 'c1', command: 'npm test', status: 'broken', width: 'full' }] });
+  const gate = call('finding', '--phase', 'gate', '--check', 'c1', '--severity', 'P1', '--category', 'verification/broken', '--problem', 'Набор тестов не запустился.', '--impact', 'Итог не подтверждён тестами.', '--fix', 'Повторить прогон в рабочем окружении.', '--related', 'src/totals.js:1', '--scenario', 'npm test: исполнитель недоступен.', '--confidence', 'plausible', '--owner', 'qa');
+  assert.equal(gate.json.id, 'G1', JSON.stringify(gate.json));
+  call('verdict', '--id', 'G1', '--holds', '--reason', 'хвост лога');
+  call('covered', '--item', 'src/totals.js', '--status', 'reviewed', '--evidence', 'прочитан');
+  closePhases(call);
+  const done = call('summary', '--status', 'done', '--summary', 'Гейт не подтверждён: исполнитель недоступен.', '--verdict', 'Правок нет.');
+  assert.equal(done.code, 0, JSON.stringify(done.json));
+  assert.deepEqual(done.json.required_fixes, []);
+});
+
+test('a gate that selected no check still answers in verification, so the review can close', async () => {
+  for (const [gate, item] of [
+    [{}, { command: 'qa_result', status: 'skipped', evidence: 'по результату QA: проверок нет' }],
+    [{ verdict: 'unconfirmed', obstacles: ['gate: no check ran over the change'] }, { command: 'qa_result', status: 'broken', evidence: 'по результату QA: проверок нет — gate: no check ran over the change' }],
+  ]) {
+    const { call } = await review(`review-empty-gate-${item.status}`, { checks: [], gate });
+    call('covered', '--item', 'src/totals.js', '--status', 'reviewed', '--evidence', 'прочитан');
+    closePhases(call);
+    const done = call('summary', '--status', 'done', '--summary', 'Ревью завершено.', '--verdict', 'Правок нет.');
+    assert.equal(done.code, 0, JSON.stringify(done.json));
+    assert.deepEqual(JSON.parse(await readFile(done.json.deliverable.content.path, 'utf8')).verification, [item]);
+  }
 });

@@ -31,7 +31,10 @@
 //        log, tail, cache?}]}. passed: exit 0. failed: non-zero exit. broken:
 //        the command could not run — spawn error, timeout, or a tooling
 //        signature in its output (command or module not found, autoload
-//        missing, an executor that did not start).
+//        missing, an executor that did not start) — or a test runner whose own
+//        summary says it selected or executed no test (none matched, or every
+//        selected one skipped), whatever its exit code, unless the output also
+//        reports a failure.
 // Output: one JSON line; --spec prints the final results, --detach prints
 //        {ok, results, pid, checks}, --wait prints the results file as it stands.
 //        Exit 1 only on bad arguments or an unreadable spec.
@@ -50,6 +53,25 @@ const TAIL_CHARS = 4000;
 const PHPSTAN_CONFIGS = ["phpstan.neon", "phpstan.neon.dist", "phpstan.dist.neon"];
 // Output that says the tool did not run, as opposed to the code being wrong.
 const TOOLING = /command not found|No such file or directory|Could not open input file|Cannot find module|Class .* not found|vendor\/autoload\.php|not recognized as|ENOENT|npm ERR! (?:code E404|missing script)|docker: |Cannot connect to the Docker daemon|service ".*" is not running|no such service|OCI runtime exec failed|executable file not found/i;
+// A test runner's own whole line saying it selected or executed no test — none
+// matched, or every selected one was skipped (vitest, jest, node --test,
+// pytest, phpunit): its exit code says nothing about the change.
+const EMPTY_RUN = /^\s*No test(?: file)?s found, exiting with code \d+$|^Could not find '[^'\n]+'$|^[ℹ#] (?:tests|pass) 0$|^\s*Tests:?\s+\d+ skipped(?:, \d+ total| \(\d+\))$|^collected 0 items$|^=* ?(?:no tests ran|\d+ (?:skipped|deselected|warnings?))(?:, \d+ (?:skipped|deselected|warnings?))* in [\d.]+s(?: \([\d:.]+\))? ?=*$|^No tests executed!$|^Tests: (\d+),.*\bSkipped: \1\.$/im;
+// A run that reports a failure is never empty, whatever else its output quotes.
+const FAILED_RUN = /^[ℹ#] (?:fail|cancelled) [1-9]|\b[1-9]\d* failed\b|^\s*FAIL\b|^FAILURES!$/m;
+// go test marks every package on its own line: the run is empty only when no
+// package ran a test, read from the whole log — the tail may have lost the
+// ok and FAIL lines to later packages without tests.
+const GO_EMPTY = /\[no test files\]|\[no tests to run\]/;
+const GO_RAN = /^(?:ok\s.*(?<!\[no tests to run\])|FAIL\b.*)$/m;
+const plain = (text) => String(text).replace(/\x1b\[[0-9;]*m/g, "").replace(/\r\n?/g, "\n");
+function emptyRun(tail, logPath) {
+  const text = plain(tail);
+  if (FAILED_RUN.test(text)) return false;
+  if (EMPTY_RUN.test(text)) return true;
+  if (!GO_EMPTY.test(text) || GO_RAN.test(text)) return false;
+  try { return !GO_RAN.test(plain(readFileSync(logPath, "utf8"))); } catch { return true; }
+}
 
 const USAGE = `checks-run.mjs — executes the gate's checks outside the model's turns.
   node checks-run.mjs --spec <path>            run in order, results beside the spec
@@ -62,7 +84,9 @@ ending in sh -c); each check runs as <exec> '<run>'. Without it: the host, in cw
 Results: {ok, status running|complete|aborted, cwd, exec, pid, started, updated, current?,
 checks: [{id, tool, command, ran, scope, width, source, status pending|passed|failed|broken,
 reason?, exit, seconds, log, tail, cache?}]}. passed = exit 0; failed = non-zero exit;
-broken = could not run (spawn error, timeout, tooling signature in the output).
+broken = could not run (spawn error, timeout, tooling signature in the output) or a test
+runner whose summary says it selected or executed no test, whatever its exit code, unless
+the output also reports a failure.
 On the host, phpstan runs through a wrapper configuration that includes the project's own
 and pins tmpDir per workspace under the OS temp dir unless the project sets tmpDir itself.`;
 
@@ -142,9 +166,10 @@ function phpstanCommand(check, cwd, dir) {
   return { ran: `${kept.join(" ")} -c ${quote(wrapper)}`, cache };
 }
 
-function classify(exit, signal, tail, timedOut) {
+function classify(exit, signal, tail, timedOut, logPath) {
   if (timedOut) return { status: "broken", reason: "timeout" };
   if (signal) return { status: "broken", reason: `killed by ${signal}` };
+  if (emptyRun(tail, logPath)) return { status: "broken", reason: "no test selected or executed: widen the run" };
   if (exit === 0) return { status: "passed" };
   if (exit === 127 || TOOLING.test(tail)) return { status: "broken", reason: "tooling: the command did not run, see the log" };
   return { status: "failed" };
@@ -183,7 +208,7 @@ function runOne(command, cwd, timeoutMs, logPath) {
       clearTimeout(timer);
       closeSync(fd);
       const trimmed = tail.slice(-TAIL_CHARS);
-      settle({ ...classify(exit, signal, trimmed, timedOut), exit, seconds: Math.round((Date.now() - started) / 100) / 10, tail: trimmed });
+      settle({ ...classify(exit, signal, trimmed, timedOut, logPath), exit, seconds: Math.round((Date.now() - started) / 100) / 10, tail: trimmed });
     });
   });
 }
