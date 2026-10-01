@@ -28,13 +28,17 @@ export function compactResult(material) {
   return JSON.stringify(projected);
 }
 
+// Skipped cases past the cap stay in the QA file; the pack names their total.
+const SKIPPED_CASES_CAP = 40;
+
 export function compactQa(material) {
   const result = parseResult(material);
   if (!result || typeof result !== "object" || !Array.isArray(result.checks)) return material.text;
   return JSON.stringify({
     ...pick(result, ["kind", "verdict", "workspace", "executor", "obstacles", "summary"]),
     checks: result.checks.map((item) => ({
-      ...pick(item, ["id", "tool", "command", "status", "width", "exit", "reason", "attribution", "log", "expected_test_paths", "executed_test_paths"]),
+      ...pick(item, ["id", "tool", "command", "status", "width", "exit", "reason", "attribution", "log", "expected_test_paths", "executed_test_paths", "skipped_cases", "skipped_count"]),
+      ...(Array.isArray(item.skipped_cases) && item.skipped_cases.length > SKIPPED_CASES_CAP ? { skipped_cases: item.skipped_cases.slice(0, SKIPPED_CASES_CAP), skipped_cases_total: item.skipped_cases.length } : {}),
       ...(["failed", "broken"].includes(item.status) ? pick(item, ["tail"]) : {}),
     })),
   });

@@ -4,7 +4,10 @@
 // script, and the Result v1 file is written from that journal — the model
 // never assembles the Result JSON itself. Each record is checked on the way in:
 // a finding hangs on lines the change touched, rests on cited evidence, names
-// one consequence, and carries a failure scenario at P0/P1. Zero dependencies.
+// one consequence, and carries a failure scenario at P0/P1. On a full review
+// the behavior phase closes only once an acceptance scenario is accounted for,
+// and `summary --status done` refuses a journal with gaps — a standing P0/P1
+// that is still plausible among them. Zero dependencies.
 //
 //   node review-findings.mjs --manifest <path> <command> [flags]
 //
@@ -271,6 +274,10 @@ const handlers = {
   phase(values, context) {
     if (!PHASE_ORDER.includes(values.name)) throw new Refusal(`--name must be ${PHASE_ORDER.join(" | ")}`);
     if (!isText(values.status)) throw new Refusal("--status is required");
+    // A full review that covered files only has walked no scenario yet.
+    if (values.name === "behavior" && context.manifest.review_kind === "full" && !Object.keys(context.journal.coverage).some((item) => !context.manifest.files.includes(item))) {
+      throw new Refusal("behavior closes with at least one acceptance-scenario `covered` item — one per scenario, `blocked` for a fact you could not confirm");
+    }
     context.journal.phases[values.name] = values.status;
     return { phase: values.name };
   },
@@ -313,6 +320,9 @@ export function buildResult(values, { journal, manifest, manifestPath }) {
   const phasesOpen = PHASE_ORDER.filter((name) => !journal.phases[name]);
   const fixesOpen = (manifest.previous_fixes ?? []).filter((id) => !journal.fix_resolution[id]);
   const reopened = Object.entries(journal.fix_resolution).filter(([id, item]) => item.status !== "resolved" && !journal.findings.some((finding) => finding.id === id)).map(([id]) => id);
+  // A standing P0/P1 nobody proved is an open question, not a closed review;
+  // a gate finding rests on the QA result and is weighed there.
+  const unproven = journal.findings.filter((item) => item.verdict?.holds !== false && item.confidence === "plausible" && ["P0", "P1"].includes(item.severity) && item.phase !== "gate").map((item) => item.id);
   if (values.status === "done") {
     const gaps = [
       uncovered.length ? `uncovered files: ${uncovered.join(", ")}` : "",
@@ -320,6 +330,7 @@ export function buildResult(values, { journal, manifest, manifestPath }) {
       unjudged.length ? `findings without a sceptic verdict: ${unjudged.join(", ")}` : "",
       fixesOpen.length ? `previous fixes without a disposition: ${fixesOpen.join(", ")}` : "",
       reopened.length ? `unresolved previous fixes without a finding --reopens: ${reopened.join(", ")}` : "",
+      unproven.length ? `P0/P1 still plausible: ${unproven.join(", ")} — prove it (amend --confidence confirmed), re-weigh its severity in verdict with the reason, refute it with code, or return needs_human naming the open question` : "",
     ].filter(Boolean);
     if (gaps.length) throw new Refusal(`a done review accounts for everything — ${gaps.join("; ")}`);
   } else if (!isText(values.blocker)) throw new Refusal(`--blocker is required for ${values.status}`);
@@ -366,6 +377,12 @@ export function buildResult(values, { journal, manifest, manifestPath }) {
     evidence: `по результату QA${item.width ? `: ${item.width}` : ""}`,
     ...(item.width ? { width: item.width } : {}),
   }));
+  // A gate that selected no check still answers for itself: skipped when QA
+  // called it green, broken with its obstacles otherwise.
+  if (verification.length === 0) {
+    const obstacles = manifest.qa_obstacles ?? [];
+    verification.push({ command: "qa_result", status: manifest.qa_verdict === "green" ? "skipped" : "broken", evidence: `по результату QA: проверок нет${obstacles.length ? ` — ${obstacles.join("; ")}` : ""}` });
+  }
   return {
     contract_version: 1,
     assignment_id: manifest.assignment_id,

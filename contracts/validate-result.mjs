@@ -12,7 +12,8 @@
 // Beyond the JSON Schema: the role is a launched one and the deliverable kind
 // matches it; a review carries no changed_paths; verification items use the
 // vocabulary passed | failed | skipped | broken; `done` carries verification
-// evidence and no failed item unless a required fix names it (review).
+// evidence and no failed item unless a required fix names it (review), and a
+// review is not `done` while a P0/P1 outside the gate stands only plausible.
 
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -90,6 +91,8 @@ function reviewProblems(result) {
       if (!isText(finding.failure_scenario ?? finding.scenario)) problems.push(`${finding.id}: failure scenario required`);
       // A finding the sceptic refuted stays for audit and asks for nothing.
       if (finding.confidence === "confirmed" && finding.status !== "refuted" && !fixes.some((fix) => fixId(fix) === finding.id)) problems.push(`${finding.id}: confirmed ${finding.severity} requires a fix`);
+      // A standing unproven one is an open question; a gate finding rests on the QA result.
+      if (finding.confidence === "plausible" && finding.status !== "refuted" && !/^verification(?:\/|$)/.test(finding.category ?? "")) problems.push(`${finding.id}: done with a standing plausible ${finding.severity} — confirm it, re-weigh its severity, refute it or return needs_human`);
     }
   }
   for (const fix of fixes) {

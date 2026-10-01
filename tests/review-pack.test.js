@@ -30,7 +30,9 @@ async function repo() {
 }
 
 const ISSUE_TEXT = `Totals must sum amounts. ${'The order total is the sum of every line amount; an empty order sums to zero. '.repeat(5)}`;
-const QA_MATERIAL = { kind: 'text', name: 'qa_result', content: JSON.stringify({ kind: 'qa_result', verdict: 'green', checks: [{ id: 'c1', tool: 'vitest', command: 'npx vitest related src/totals.js', width: 'narrowed to the change', status: 'passed' }], obstacles: [], summary: { passed: 1, failed: 0, broken: 0, skipped: 0 } }), provenance: 'результат QA' };
+// The QA result names the commit the gate ran on; `stamp` puts the fixture's HEAD in place of this mark.
+const FIXTURE_HEAD = '<fixture-head>';
+const QA_MATERIAL = { kind: 'text', name: 'qa_result', content: JSON.stringify({ kind: 'qa_result', verdict: 'green', workspace: { head: FIXTURE_HEAD }, checks: [{ id: 'c1', tool: 'vitest', command: 'npx vitest related src/totals.js', width: 'narrowed to the change', status: 'passed' }], obstacles: [], summary: { passed: 1, failed: 0, broken: 0, skipped: 0 } }), provenance: 'результат QA' };
 
 // Every packet carries the QA result unless a test hands over an empty list on purpose.
 function assignment(overrides = {}) {
@@ -62,9 +64,12 @@ function base(overrides) {
 const hasLsd = (directory) => { try { accessSync(join(directory, 'lsd'), constants.X_OK); return true; } catch { return false; } };
 const PLAIN_PATH = process.env.PATH.split(':').filter((directory) => !hasLsd(directory)).join(':');
 
+const headOf = (dir) => sh(dir, 'git', ['rev-parse', 'HEAD']).trim();
+const stamp = (dir, input) => (typeof input === 'string' ? input : JSON.stringify(input)).replaceAll(FIXTURE_HEAD, headOf(dir));
+
 function run(dir, input, args = [], path = PLAIN_PATH) {
   const result = spawnSync(process.execPath, [scriptPath, '--assignment', '-', ...args], {
-    cwd: dir, input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8', env: { ...process.env, PATH: path },
+    cwd: dir, input: stamp(dir, input), encoding: 'utf8', env: { ...process.env, PATH: path },
   });
   const line = result.stdout.trim().split('\n').pop();
   return { code: result.status, json: line ? JSON.parse(line) : null, stderr: result.stderr };
@@ -184,8 +189,8 @@ test('a tight budget narrows the diff, then cuts it and drops rules with notes',
   const big = Array.from({ length: 200 }, (_, i) => `export const value${i} = "${'x'.repeat(40)}";`).join('\n');
   await writeFile(join(dir, 'src', 'totals.js'), `${big}\n`);
   await writeFile(join(dir, 'src', 'second.js'), `${big}\n`);
-  commit(dir, 'bulk');
   await writeFile(join(dir, 'docs', 'engineering', 'rules', 'long.md'), `# Long rule\n${'text '.repeat(1500)}\n`);
+  commit(dir, 'bulk');
 
   const { json } = run(dir, assignment(), ['--budget', '9000', '--skip=rules,docs,runtime,tooling']);
   assert.equal(json.ok, true);
@@ -300,7 +305,7 @@ test('--check validates the packet strictly and writes nothing', async () => {
   await assert.rejects(readFile(outPath, 'utf8'), /ENOENT/);
 
   const packetFile = join(dir, '..', `packet-${Date.now()}.json`);
-  await writeFile(packetFile, JSON.stringify(assignment()));
+  await writeFile(packetFile, stamp(dir, assignment()));
   const fromFile = spawnSync(process.execPath, [scriptPath, '--assignment', packetFile], { cwd: dir, encoding: 'utf8' });
   const placed = JSON.parse(fromFile.stdout.trim().split('\n').pop());
   assert.equal(placed.ok, true);
@@ -374,7 +379,11 @@ test('the QA result rides in the pack whole, as a file or inline, between the re
   await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => 0;\n');
   commit(dir, 'stub');
   const qaFile = join(dir, '..', `qa-result-${Date.now()}.json`);
-  await writeFile(qaFile, JSON.stringify({ kind: 'qa_result', verdict: 'red', checks: [{ id: 'c1', tool: 'vitest', status: 'failed', attribution: 'in_change' }] }));
+  await writeFile(qaFile, JSON.stringify({ kind: 'qa_result', verdict: 'red', workspace: { head: headOf(dir) }, checks: [
+    { id: 'c1', tool: 'vitest', status: 'failed', attribution: 'in_change', skipped_cases: [{ file: 'src/totals.test.js', name: 'sums every amount' }] },
+    { id: 'c2', tool: 'node', status: 'passed', skipped_count: 3 },
+    { id: 'c3', tool: 'phpunit', status: 'passed', skipped_cases: Array.from({ length: 41 }, (_, n) => ({ file: 'tests/TotalsTest.php', name: `rounds with data set #${n}` })) },
+  ] }));
   const { json } = run(dir, assignment({
     source_materials: [
       { kind: 'text', name: 'issue', content: ISSUE_TEXT, provenance: 'tracker issue text' },
@@ -385,6 +394,9 @@ test('the QA result rides in the pack whole, as a file or inline, between the re
   const pack = await readFile(json.pack, 'utf8');
   assert.match(pack, /<qa_result note="the gate, run once by the QA role[^"]*" file="[^"]+">\n\{"kind":"qa_result","verdict":"red"/);
   assert.ok(pack.indexOf('<repository>') < pack.indexOf('<qa_result') && pack.indexOf('<qa_result') < pack.indexOf('<method>'));
+  assert.match(pack, /"attribution":"in_change","skipped_cases":\[\{"file":"src\/totals\.test\.js","name":"sums every amount"\}\]/, 'cases the runner skipped ride with their check');
+  assert.match(pack, /\{"id":"c2","tool":"node","status":"passed","skipped_count":3\}/);
+  assert.match(pack, /"name":"rounds with data set #39"\}\],"skipped_cases_total":41\}/, 'a long list rides capped, with its total');
   assert.equal(pack.includes('<checks'), false);
   assert.equal(pack.includes('"validation"'), false, 'the snapshot rides without its check templates');
   assert.equal(Object.hasOwn(json, 'checks'), false);
@@ -560,23 +572,96 @@ test('QA-only review reuses verified code coverage and refuses changed inputs or
   assert.equal(next.json.files, 0);
   assert.deepEqual(JSON.parse(await readFile(next.json.review_manifest, 'utf8')).files, ['src/totals.js']);
   assert.equal(run(dir, { ...packet, accepted_decisions: ['different contract'] }).json.code, 'review_state_mismatch');
-  const stale = { ...packet, source_materials: [packet.source_materials[0], QA_MATERIAL, previous] };
-  assert.equal(run(dir, stale).json.code, 'review_state_mismatch');
+  const staleQa = { ...QA_MATERIAL, content: JSON.stringify({ kind: 'qa_result', workspace: { head: sh(dir, 'git', ['rev-parse', 'main']).trim() }, verdict: 'green', checks: [] }) };
+  const stale = { ...packet, source_materials: [packet.source_materials[0], staleQa, previous] };
+  assert.deepEqual(run(dir, stale).json, { ok: false, code: 'review_state_mismatch', detail: 'QA evidence is for another HEAD; rerun the gate' });
   await writeFile(join(dir, 'CLAUDE.md'), '# Local rules\nAdditional security constraint.\n');
   assert.equal(sh(dir, 'git', ['status', '--porcelain']).trim(), '');
   assert.equal(run(dir, packet).json.code, 'review_state_mismatch', 'ignored local rules must also invalidate reuse');
   await writeFile(join(dir, 'CLAUDE.md'), '# Local rules\nRead the changed code.\n');
   await writeFile(join(dir, 'docs', 'style.md'), 'Changed rules without commit\n');
-  assert.equal(run(dir, packet).json.code, 'review_state_mismatch');
+  assert.deepEqual(run(dir, packet).json, { ok: false, code: 'review_state_mismatch', detail: 'uncommitted changes in the review workspace: docs/style.md' });
 
   // A new network path in a fix delta is examined even after earlier coverage.
   await writeFile(join(dir, 'docs', 'style.md'), sh(dir, 'git', ['show', 'HEAD:docs/style.md']));
   await writeFile(join(dir, 'src', 'totals.js'), 'export const total = () => fetch(url);\n');
   commit(dir, 'new network path');
-  const delta = run(dir, { ...packet, assignment_id: 'review-delta' });
+  const delta = run(dir, { ...packet, assignment_id: 'review-delta', source_materials: [packet.source_materials[0], QA_MATERIAL, previous] });
   assert.equal(delta.json.review_kind, 'fix_delta');
   assert.ok(delta.json.risk_hits.some((hit) => hit.rule === 'outbound_url'));
   assert.match(await readFile(delta.json.pack, 'utf8'), /central validator/);
+});
+
+test('the QA result is a QA result file for the reviewed HEAD, in --check and in the pack alike', async () => {
+  const dir = await repo();
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = () => 0;\n');
+  commit(dir, 'change');
+  const withQa = (content) => assignment({ source_materials: [assignment().source_materials[0], { ...QA_MATERIAL, content: typeof content === 'string' ? content : JSON.stringify(content) }] });
+  const shape = { ok: false, code: 'missing_qa_result', detail: 'qa_result is not a QA result file (kind qa_result with checks[])' };
+  const another = { ok: false, code: 'review_state_mismatch', detail: 'QA evidence is for another HEAD; rerun the gate' };
+  for (const args of [[], ['--check']]) {
+    assert.deepEqual(run(dir, withQa('all checks are green'), args).json, shape);
+    assert.deepEqual(run(dir, withQa({ kind: 'qa_result', verdict: 'green', workspace: { head: FIXTURE_HEAD } }), args).json, shape);
+    assert.deepEqual(run(dir, withQa({ kind: 'review_report', checks: [], workspace: { head: FIXTURE_HEAD } }), args).json, shape);
+    assert.deepEqual(run(dir, withQa({ kind: 'qa_result', verdict: 'green', checks: [], workspace: { head: sh(dir, 'git', ['rev-parse', 'main']).trim() } }), args).json, another);
+    assert.deepEqual(run(dir, withQa({ kind: 'qa_result', verdict: 'green', checks: [] }), args).json, another, 'a result that names no commit proves nothing about this one');
+    assert.equal(run(dir, withQa({ kind: 'qa_result', verdict: 'green', checks: [], workspace: { head: headOf(dir).slice(0, 7) } }), args).json.ok, true, 'the short form the QA script writes');
+  }
+});
+
+test('uncommitted changes in the workspace refuse the review before it starts', async () => {
+  const dir = await repo();
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = () => 0;\n');
+  commit(dir, 'change');
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = () => 1;\n');
+  for (const name of ['a', 'b', 'c', 'd', 'e']) await writeFile(join(dir, `${name}.tmp`), 'left behind\n');
+  const refusal = { ok: false, code: 'review_state_mismatch', detail: 'uncommitted changes in the review workspace: src/totals.js, a.tmp, b.tmp, c.tmp, d.tmp' };
+  assert.deepEqual(run(dir, assignment(), ['--check']).json, refusal);
+  assert.deepEqual(run(dir, assignment()).json, refusal);
+});
+
+test('the test digest marks skipped, focused and todo cases and names the cases a modified file dropped', async () => {
+  const dir = await repo();
+  await writeFile(join(dir, 'src', 'totals.test.js'), [
+    'describe("total", () => {',
+    '  it("sums every amount", () => {});',
+    '  it("is zero for an empty order", () => {});',
+    '  it("rounds once", () => {});',
+    '  it("ignores a refund", () => {});',
+    '});',
+  ].join('\n'));
+  commit(dir, 'tests before the change');
+  const before = headOf(dir);
+  await writeFile(join(dir, 'src', 'totals.js'), 'export const total = (items) => items.reduce((sum, item) => sum + item.amount, 0);\n');
+  await writeFile(join(dir, 'src', 'totals.test.js'), [
+    'describe("total", () => {',
+    '  it.skip("sums every amount", () => {});',
+    '  xit("is zero for an empty order", () => {});',
+    '  it.only("counts lines", () => {});',
+    '  test.todo("handles a discount");',
+    '  it.concurrent("runs beside the others", () => {});',
+    '});',
+    'xdescribe("legacy totals", () => {});',
+  ].join('\n'));
+  await writeFile(join(dir, 'src', 'fresh.test.js'), 'it("starts empty", () => {});\n');
+  commit(dir, 'sum amounts, tests reshaped');
+
+  const { json } = run(dir, assignment({ assignment_id: 'assignment-review-marks', repository: { base_ref: before } }), ['--skip=rules']);
+  const pack = await readFile(json.pack, 'utf8');
+  const digest = pack.slice(pack.indexOf('<tests '), pack.indexOf('</tests>'));
+  assert.ok(digest.includes([
+    'M src/totals.test.js +7 -5',
+    '- total',
+    '- sums every amount [skip]',
+    '- is zero for an empty order [skip]',
+    '- counts lines [only]',
+    '- handles a discount [todo]',
+    '- runs beside the others',
+    '- legacy totals [skip]',
+    '- removed: rounds once',
+    '- removed: ignores a refund',
+  ].join('\n')), digest);
+  assert.match(digest, /A src\/fresh\.test\.js \+1 -0\n- starts empty(?:\n\n|\n$|$)/, 'an added file has no base to lose cases from');
 });
 
 test('bounded reader preserves long lines and page boundaries without omissions', async () => {

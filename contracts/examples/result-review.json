@@ -16,9 +16,17 @@
         "sceptic": "One finding judged; it holds."
       },
       "coverage": [{
-        "item": "Accepted scenario: an empty order sums to zero; src/example.js; test/example.test.js",
+        "item": "Accepted scenario: an empty order sums to zero",
         "status": "reviewed",
-        "evidence": "Every hunk read; npm test confirms the expected result and the boundary case."
+        "evidence": "src/example.js:9 returns zero before the loop, reached from total() at src/example.js:3; the empty list case in test/example.test.js claims it, and npm test passed."
+      }, {
+        "item": "src/example.js",
+        "status": "reviewed",
+        "evidence": "Every hunk read."
+      }, {
+        "item": "test/example.test.js",
+        "status": "reviewed",
+        "evidence": "Every hunk read; the only case is the empty list."
       }]
     }
   },

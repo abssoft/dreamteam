@@ -60,6 +60,75 @@ test('a spec runs in order: exit 0 passes, non-zero fails, a missing command and
   assert.equal(waited.json.checks.length, 4);
 });
 
+test('a test runner that selected or executed no test is broken at any exit code', async () => {
+  const dir = await workspace();
+  const spec = join(dir, 'checks.json');
+  // [runner output, exit code, expected status]: the lines are the runners' own.
+  const cases = [
+    ['No test files found, exiting with code 0', 0, 'broken'], // vitest related, vitest --passWithNoTests
+    ['No test files found, exiting with code 1', 1, 'broken'], // vitest run
+    ['No tests found, exiting with code 1', 1, 'broken'], // jest, jest --findRelatedTests
+    ['No tests found, exiting with code 0', 0, 'broken'], // jest --passWithNoTests
+    ["Could not find 'nonexistent'", 1, 'broken'], // node --test <missing path>
+    ['ℹ tests 0\nℹ suites 0\nℹ pass 0', 0, 'broken'], // node --test, nothing matched
+    ['\x1b[34mℹ tests 0\x1b[39m\n\x1b[34mℹ pass 0\x1b[39m', 0, 'broken'], // node --test under FORCE_COLOR
+    ['collected 0 items\n\n==== no tests ran in 0.01s ====', 5, 'broken'], // pytest
+    ['collected 2 items / 2 deselected / 0 selected\n\n==== 2 deselected in 0.00s ====', 5, 'broken'], // pytest -k, nothing selected
+    ['2 deselected in 0.00s', 5, 'broken'], // pytest -q -k, nothing selected
+    ['1 warning in 0.01s', 5, 'broken'], // pytest -q, nothing collected, a warning raised
+    ['1 warning, 1 error in 0.01s', 2, 'failed'], // pytest -q, a collection error
+    ['No tests executed!', 0, 'broken'], // phpunit
+    ['?   \tx\t[no test files]', 0, 'broken'], // go test, no package has tests
+    ['ok  \tx/b\t0.337s [no tests to run]', 0, 'broken'], // go test -run, nothing matched
+    ['?   \tx\t[no test files]\nok  \tx/b\t0.738s', 0, 'passed'], // go test, one package ran
+    // Every selected test skipped: nothing executed.
+    ['Tests:       2 skipped, 2 total', 0, 'broken'], // jest
+    ['      Tests  2 skipped (2)', 0, 'broken'], // vitest
+    ['ℹ tests 2\nℹ pass 0\nℹ fail 0\nℹ skipped 2', 0, 'broken'], // node --test
+    ['==== 2 skipped in 0.01s ====', 0, 'broken'], // pytest
+    ['OK, but some tests were skipped!\nTests: 2, Assertions: 0, Skipped: 2.', 0, 'broken'], // phpunit
+    // Some ran beside the skipped ones.
+    ['Tests:       1 skipped, 1 passed, 2 total', 0, 'passed'],
+    ['      Tests  1 passed | 1 skipped (2)', 0, 'passed'],
+    ['==== 1 passed, 1 skipped in 0.00s ====', 0, 'passed'],
+    ['Tests: 3, Assertions: 1, Skipped: 2.', 0, 'passed'],
+    // A run that reports a failure stays failed, whatever line its output quotes.
+    ["  + 'No test files found, exiting with code 0'\n  - 'green'\nℹ tests 1\nℹ pass 0\nℹ fail 1", 1, 'failed'], // assertion diff
+    ['Error: expected pytest to print no tests ran in 0.01s', 1, 'failed'],
+    ['ℹ tests 0\nℹ pass 0\nℹ fail 0\nℹ tests 2\nℹ pass 1\nℹ fail 1', 1, 'failed'], // npm test --workspaces, one empty
+    ['ℹ tests 1\nℹ pass 0\nℹ fail 0\nℹ cancelled 1', 1, 'failed'], // node --test, a test timed out
+    ['collected 0 items / 1 error', 2, 'failed'], // pytest: a collection error is a failure
+    ['ℹ tests 2\nℹ pass 2', 0, 'passed'],
+    ['green', 0, 'passed'],
+    ['src/a.test.js: 1 failed', 1, 'failed'],
+  ];
+  for (const [index, [text]] of cases.entries()) await writeFile(join(dir, `out-${index}.txt`), `${text}\n`);
+  await writeFile(spec, JSON.stringify({
+    cwd: dir,
+    checks: cases.map(([, exit], index) => ({ id: `c${index + 1}`, tool: 'tests', command: `cat out-${index}.txt; exit ${exit}`, scope: 'related', width: 'narrowed to the change', source: 'fixture' })),
+  }));
+  const { json } = run(['--spec', spec], dir);
+  assert.equal(json.status, 'complete');
+  assert.deepEqual(json.checks.map((item) => [item.tail, item.exit, item.status]), cases.map(([text, exit, status]) => [`${text}\n`, exit, status]));
+  for (const item of json.checks.filter((check) => check.status === 'broken')) assert.equal(item.reason, 'no test selected or executed: widen the run');
+});
+
+test('go test is judged on the whole log: packages without tests past the tail hide no package that ran', async () => {
+  const dir = await workspace();
+  const spec = join(dir, 'checks.json');
+  const none = Array.from({ length: 100 }, (_, index) => `?   \texample.com/svc/cmd/tool${index}\t[no test files]`).join('\n');
+  await writeFile(join(dir, 'ran.txt'), `ok  \texample.com/svc/internal/a\t0.412s\n${none}\n`);
+  await writeFile(join(dir, 'failed.txt'), `FAIL\texample.com/svc/internal/a\t0.412s\n${none}\n`);
+  await writeFile(join(dir, 'none.txt'), `${none}\n`);
+  await writeFile(spec, JSON.stringify({
+    cwd: dir,
+    checks: [['ran', 0], ['failed', 1], ['none', 0]].map(([name, exit]) => ({ id: name, tool: 'go', command: `cat ${name}.txt; exit ${exit}`, scope: 'none', width: 'full', source: 'fixture' })),
+  }));
+  const { json } = run(['--spec', spec], dir);
+  assert.ok(!json.checks[0].tail.includes('ok  '), 'the ok line is past the tail');
+  assert.deepEqual(json.checks.map((item) => item.status), ['passed', 'failed', 'broken']);
+});
+
 test('phpstan runs through a wrapper that includes the project configuration and pins tmpDir per workspace', async () => {
   const dir = await workspace();
   const spec = join(dir, 'checks.json');

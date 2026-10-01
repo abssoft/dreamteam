@@ -26,13 +26,20 @@
 //               test_files, risk_hits, depth, issue_chars, warnings})
 //   ok:false → {ok, code, detail?}: bad_args | bad_packet (--check only; detail
 //               lists every problem) | missing_base_ref | missing_issue |
-//               missing_qa_result | not_a_git_repository | base_ref_not_found |
-//               empty_diff | pack_write_failed
+//               missing_qa_result (absent, unreadable, or not a QA result) |
+//               not_a_git_repository | base_ref_not_found | review_state_mismatch
+//               (uncommitted changes, QA evidence for another HEAD, or a repeat
+//               review whose task, rules or code moved) | empty_diff |
+//               pack_write_failed
 // Task text: the source_materials entry named `issue` (a subtask also
 // `parent_issue`) is read inline when it is text, or from the file its content
 // names when the wrapper wrote the tracker text to disk (attachment_reference).
-// The gate: qa_result keeps statuses, widths and evidence links. Full logs
-// stay in its source file; the review runs no check of its own.
+// The gate: qa_result keeps statuses, widths and evidence links, and up to 40
+// skipped cases per check (skipped_cases_total past that). Full logs and lists
+// stay in its source file; the review runs no check of its own. For every
+// review kind, --check included, it is the QA role's result (kind qa_result
+// with checks[]) whose workspace.head names the reviewed HEAD, and the
+// workspace carries no uncommitted change.
 // The diff is `git diff` from the merge base of <base> and HEAD (the three-dot
 // range), at the widest context of 10, 6, 3 or 0 lines that fits the budget;
 // a diff that does not fit even at 0 is cut, the files after the cut are
@@ -76,7 +83,7 @@ const RULES_ROUTE_CAP = 40;
 const ROUTE_HINT_CHARS = 160;
 // Files whose change buys no behavior of its own: documentation, generated
 // code and tests (the gate ran them). A whitespace-only change is the same.
-const DOC_PATH = /(?:^|\/)docs?\/|\.(?:md|mdx|rst|adoc|txt)$/i;
+export const DOC_PATH = /(?:^|\/)docs?\/|\.(?:md|mdx|rst|adoc|txt)$/i;
 const GENERATED_PATH = /(?:^|\/)(?:generated|__generated__)\/|\.generated\.[a-z]+$/i;
 // Risk categories of a hit; `access` takes whatever the others do not name.
 // Irreversible data work, or two categories meeting in one change, buy the top
@@ -103,8 +110,11 @@ export const TEST_PATH = /(?:^|\/)(?:tests?|__tests__|specs?)\/|\.(?:test|spec)\
 // A test declaration, in the shapes the common runners use. The pack carries
 // these names instead of the test bodies: the review judges the code, and opens
 // a test file when it doubts the strength of a test or the cover of a scenario.
-const TEST_CASE = /(?:^|\s)(?:it|test|describe|context)\s*(?:\.\w+)?\s*\(\s*[`'"](.+?)[`'"]|(?:^|\s)def\s+(test_\w+)|(?:public\s+)?function\s+(test\w+)|(?:^|\s)func\s+(Test\w+)|(?:^|\s)(?:it|Scenario|Feature)\s*\(\s*[`'"](.+?)[`'"]/gm;
+// Groups 1 and 2 are the runner function and its modifier — what marks a case
+// skipped, focused or todo; the name is the first group after them.
+const TEST_CASE = /(?:^|\s)(x?(?:it|test|describe|context))\s*(?:\.(\w+))?\s*\(\s*[`'"](.+?)[`'"]|(?:^|\s)def\s+(test_\w+)|(?:public\s+)?function\s+(test\w+)|(?:^|\s)func\s+(Test\w+)|(?:^|\s)(?:it|Scenario|Feature)\s*\(\s*[`'"](.+?)[`'"]/gm;
 const TEST_CASE_CAP = 40;
+const TEST_CASE_MARKS = ["skip", "only", "todo"];
 
 const USAGE = `review-pack.mjs — one-call review context for the code-reviewer role.
 Run from the review workspace (the process cwd, a git checkout of the reviewed
@@ -121,14 +131,16 @@ Requires repository.base_ref (or --base), a source_materials entry named issue
 carrying the task text inline (kind text) or as a file path the wrapper wrote
 (kind attachment_reference; a subtask also carries name parent_issue), and one
 named qa_result — the QA role's result file (attachment_reference) or its JSON
-inline (text).
+inline (text): kind qa_result, checks[], workspace.head naming the reviewed HEAD.
+The workspace carries no uncommitted change.
 Pack sections, in order: attention (cuts and notes), signals, scope, decisions
 (only when the packet carries any), issue, parent_issue, materials, repository,
 development_result, previous_review and qa_result (the files those materials
 name, projected without duplicate history), method (the shared engineering reference), rules (the repository
 instruction chain: the entry files and the applicable rules whole, then routes to
 the documents they name), env, files, tests (declared cases of the changed test
-files), diff.
+files, marked [skip], [only] or [todo], and \`removed:\` for each case a modified
+file dropped), diff.
 Depth: 1 documentation, generated, formatting or test files only; 2 behavior
 without a risk signal; 4 one risk category; 5 irreversible data work or two risk
 categories; one lower on a repeat review, never below 1. The wrapper maps the
@@ -141,7 +153,9 @@ command prefix of review-findings.mjs bound to this review's journal.
 risk_hits, depth, review_kind, issue_chars, warnings}.
 ok:false codes: bad_args | bad_packet (--check; detail lists the problems) |
 missing_base_ref | missing_issue | missing_qa_result | not_a_git_repository |
-base_ref_not_found | empty_diff | pack_write_failed. Exit 1 on ok:false.
+base_ref_not_found | review_state_mismatch (uncommitted changes, QA evidence for
+another HEAD, or a repeat review whose task, rules or code moved) | empty_diff |
+pack_write_failed. Exit 1 on ok:false.
 `;
 
 function out(value) {
@@ -455,8 +469,23 @@ function warmLsd(root) {
   }
 }
 
+// Declared cases of one test source, by name; a case the runner will not run as
+// written carries its mark, and a marked duplicate of a name wins over a plain one.
+function declaredCases(source) {
+  const cases = new Map();
+  for (const match of (source ?? "").matchAll(TEST_CASE)) {
+    const name = match.slice(3).find((group) => group !== undefined)?.trim();
+    const mark = match[1]?.startsWith("x") ? "skip" : TEST_CASE_MARKS.find((item) => item === match[2]);
+    if (!name || (cases.has(name) && !mark)) continue;
+    cases.set(name, mark ? `${name} [${mark}]` : name);
+  }
+  return cases;
+}
+
 // Every test file of the change, each with its declared cases: enough to see
 // which scenarios claim cover and how the suite is named, without the bodies.
+// A modified file also names the cases its base version declared and HEAD no
+// longer does.
 function testDigest(files, range, mergeBase, cwd) {
   const counts = new Map();
   for (const line of (git(["diff", "--numstat", range, "--", ...files.map((file) => file.path)], cwd) ?? "").split("\n")) {
@@ -465,17 +494,14 @@ function testDigest(files, range, mergeBase, cwd) {
   }
   const parts = [];
   for (const file of files) {
-    const source = file.status === "D"
-      ? git(["show", `${mergeBase}:${file.path}`], cwd)
-      : git(["show", `HEAD:${file.path}`], cwd);
-    const cases = [];
-    for (const match of (source ?? "").matchAll(TEST_CASE)) {
-      const name = match.slice(1).find((group) => group !== undefined);
-      if (name && !cases.includes(name)) cases.push(name.trim());
-      if (cases.length >= TEST_CASE_CAP) break;
-    }
+    const before = ["M", "D"].includes(file.status) ? git(["show", `${mergeBase}:${file.path}`], cwd) : null;
+    const declared = declaredCases(file.status === "D" ? before : git(["show", `HEAD:${file.path}`], cwd));
+    const cases = [...declared.values()].slice(0, TEST_CASE_CAP);
+    const removed = file.status === "M"
+      ? [...declaredCases(before).keys()].filter((name) => !declared.has(name)).slice(0, TEST_CASE_CAP).map((name) => `removed: ${name}`)
+      : [];
     const head = `${file.status} ${file.from ? `${file.from} → ` : ""}${file.path} ${counts.get(file.path) ?? ""}`.trimEnd();
-    parts.push(cases.length ? `${head}\n${bullets(cases)}` : `${head}\n- (no declared case found)`);
+    parts.push(`${head}\n${bullets([...(cases.length ? cases : ["(no declared case found)"]), ...removed])}`);
   }
   return parts.join("\n\n");
 }
@@ -543,6 +569,8 @@ function main() {
   if (!qaResult) fail("missing_qa_result");
   if (qaResult.error) fail("missing_qa_result", qaResult.error);
   if (!isText(qaResult.text)) fail("missing_qa_result", qaResult.path ? `empty file: ${qaResult.path}` : "empty content");
+  const qa = parseResult(qaResult);
+  if (qa?.kind !== "qa_result" || !Array.isArray(qa.checks)) fail("missing_qa_result", "qa_result is not a QA result file (kind qa_result with checks[])");
 
   const cwd = process.cwd();
   const root = git(["rev-parse", "--show-toplevel"], cwd);
@@ -554,6 +582,12 @@ function main() {
   const range = `${mergeBase}..HEAD`;
 
   const headCommit = git(["rev-parse", "HEAD"], cwd);
+  // The review reads committed code and the gate that ran on it: a dirty tree
+  // or a QA result of another commit is not the state under review.
+  const dirty = git(["status", "--porcelain"], cwd);
+  if (dirty !== "") fail("review_state_mismatch", `uncommitted changes in the review workspace: ${dirty === null ? "git status failed" : dirty.split("\n").slice(0, 5).map((line) => line.slice(3)).join(", ")}`);
+  const qaHead = qa.workspace?.head;
+  if (typeof qaHead !== "string" || qaHead.length < 7 || !headCommit.startsWith(qaHead)) fail("review_state_mismatch", "QA evidence is for another HEAD; rerun the gate");
   const priorResult = parseResult(previousReview);
   const prior = previousManifest(priorResult);
   const materials = assignment.source_materials.filter((item) => !["issue", "parent_issue", "qa_result", "previous_review", "development_result"].includes(item.name)).map((item) => {
@@ -573,11 +607,9 @@ function main() {
   if (prior && mergeBase === prior.head && !priorMatches) fail("review_state_mismatch", "task or rules changed since the previous review; prepare a fresh full review");
   if (files.length === 0) {
     if (!previousReview) fail("empty_diff", `no changes between ${base} and HEAD`);
-    if (!priorMatches || prior.head !== headCommit || priorResult.status !== "done" || priorResult.deliverable?.content?.review_complete !== true || resultProblems(priorResult).length || git(["status", "--porcelain"], cwd) !== "") {
+    if (!priorMatches || prior.head !== headCommit || priorResult.status !== "done" || priorResult.deliverable?.content?.review_complete !== true || resultProblems(priorResult).length) {
       fail("review_state_mismatch", "QA-only review requires a complete previous review of this unchanged code, task and rules");
     }
-    const qaHead = parseResult(qaResult)?.workspace?.head;
-    if (typeof qaHead !== "string" || qaHead.length < 7 || !headCommit.startsWith(qaHead)) fail("review_state_mismatch", "QA evidence must identify the reviewed HEAD");
     reviewKind = "evidence_only";
   } else if (previousReview && (!priorMatches || mergeBase !== prior.head)) {
     reviewKind = "full";
@@ -674,7 +706,7 @@ function main() {
   const envText = section("env", JSON.stringify(envRest, null, 1));
   const filesText = section("files", bullets(files.map((file) => `${file.status} ${file.from ? `${file.from} → ` : ""}${file.path}${TEST_PATH.test(file.path) ? " (test)" : ""}`)));
   const testsText = digestFiles.length
-    ? section("tests", testDigest(digestFiles, range, mergeBase, cwd), { note: "declared cases only; open the file to judge a test's strength or a scenario's cover" })
+    ? section("tests", testDigest(digestFiles, range, mergeBase, cwd), { note: "declared cases only, marked [skip], [only] or [todo], and `removed:` for a case the change dropped; open the file to judge a test's strength or a scenario's cover" })
     : "";
 
   const fixedLength = fixed.join("\n\n").length + envText.length + filesText.length + testsText.length;
@@ -721,11 +753,12 @@ function main() {
   // The harness records into the journal and writes the Result from it; the
   // manifest tells it what the change is, what the gate said and what the
   // previous round required.
-  const qa = parseResult(qaResult);
   manifest.journal = join(dirname(target), `review-journal-${slug}.json`);
   manifest.result = join(packDir, `result-${slug}.json`);
   manifest.repeat = Boolean(previousReview);
-  manifest.qa_checks = Array.isArray(qa?.checks) ? qa.checks.map((item) => ({ id: item.id, command: item.command ?? item.tool ?? item.id, status: item.status, width: item.width })) : [];
+  manifest.qa_checks = qa.checks.map((item) => ({ id: item.id, command: item.command ?? item.tool ?? item.id, status: item.status, width: item.width }));
+  manifest.qa_verdict = qa.verdict;
+  manifest.qa_obstacles = Array.isArray(qa.obstacles) ? qa.obstacles.filter(isText) : [];
   manifest.previous_ids = Array.isArray(priorResult?.findings) ? priorResult.findings.map((item) => item?.id).filter(isText) : [];
   const journal = { findings: [], coverage: {}, phases: {}, fix_resolution: {} };
   // Coverage the previous round established outside what changed since stays
