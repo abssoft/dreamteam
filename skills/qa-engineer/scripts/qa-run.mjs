@@ -25,14 +25,18 @@
 // Plan: <qa_plan> with attention, workspace, files, checks (every derived
 //   item with its id, width and source; the ones the change gives no path of
 //   the tool's language, or that would rewrite files, are listed as not
-//   runnable with the reason), rules (the repository instruction chain: entry
+//   runnable with the reason; a `checks` list in the project profile
+//   dreamteam.json at the repository root replaces the derived items — its
+//   commands are the whole gate, at full width, on the host), rules (the repository instruction chain: entry
 //   files whole, then routes to the documents they name — the gate's commands,
 //   executor and worktree caveats live there).
 // Spec: {cwd, results, exec, base, head, merge_base, changed_paths,
+//   declared?: true (the gate comes from dreamteam.json),
 //   checks: [{id, tool, command, run?, scope, width, source}]} — what
 //   checks-run.mjs executes; `exec` is the executor prefix ending in `sh -c`.
 // Result: {kind: qa_result, generated_at, workspace: {base, head, merge_base,
-//   changed_paths}, executor, verdict, checks: [{id, tool, command, ran,
+//   changed_paths}, executor, gate: profile|derived (profile: the checks came
+//   from dreamteam.json), verdict, checks: [{id, tool, command, ran,
 //   scope, width, source, status: passed|failed|broken|skipped, reason?,
 //   attribution?: in_change|outside_change|unknown|baseline, exit, seconds,
 //   log, tail, skipped_cases?: [{file, name}], skipped_count?}], obstacles:
@@ -45,7 +49,8 @@
 //   that is not prose only — .md, .mdx, .rst, .adoc (obstacle `gate: no check
 //   ran over the change`); green otherwise.
 // ok:false codes: bad_args | not_a_git_repository | base_ref_not_found |
-//   empty_diff | bad_spec | not_a_command (detail: the offending commands) |
+//   empty_diff | bad_profile (dreamteam.json is not JSON, or its `checks` is
+//   not a non-empty list of commands) | bad_spec | not_a_command (detail: the offending commands) |
 //   running | results_missing | write_failed.
 
 import { execFileSync, spawnSync } from "node:child_process";
@@ -68,6 +73,8 @@ const SKIPPED_CASES_CAP = 20;
 // Prose a gate has nothing to run over. Narrower than review-pack's DOC_PATH,
 // which also takes every .txt (requirements.txt, CMakeLists.txt) and all of docs/.
 const PROSE_PATH = /\.(?:md|mdx|rst|adoc)$/i;
+// The project profile; its `checks` list, when present, is the whole gate.
+const PROFILE_FILE = "dreamteam.json";
 // Files a tool of this language reads; a path outside the set is not that
 // tool's evidence, and a run over it is a green that says nothing.
 const LANG_EXT = {
@@ -92,15 +99,16 @@ const USAGE = `qa-run.mjs — the mechanical half of the gate, for the qa-engine
       workspace, start checks-run.mjs detached
   node qa-run.mjs --report --results <path> [--baseline <id>=<evidence>]… [--timeout <s>] [--out <path>]
       wait for the runner, attribute failures, write the QA result file
-Plan: <qa_plan> with attention, workspace, files, checks, rules. Spec: {cwd, results,
-exec, base, head, merge_base, changed_paths, checks[]}. Result: {kind: qa_result, workspace,
-executor, verdict green|red|unconfirmed, checks[{id, tool, command, ran, width, source,
+Plan: <qa_plan> with attention, workspace, files, checks, rules. A \`checks\` list in
+dreamteam.json at the repository root is the whole gate: it replaces the derived checks.
+Spec: {cwd, results, exec, base, head, merge_base, changed_paths, declared?, checks[]}. Result: {kind: qa_result, workspace,
+executor, gate profile|derived, verdict green|red|unconfirmed, checks[{id, tool, command, ran, width, source,
 status passed|failed|broken|skipped, reason?, attribution?, exit, seconds, log, tail,
 skipped_cases?[{file, name}] (first 20), skipped_count? (total)}], obstacles[], summary}.
 No check ran over a change that is not prose only (.md .mdx .rst .adoc): unconfirmed.
 ok:false codes: bad_args |
-not_a_git_repository | base_ref_not_found | empty_diff | bad_spec | not_a_command | running |
-results_missing | write_failed.
+not_a_git_repository | base_ref_not_found | empty_diff | bad_profile | bad_spec |
+not_a_command | running | results_missing | write_failed.
 `;
 
 function out(value) {
@@ -232,6 +240,26 @@ export function deriveChecks(env, codePaths, testPaths) {
   return items;
 }
 
+// The gate the project profile declares: every command of `checks` as it is
+// spelled, full width. null when the profile or the key is absent — the gate
+// is then derived; {error} when the file or the list is malformed.
+export function declaredChecks(root) {
+  const path = join(root, PROFILE_FILE);
+  if (!existsSync(path)) return null;
+  let raw;
+  try { raw = readJson(path); } catch { return { error: `${PROFILE_FILE} is not valid JSON` }; }
+  if (!isPlainObject(raw) || raw.checks === undefined) return null;
+  if (!Array.isArray(raw.checks) || !raw.checks.length || !raw.checks.every(isText)) return { error: `${PROFILE_FILE}: checks must be a non-empty list of commands` };
+  const items = [];
+  for (const command of new Set(raw.checks.map((item) => item.trim()))) {
+    const base = { id: `p${items.length + 1}`, tool: "profile", command, scope: "none", source: PROFILE_FILE, note: "" };
+    items.push(MUTATING.test(command)
+      ? { ...base, width: "not run", runnable: false, reason: "rewrites files: not a check" }
+      : { ...base, width: "full", runnable: true });
+  }
+  return { items };
+}
+
 function changedPaths(mergeBase, cwd) {
   const files = parseNameStatus(git(["diff", "--name-status", mergeBase], cwd));
   const known = new Set(files.map((file) => file.path));
@@ -257,7 +285,9 @@ function plan(opts) {
   const testPaths = present.filter((file) => TEST_PATH.test(file.path)).map((file) => file.path);
 
   const env = envSnapshot(cwd, opts.skip);
-  const items = deriveChecks(env, codePaths, testPaths);
+  const declared = declaredChecks(root);
+  if (declared?.error) fail("bad_profile", declared.error);
+  const items = declared ? declared.items : deriveChecks(env, codePaths, testPaths);
   const rules = collectRules(root, cwd, RULES_BUDGET);
   const rulesText = rules.mode === "content"
     ? [
@@ -275,26 +305,31 @@ function plan(opts) {
   const notRunnable = items.filter((item) => !item.runnable).map(({ command, reason }) => ({ command, reason }));
   const attention = [
     `Change: merge base of ${base} and HEAD, plus the working tree. The files listed are the whole change.`,
-    `Derived checks: ${runnable.length} runnable, ${notRunnable.length} not runnable (reasons in <checks>).`,
-    env.ok === false ? `env-snapshot failed: derive the checks from the rules and the manifests yourself.` : null,
+    declared
+      ? `Gate declared in ${PROFILE_FILE}: ${runnable.length} runnable, ${notRunnable.length} not runnable (reasons in <checks>). These commands are the whole gate: nothing is derived, and the rules add no command and no executor.`
+      : `Derived checks: ${runnable.length} runnable, ${notRunnable.length} not runnable (reasons in <checks>).`,
+    !declared && env.ok === false ? `env-snapshot failed: derive the checks from the rules and the manifests yourself.` : null,
     rules.dropped.length ? `rules omitted for budget, read them yourself: ${rules.dropped.join(", ")}` : null,
     rules.routes_cut.length ? `rule routes past the cap, follow the entry files for them: ${rules.routes_cut.join(", ")}` : null,
-    `Spec ready at ${specPath}: run it as it stands, or with --exec, --add and --drop for what the rules add or forbid.`,
+    declared
+      ? `Spec ready at ${specPath}: run it as it stands; --add only for a check the wrapper's brief names.`
+      : `Spec ready at ${specPath}: run it as it stands, or with --exec, --add and --drop for what the rules add or forbid.`,
   ].filter(Boolean);
   const rows = items.map((item) => `[${item.id}] ${item.command} — ${item.tool}, ${item.width}, from ${item.source}${item.runnable ? "" : `; NOT RUNNABLE: ${item.reason}`}${item.note ? `; ${item.note}` : ""}`);
-  const suite = (env?.validation?.suite ?? []).filter(isText);
+  const suite = declared ? [] : (env?.validation?.suite ?? []).filter(isText);
   const planText = [
     `<qa_plan id="${id}" base="${base}" head="${head ?? ""}">`,
     section("attention", bullets(attention)),
     section("workspace", [`cwd: ${cwd}`, `base: ${base}`, `merge_base: ${mergeBase}`, `head: ${head ?? ""}`, `php: ${env?.runtime?.php ?? "(not detected)"}`, `node: ${env?.runtime?.node ?? ""}`].join("\n")),
     section("files", bullets(files.map((file) => `${file.status} ${file.from ? `${file.from} → ` : ""}${file.path}${TEST_PATH.test(file.path) ? " (test)" : ""}`))),
-    section("checks", `${bullets(rows) || "- (nothing derived)"}${suite.length ? `\n\nproject suite, full width only, when the rules call for it:\n${bullets(suite)}` : ""}`, { note: "derived from the project's own scripts at the width of the change; the rules below decide the executor and what they add or forbid" }),
+    section("checks", `${bullets(rows) || "- (nothing derived)"}${suite.length ? `\n\nproject suite, full width only, when the rules call for it:\n${bullets(suite)}` : ""}`, { note: declared ? `declared in ${PROFILE_FILE}: the whole gate, each command as spelled, on the host` : "derived from the project's own scripts at the width of the change; the rules below decide the executor and what they add or forbid" }),
     section("rules", rulesText),
     "</qa_plan>",
   ].join("\n\n");
   const spec = {
     cwd, results: resultsPath, exec: null, base, head, merge_base: mergeBase,
     changed_paths: files.map((file) => file.path),
+    ...(declared ? { declared: true } : {}),
     checks: runnable.map(({ id: checkId, tool, command, run, scope, width, source, expected_test_paths }) => ({ id: checkId, tool, command, ...(run && run !== command ? { run } : {}), scope, width, source, ...(expected_test_paths ? { expected_test_paths } : {}) })),
   };
   try {
@@ -493,7 +528,7 @@ async function report(opts) {
   const result = {
     kind: "qa_result", generated_at: new Date().toISOString(),
     workspace: { base: spec.base ?? null, head: spec.head ?? null, merge_base: spec.merge_base ?? null, changed_paths: changed },
-    executor: spec.executor ?? { status: results.exec ? "ok" : "host" }, verdict, checks, obstacles, summary,
+    executor: spec.executor ?? { status: results.exec ? "ok" : "host" }, gate: spec.declared ? "profile" : "derived", verdict, checks, obstacles, summary,
   };
   try { writeJson(target, result); } catch (error) { fail("write_failed", String(error.message)); }
   out({ ok: true, result: target, verdict, ...summary });

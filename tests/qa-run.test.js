@@ -267,6 +267,30 @@ test('--plan derives the checks at the width of the change, writes the plan with
   assert.equal(run(dir, ['--plan', '--base', 'main']).json.code, 'empty_diff');
 });
 
+test('a checks list in dreamteam.json is the whole gate: nothing is derived, a rewrite is refused, a malformed list stops the plan', async () => {
+  const dir = await repo();
+  const out = join(dir, '..', `qa-out-${Date.now()}`);
+  await writeFile(join(dir, 'dreamteam.json'), JSON.stringify({ version: 1, checks: ['make check-all', 'vendor/bin/noverify check ./src', 'make check-all', 'npx eslint . --fix'] }));
+  const { code, json } = run(dir, ['--plan', '--base', 'main', '--out', out, '--id', 'declared']);
+  assert.equal(code, 0, JSON.stringify(json));
+  assert.equal(json.checks, 2);
+  assert.deepEqual(json.not_runnable, [{ command: 'npx eslint . --fix', reason: 'rewrites files: not a check' }]);
+  const plan = await readFile(json.plan, 'utf8');
+  assert.match(plan, /Gate declared in dreamteam\.json: 2 runnable, 1 not runnable/);
+  assert.match(plan, /\[p1\] make check-all — profile, full, from dreamteam\.json/);
+  assert.equal(plan.includes('[c1]'), false, 'no derived check beside a declared gate');
+  const spec = JSON.parse(await readFile(json.spec, 'utf8'));
+  assert.equal(spec.declared, true);
+  assert.deepEqual(spec.checks.map((check) => [check.id, check.command, check.width]), [['p1', 'make check-all', 'full'], ['p2', 'vendor/bin/noverify check ./src', 'full']]);
+
+  await writeFile(join(dir, 'dreamteam.json'), JSON.stringify({ version: 1 }));
+  assert.equal(run(dir, ['--plan', '--base', 'main', '--out', out, '--id', 'derived']).json.checks, 2, 'a profile without checks leaves the gate derived');
+  for (const broken of ['{ "checks": [] }', '{ "checks": "make check" }', '{ "checks": [""] }', '{ nope']) {
+    await writeFile(join(dir, 'dreamteam.json'), broken);
+    assert.equal(run(dir, ['--plan', '--base', 'main', '--out', out]).json.code, 'bad_profile', broken);
+  }
+});
+
 test('--run refuses prose and rewrites, applies additions and drops, and --report attributes and settles the verdict', async () => {
   const dir = await repo();
   const out = join(dir, '..', `qa-out-${Date.now()}`);
