@@ -60,6 +60,21 @@ For a defect fix, run the case or a permitted minimal probe asserting the expect
 
 A green suite does not replace this analysis. Conversely, report a test weakness as required rework only when a concrete in-scope failure or required acceptance scenario lacks protection; do not require more tests solely to increase their number.
 
+## Reach for less before writing more
+
+The developer climbs this ladder for every new piece of code — after reading the flow the change touches end to end, never instead of it — and stops at the first rung that holds; the reviewer's smallest-implementation sketch climbs the same one.
+
+1. **No code.** Behavior that no acceptance scenario, accepted decision or issue text asks for is not built.
+2. **Code the repository already has.** A helper, service, class, component, query or type that does the job is reused; one that nearly does is extended — a parameter, a method, a shared part extracted — when the new case is the same responsibility and every existing caller keeps its behavior. A search by what the thing does — the domain noun and the verb, the module owning the entity, the neighbours of the callers — precedes every new unit. A parallel unit beside an extendable one is duplication; a flag joining two unrelated behaviors in one unit is not reuse.
+3. **The standard library** of the language or framework in use.
+4. **A native platform feature** — a database constraint over application code, CSS over script, a built-in control over a widget library.
+5. **A dependency already installed.** A new dependency needs an accepted decision naming it and is never added for what a few lines do.
+6. **New code**, the minimum that works: deletion over addition, the plain construct over the clever one, no interface with one implementation, no option nothing sets, no wrapper that only delegates, no scaffolding for later.
+
+Between two candidates of the same size the one correct on edge cases wins: the ladder cuts code, never correctness and never the reading. It never removes input validation at a trust boundary, error handling that prevents data loss, a security measure, accessibility basics, the test of a changed behavior, or anything the assignment asks for explicitly. A simplification that cuts a real corner with a known ceiling — a global lock, a quadratic scan, a naive heuristic — carries a comment naming the ceiling and the condition that calls for the upgrade.
+
+A finding against the ladder names the rung skipped and what replaces the code — the existing path, the library function, the platform feature — or that nothing does. Code is dead only after its uses were searched by symbol and once as text.
+
 ## Name the smell, then cost it
 
 Shared labels for the design read, the classic refactoring smells: mysterious name, duplicated code, feature envy, data clumps, primitive obsession, repeated switches, shotgun surgery, divergent change, message chains, middle man, refused bequest, plus state ordering and dependency boundary crossings. Each is a heuristic to look for, never a violation by itself.
