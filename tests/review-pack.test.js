@@ -5,7 +5,7 @@ import { accessSync, constants } from 'node:fs';
 import { mkdir, mkdtemp, readFile, writeFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { resultProblems } from '../contracts/validate-result.mjs';
+import { reviewProblems } from '../skills/code-reviewer/scripts/review-result.mjs';
 
 const scriptPath = join(process.cwd(), 'skills', 'code-reviewer', 'scripts', 'review-pack.mjs');
 
@@ -551,17 +551,17 @@ test('QA-only review reuses verified code coverage and refuses changed inputs or
     deliverable: { kind: 'review_report', content: { review_complete: true, review_manifest: initial.json.review_manifest, coverage: [{ item: 'src/totals.js', status: 'reviewed', evidence: 'src/totals.js:1 read' }] } },
     verification: [{ command: 'tests', status: 'broken', evidence: 'runner unavailable' }], findings: [], required_fixes: [],
   };
-  assert.deepEqual(resultProblems(result), []);
+  assert.deepEqual(reviewProblems(result), []);
   const savedManifest = await readFile(initial.json.review_manifest, 'utf8');
   await writeFile(initial.json.review_manifest, JSON.stringify({ ...JSON.parse(savedManifest), files: [] }));
-  assert.ok(resultProblems(result).some((problem) => problem.includes('manifest files differ')));
+  assert.ok(reviewProblems(result).some((problem) => problem.includes('manifest files differ')));
   await writeFile(initial.json.review_manifest, savedManifest);
   const incomplete = { ...result, deliverable: { ...result.deliverable, content: { ...result.deliverable.content, coverage: [] } } };
-  assert.ok(resultProblems(incomplete).some((problem) => problem.includes('coverage must contain')));
+  assert.ok(reviewProblems(incomplete).some((problem) => problem.includes('coverage must contain')));
   const blocked = { ...result, deliverable: { ...result.deliverable, content: { ...result.deliverable.content, coverage: [{ item: 'src/totals.js', status: 'blocked', evidence: 'unread' }] } } };
-  assert.ok(resultProblems(blocked).some((problem) => problem.includes('contradicts blocked')));
+  assert.ok(reviewProblems(blocked).some((problem) => problem.includes('contradicts blocked')));
   const wrongLine = { ...result, findings: [{ id: 'B1', severity: 'P2', confidence: 'confirmed', category: 'correctness', path: 'src/totals.js', line: 999, problem: 'wrong', impact: 'wrong result', fix: 'correct bound', evidence: 'read source' }], required_fixes: ['B1: correct bound'] };
-  assert.ok(resultProblems(wrongLine).some((problem) => problem.includes('coordinates outside')));
+  assert.ok(reviewProblems(wrongLine).some((problem) => problem.includes('coordinates outside')));
   const qa = { ...QA_MATERIAL, content: JSON.stringify({ kind: 'qa_result', workspace: { head }, verdict: 'green', checks: [] }) };
   const previous = { kind: 'text', name: 'previous_review', content: JSON.stringify(result), provenance: 'previous review' };
   const packet = assignment({ assignment_id: 'review-evidence', repository: { base_ref: head }, source_materials: [assignment().source_materials[0], qa, previous] });

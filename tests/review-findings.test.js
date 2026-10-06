@@ -5,7 +5,7 @@ import { accessSync, constants } from 'node:fs';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resultProblems } from '../contracts/validate-result.mjs';
+import { reviewProblems } from '../skills/code-reviewer/scripts/review-result.mjs';
 import { changedLineMap } from '../skills/code-reviewer/scripts/review-findings.mjs';
 
 const scripts = join(process.cwd(), 'skills', 'code-reviewer', 'scripts');
@@ -110,7 +110,7 @@ test('summary refuses gaps, then writes a Result the contract accepts and prints
   assert.deepEqual(fixIds(done.json.required_fixes), ['B1']);
   assert.equal(done.json.deliverable.content.path, JSON.parse(await readFile(json.review_manifest, 'utf8')).result);
   const result = JSON.parse(await readFile(done.json.deliverable.content.path, 'utf8'));
-  assert.deepEqual(resultProblems(result), []);
+  assert.deepEqual(reviewProblems(result), []);
   assert.deepEqual(result.required_fixes, ['B1: Пустой item.amount даёт NaN. — Считать отсутствующую сумму нулём.']);
   assert.deepEqual(done.json.required_fixes, result.required_fixes);
   assert.equal('findings' in done.json, false);

@@ -24,7 +24,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { envelopeOf, resultProblems } from "../../../contracts/validate-result.mjs";
+import { envelopeOf, reviewProblems } from "./review-result.mjs";
 
 const PHASES = { behavior: "B", rules: "R", quality: "Q", comments: "C", gate: "G" };
 const PHASE_ORDER = ["behavior", "rules", "quality", "comments", "sceptic"];
@@ -415,7 +415,7 @@ function main() {
     context.lines = () => (cached ??= lineMap(context.manifest));
     if (command === "summary") {
       const result = buildResult(values, context);
-      const problems = resultProblems(result);
+      const problems = reviewProblems(result);
       if (problems.length) throw new Refusal(`the Result would not validate: ${problems.join("; ")}`);
       writeFileSync(context.manifest.result, `${JSON.stringify(result, null, 1)}\n`);
       out(envelopeOf(result));
