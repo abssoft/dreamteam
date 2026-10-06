@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // The executable side of the Result v1 contract for launched roles. A role
-// writes its full Result to a file and returns the envelope; the wrapper runs
-// this on the file before any translation, publication or state move.
+// writes its full Result to a file and returns the envelope; the role's own
+// harness runs this on the file before it returns, and a wrapper may run it too.
 //   node validate-result.mjs --result <path|-> [--expect-id <assignment_id>] [--expect-role <role>]
 // Output: one JSON line; exit 0 on ok:true, exit 1 on ok:false.
 //   ok:true  → {ok, envelope}: the slim form the wrapper routes on — findings
 //               dropped, deliverable content reduced to its decision fields
-//               (path, verdict, behavior, why), required_fixes
-//               reduced to finding IDs, verification to command and status
+//               (path, verdict, behavior, why), required_fixes as the file
+//               carries them (self-contained), verification to command and status
 //   ok:false → {ok, code, detail}: bad_args | bad_result (detail lists every problem)
 // Beyond the JSON Schema: the role is a launched one and the deliverable kind
 // matches it; a review carries no changed_paths; verification items use the
@@ -157,8 +157,7 @@ export function envelopeOf(result) {
   if (Array.isArray(result.verification)) {
     envelope.verification = result.verification.map((item) => ({ command: item.command, status: item.status }));
   }
-  if (Array.isArray(result.required_fixes)) envelope.required_fixes = result.required_fixes.map(fixId);
-  if (Array.isArray(result.findings)) envelope.findings = result.findings.length ? [{ count: result.findings.length }] : [];
+  if (Array.isArray(result.required_fixes)) envelope.required_fixes = result.required_fixes;
   if (typeof result.blocker === "string") envelope.blocker = result.blocker;
   return envelope;
 }
