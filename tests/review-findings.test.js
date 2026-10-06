@@ -205,6 +205,21 @@ test('a standing plausible P0/P1 keeps a done review open until it is proven, re
   assert.deepEqual(fixIds(done.json.required_fixes), ['B1']);
 });
 
+test('a confirmed gate finding owned by QA is reported, never required of the developer', async () => {
+  const { call } = await review('review-qa-owned', { checks: [{ id: 'c1', command: 'npm test', status: 'broken', width: 'full' }] });
+  const gate = call('finding', '--phase', 'gate', '--check', 'c1', '--severity', 'P1', '--category', 'verification/broken', '--problem', 'Набор тестов не запустился.', '--impact', 'Итог не подтверждён тестами.', '--fix', 'Повторить прогон в рабочем окружении.', '--related', 'src/totals.js:1', '--scenario', 'npm test: тайм-аут в неизменённом сценарии.', '--confidence', 'confirmed', '--owner', 'qa');
+  assert.equal(gate.json.id, 'G1', JSON.stringify(gate.json));
+  call('verdict', '--id', 'G1', '--holds', '--reason', 'хвост лога');
+  call('covered', '--item', 'src/totals.js', '--status', 'reviewed', '--evidence', 'прочитан');
+  closePhases(call);
+  const done = call('summary', '--status', 'done', '--summary', 'Гейт не подтверждён: тайм-аут.', '--verdict', 'Правок нет.');
+  assert.equal(done.code, 0, JSON.stringify(done.json));
+  assert.deepEqual(done.json.required_fixes, []);
+  const result = JSON.parse(await readFile(done.json.deliverable.content.path, 'utf8'));
+  assert.equal(result.findings.find((item) => item.id === 'G1').owner, 'qa');
+  assert.deepEqual(reviewProblems(result), []);
+});
+
 test('a plausible P1 of the gate does not hold a done review', async () => {
   const { call } = await review('review-plausible-gate', { checks: [{ id: 'c1', command: 'npm test', status: 'broken', width: 'full' }] });
   const gate = call('finding', '--phase', 'gate', '--check', 'c1', '--severity', 'P1', '--category', 'verification/broken', '--problem', 'Набор тестов не запустился.', '--impact', 'Итог не подтверждён тестами.', '--fix', 'Повторить прогон в рабочем окружении.', '--related', 'src/totals.js:1', '--scenario', 'npm test: исполнитель недоступен.', '--confidence', 'plausible', '--owner', 'qa');

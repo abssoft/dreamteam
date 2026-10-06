@@ -43,7 +43,7 @@ function doneReviewProblems(result) {
     if (["P0", "P1"].includes(finding.severity)) {
       if (!isText(finding.failure_scenario ?? finding.scenario)) problems.push(`${finding.id}: failure scenario required`);
       // A finding the sceptic refuted stays for audit and asks for nothing.
-      if (finding.confidence === "confirmed" && finding.status !== "refuted" && !fixes.some((fix) => fixId(fix) === finding.id)) problems.push(`${finding.id}: confirmed ${finding.severity} requires a fix`);
+      if (finding.confidence === "confirmed" && finding.status !== "refuted" && finding.owner !== "qa" && !fixes.some((fix) => fixId(fix) === finding.id)) problems.push(`${finding.id}: confirmed ${finding.severity} requires a fix`);
       // A standing unproven one is an open question; a gate finding rests on the QA result.
       if (finding.confidence === "plausible" && finding.status !== "refuted" && !/^verification(?:\/|$)/.test(finding.category ?? "")) problems.push(`${finding.id}: done with a standing plausible ${finding.severity} — confirm it, re-weigh its severity, refute it or return needs_human`);
     }

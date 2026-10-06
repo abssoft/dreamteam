@@ -357,7 +357,9 @@ export function buildResult(values, { journal, manifest, manifestPath }) {
     ...(item.verdict ? { verdict_reason: item.verdict.reason } : {}),
     ...(item.severityFrom ? { severity_from: item.severityFrom } : {}),
   }));
-  const required = findings.filter((item) => item.status !== "refuted" && item.confidence === "confirmed" && (
+  // A finding owned by QA is the gate's to answer: it stays in the Result and the
+  // summary reports the gate unconfirmed, but no fix is asked of the developer.
+  const required = findings.filter((item) => item.status !== "refuted" && item.confidence === "confirmed" && item.owner !== "qa" && (
     ["P0", "P1"].includes(item.severity) || (item.severity === "P2" && !manifest.repeat && !isText(item.optional))
   ));
   const covered = manifest.files.filter((path) => journal.coverage[path]);
