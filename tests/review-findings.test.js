@@ -52,6 +52,8 @@ const closePhases = (call) => {
   for (const name of ['behavior', 'rules', 'quality', 'comments', 'sceptic']) assert.equal(call('phase', '--name', name, '--status', 'done').code, 0);
 };
 
+const fixIds = (fixes) => fixes.map((fix) => /^\s*([A-Za-z]+\d+)\b/.exec(fix)?.[1]);
+
 test('changed lines per file come from the zero-context diff, both sides', () => {
   const map = changedLineMap([
     'diff --git a/a.js b/a.js', '--- a/a.js', '+++ b/a.js', '@@ -2,2 +2,3 @@', '-old', '-old2', '+new', '+new2', '+new3',
@@ -105,11 +107,13 @@ test('summary refuses gaps, then writes a Result the contract accepts and prints
 
   const done = call('summary', '--status', 'done', '--summary', 'Ревью завершено: одна правка.', '--verdict', 'Нужна правка B1.');
   assert.equal(done.code, 0, JSON.stringify(done.json));
-  assert.deepEqual(done.json.required_fixes, ['B1']);
+  assert.deepEqual(fixIds(done.json.required_fixes), ['B1']);
   assert.equal(done.json.deliverable.content.path, JSON.parse(await readFile(json.review_manifest, 'utf8')).result);
   const result = JSON.parse(await readFile(done.json.deliverable.content.path, 'utf8'));
   assert.deepEqual(resultProblems(result), []);
   assert.deepEqual(result.required_fixes, ['B1: Пустой item.amount даёт NaN. — Считать отсутствующую сумму нулём.']);
+  assert.deepEqual(done.json.required_fixes, result.required_fixes);
+  assert.equal('findings' in done.json, false);
   assert.equal(result.findings.find((item) => item.id === 'B2').status, 'refuted');
   assert.equal(result.deliverable.content.review_complete, true);
   assert.deepEqual(result.verification, [{ command: 'npm test', status: 'passed', evidence: 'по результату QA: full', width: 'full' }]);
@@ -128,7 +132,7 @@ test('a failed gate check becomes a gate finding; the sceptic may move severity 
   closePhases(call);
   const done = call('summary', '--status', 'done', '--summary', 's', '--verdict', 'v');
   assert.equal(done.code, 0, JSON.stringify(done.json));
-  assert.deepEqual(done.json.required_fixes, ['G1', 'Q1']);
+  assert.deepEqual(fixIds(done.json.required_fixes), ['G1', 'Q1']);
   const result = JSON.parse(await readFile(done.json.deliverable.content.path, 'utf8'));
   assert.equal(result.findings.find((item) => item.id === 'Q1').severity_from, 'P3');
 });
@@ -149,7 +153,7 @@ test('a repeat review resolves every previous fix, keeps an open one under its I
   call('verdict', '--id', 'B1', '--holds', '--reason', 'r');
   const done = call('summary', '--status', 'done', '--summary', 's', '--verdict', 'v');
   assert.equal(done.code, 0, JSON.stringify(done.json));
-  assert.deepEqual(done.json.required_fixes, ['B1']);
+  assert.deepEqual(fixIds(done.json.required_fixes), ['B1']);
 });
 
 test('a blocked summary needs its cause and keeps what was established', async () => {
@@ -198,7 +202,7 @@ test('a standing plausible P0/P1 keeps a done review open until it is proven, re
   assert.equal(call('amend', '--id', 'B1', '--confidence', 'confirmed').code, 0);
   const done = call('summary', '--status', 'done', ...summary);
   assert.equal(done.code, 0, JSON.stringify(done.json));
-  assert.deepEqual(done.json.required_fixes, ['B1']);
+  assert.deepEqual(fixIds(done.json.required_fixes), ['B1']);
 });
 
 test('a plausible P1 of the gate does not hold a done review', async () => {
@@ -210,7 +214,7 @@ test('a plausible P1 of the gate does not hold a done review', async () => {
   closePhases(call);
   const done = call('summary', '--status', 'done', '--summary', 'Гейт не подтверждён: исполнитель недоступен.', '--verdict', 'Правок нет.');
   assert.equal(done.code, 0, JSON.stringify(done.json));
-  assert.deepEqual(done.json.required_fixes, []);
+  assert.deepEqual(fixIds(done.json.required_fixes), []);
 });
 
 test('a gate that selected no check still answers in verification, so the review can close', async () => {

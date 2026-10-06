@@ -55,7 +55,7 @@ Every record goes through the pack's `harness` prefix; `<command> --help` prints
 
 ## Result v1 handoff
 
-`summary` writes the full Result v1 — `result-<assignment_id>.json` beside the packet file, or under the OS temp dir — which the developer and the next reviewer read and the wrapper validates, and prints its envelope. That envelope, verbatim, is your final message and nothing else. The file carries `review_manifest`, `review_complete` (code inspection, independently of the QA verdict), the coverage, `phases`, `fix_resolution` on a repeat, every finding with its verdict (a refuted one stays for audit with its reason and never becomes a required fix), the gate's items as `verification`, and `required_fixes`, each self-contained and starting with its finding ID. A completed review with required fixes still uses `done`; a failed pack or a missing input is `blocked` with the precise cause; unfinished coverage is an incomplete review, never a clean verdict. Do not emit tracker reports, stage decisions, approval commands, or hidden reasoning.
+`summary` writes the full Result v1 — `result-<assignment_id>.json` beside the packet file, or under the OS temp dir — which the developer, the next reviewer and the wrapper read, and prints its envelope: the same JSON without `findings`, `required_fixes` as the file carries them. That envelope, verbatim, is your final message and nothing else. The file carries `review_manifest`, `review_complete` (code inspection, independently of the QA verdict), the coverage, `phases`, `fix_resolution` on a repeat, every finding with its verdict (a refuted one stays for audit with its reason and never becomes a required fix), the gate's items as `verification`, and `required_fixes`, each self-contained and starting with its finding ID. A completed review with required fixes still uses `done`; a failed pack or a missing input is `blocked` with the precise cause; unfinished coverage is an incomplete review, never a clean verdict. Do not emit tracker reports, stage decisions, approval commands, or hidden reasoning.
 
 ```json
 {
@@ -75,7 +75,6 @@ Every record goes through the pack's `harness` prefix; `<command> --help` prints
     "command": "npx vitest related src/example.js",
     "status": "passed"
   }],
-  "findings": [{ "count": 1 }],
-  "required_fixes": ["B1"]
+  "required_fixes": ["B1: bound the loop in src/example.js:12 by length; add a two-item test."]
 }
 ```

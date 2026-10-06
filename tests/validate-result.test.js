@@ -33,7 +33,7 @@ function run(input, args = ['--result', '-']) {
   return { code: result.status, json: JSON.parse(result.stdout.trim().split('\n').pop()) };
 }
 
-test('a valid review result yields its envelope: no findings, fix IDs, verification statuses, decision content', () => {
+test('a valid review result yields its envelope: no findings, self-contained fixes, verification statuses, decision content', () => {
   const ok = run(review(), ['--result', '-', '--expect-id', 'review-eval', '--expect-role', 'code-reviewer']);
   assert.equal(ok.code, 0);
   assert.deepEqual(ok.json, {
@@ -46,8 +46,7 @@ test('a valid review result yields its envelope: no findings, fix IDs, verificat
       summary: 'Ревью завершено: одна правка.',
       deliverable: { kind: 'review_report', content: { path: '/tmp/x/result-review-eval.json', verdict: 'Нужна правка B1' } },
       verification: [{ command: 'npm test', status: 'failed' }],
-      required_fixes: ['B1'],
-      findings: [{ count: 1 }],
+      required_fixes: ['B1: починить цикл'],
     },
   });
 });
