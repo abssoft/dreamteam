@@ -59,7 +59,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { packetProblems } from "../../../contracts/validate-assignment.mjs";
-import { resultProblems } from "../../../contracts/validate-result.mjs";
+import { reviewProblems } from "./review-result.mjs";
 import { compactQa, compactResult, digest, parseResult, previousManifest } from "./review-state.mjs";
 
 // The ceiling answers one question — does the change fit one reviewer? — so it
@@ -607,7 +607,7 @@ function main() {
   if (prior && mergeBase === prior.head && !priorMatches) fail("review_state_mismatch", "task or rules changed since the previous review; prepare a fresh full review");
   if (files.length === 0) {
     if (!previousReview) fail("empty_diff", `no changes between ${base} and HEAD`);
-    if (!priorMatches || prior.head !== headCommit || priorResult.status !== "done" || priorResult.deliverable?.content?.review_complete !== true || resultProblems(priorResult).length) {
+    if (!priorMatches || prior.head !== headCommit || priorResult.status !== "done" || priorResult.deliverable?.content?.review_complete !== true || reviewProblems(priorResult).length) {
       fail("review_state_mismatch", "QA-only review requires a complete previous review of this unchanged code, task and rules");
     }
     reviewKind = "evidence_only";
