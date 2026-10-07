@@ -180,7 +180,7 @@ function writeJson(path, value) {
 function envSnapshot(cwd, skip) {
   const script = join(scriptDir, "..", "..", "env-snapshot", "scripts", "env-snapshot.mjs");
   try {
-    const text = execFileSync(process.execPath, [script, "--json", "--skip=docs", ...(skip ? [skip] : [])], {
+    const text = execFileSync(process.execPath, [script, "--json", `--skip=${skip.join(",")}`], {
       cwd, encoding: "utf8", timeout: 60000, maxBuffer: GIT_MAX_BUFFER, stdio: ["ignore", "pipe", "ignore"],
     });
     return JSON.parse(text);
@@ -284,9 +284,10 @@ function plan(opts) {
   const codePaths = present.filter((file) => !TEST_PATH.test(file.path)).map((file) => file.path);
   const testPaths = present.filter((file) => TEST_PATH.test(file.path)).map((file) => file.path);
 
-  const env = envSnapshot(cwd, opts.skip);
   const declared = declaredChecks(root);
   if (declared?.error) fail("bad_profile", declared.error);
+  // The plan takes the runtime and the check templates; a declared gate replaces the templates.
+  const env = envSnapshot(cwd, ["rules", "docs", "git", ...(declared ? ["validation"] : []), ...(opts.skip ? [opts.skip.slice(7)] : [])]);
   const items = declared ? declared.items : deriveChecks(env, codePaths, testPaths);
   const rules = collectRules(root, cwd, RULES_BUDGET);
   const rulesText = rules.mode === "content"

@@ -2,18 +2,20 @@
 // One-pass read-only workspace environment snapshot for role agents.
 // Run from the assignment workspace (process cwd). Prints Markdown by default.
 //   --json            machine-readable JSON instead of Markdown
-//   --skip=a,b        skip sections: rules, docs, git, runtime, tooling
+//   --skip=a,b        skip sections: rules, docs, git, runtime, validation
+//   --base=<ref>      comparison base of the change (default: detected from origin)
 //   --max-bytes=N     per-document embed cap for rule documents (default 16384)
 // Never mutates anything. Never prints contents of .env* files.
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
-import { join, basename } from "node:path";
+import { readFileSync, readdirSync, existsSync, statSync, lstatSync, readlinkSync } from "node:fs";
+import { join, dirname } from "node:path";
 import os from "node:os";
 
 const args = process.argv.slice(2);
 const asJson = args.includes("--json");
 const skip = new Set((args.find(a => a.startsWith("--skip=")) ?? "").replace("--skip=", "").split(",").filter(Boolean));
+const baseFlag = (args.find(a => a.startsWith("--base=")) ?? "").replace("--base=", "").trim();
 const maxBytes = Number((args.find(a => a.startsWith("--max-bytes=")) ?? "").replace("--max-bytes=", "")) || 16384;
 
 const cwd = process.cwd();
@@ -36,24 +38,43 @@ const readIf = (p, cap = maxBytes) => {
     return null;
   }
 };
-const exists = p => existsSync(join(cwd, p));
+const exists = p => existsSync(join(root, p));
 
 // ---------- workspace / git ----------
 const snapshot = { ok: true, generated_at: new Date().toISOString(), cwd, os: { platform: os.platform(), release: os.release(), arch: os.arch() } };
 
-let toplevel = null;
+// Roles run in the tree the wrapper prepared for the task: a linked worktree
+// cut from the synchronized remote base, or the primary checkout. The local
+// base branch is shared by every tree and lags its remote, so the remote ref
+// is the comparison base unless the caller names one.
+const toplevel = run("git", ["rev-parse", "--show-toplevel"]);
+const root = toplevel ?? cwd;
 if (!skip.has("git")) {
-  toplevel = run("git", ["rev-parse", "--show-toplevel"]);
   const ws = { git_toplevel: toplevel };
   if (toplevel) {
+    const gitDir = run("git", ["rev-parse", "--path-format=absolute", "--git-dir"]);
+    const commonDir = run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    ws.placement = gitDir && commonDir && gitDir !== commonDir ? "worktree" : "primary";
+    if (ws.placement === "worktree") ws.primary = dirname(commonDir);
     ws.head_short = run("git", ["rev-parse", "--short", "HEAD"]);
     ws.current_ref = run("git", ["branch", "--show-current"]) || "(detached)";
     ws.status = lines(run("git", ["status", "--short"]), 80);
     ws.recent_commits = lines(run("git", ["log", "--oneline", "-8"]), 8);
-    ws.worktrees = lines(run("git", ["worktree", "list"]), 20);
     ws.uncommitted_diffstat = lines(run("git", ["diff", "--stat", "HEAD"]), 80);
-    const base = ["main", "master", "develop"].find(b => run("git", ["rev-parse", "--verify", "--quiet", b]) !== null);
-    if (base && ws.current_ref !== base) {
+    const verify = ref => run("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]) !== null;
+    const names = ["main", "master", "develop"];
+    let base = null;
+    if (baseFlag) {
+      base = [baseFlag, `origin/${baseFlag}`].find(verify) ?? null;
+      if (base) ws.base_note = "base given by --base";
+      else ws.base_error = `base ref not found: ${baseFlag}`;
+    } else {
+      const originHead = run("git", ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]);
+      base = [originHead, ...names.map(n => `origin/${n}`)].filter(Boolean).find(verify) ?? null;
+      if (base) ws.base_note = "base auto-detected from origin; a subtask is based on its parent branch — pass --base=<ref> when the assignment names one";
+      else if ((base = names.find(verify) ?? null)) ws.base_note = "base auto-detected by local branch name, which may lag its remote; pass --base=<ref> when the assignment names one";
+    }
+    if (base && ws.current_ref !== base.replace(/^origin\//, "")) {
       const mergeBase = run("git", ["merge-base", base, "HEAD"]);
       ws.detected_base = base;
       if (mergeBase) {
@@ -61,12 +82,13 @@ if (!skip.has("git")) {
         ws.changed_paths_vs_base = lines(run("git", ["diff", "--name-status", `${mergeBase}..HEAD`]), 120);
         ws.diffstat_vs_base_tail = lines(run("git", ["diff", "--stat", `${mergeBase}..HEAD`]), 200).slice(-3);
       }
-      ws.base_note = "base auto-detected by name; if the assignment implies a different base, diff against that instead";
-    }
+    } else if (!ws.base_error) delete ws.base_note;
+    try {
+      ws.env_file_names = readdirSync(root).filter(n => n.startsWith(".env")).sort();
+    } catch { ws.env_file_names = []; }
   }
   snapshot.workspace = ws;
 }
-const root = toplevel ?? cwd;
 
 // ---------- project manifests ----------
 const kinds = [];
@@ -93,6 +115,18 @@ if (exists("Makefile")) {
   const mk = readIf(join(root, "Makefile"), 32 * 1024);
   project.makefile_targets = [...(mk?.content ?? "").matchAll(/^([A-Za-z0-9][A-Za-z0-9._-]*):(?!=)/gm)].map(m => m[1]).slice(0, 25);
 }
+// A tree gets its dependencies from the wrapper's setup — links to the primary
+// checkout or an install; a tree without them cannot run the project's tools.
+const depState = p => {
+  try {
+    return lstatSync(join(root, p)).isSymbolicLink() ? `symlink → ${readlinkSync(join(root, p))}` : "present";
+  } catch {
+    return "absent";
+  }
+};
+project.dependencies = {};
+if (kinds.includes("node")) project.dependencies.node_modules = depState("node_modules");
+if (kinds.includes("php")) project.dependencies.vendor = depState("vendor");
 snapshot.project = project;
 
 // ---------- runtime versions ----------
@@ -110,25 +144,6 @@ if (!skip.has("runtime")) {
     if (v) (rt.version_files ??= {})[f] = v.content.trim();
   }
   snapshot.runtime = rt;
-}
-
-// ---------- tooling presence ----------
-if (!skip.has("tooling")) {
-  const candidates = [
-    "tsconfig.json", "eslint.config.mjs", "eslint.config.js", "eslint.config.ts", ".eslintrc.json", ".eslintrc.js",
-    "vitest.config.ts", "vitest.config.mts", "vitest.config.js", "jest.config.js", "jest.config.ts",
-    "playwright.config.ts", "prisma/schema.prisma", "phpunit.xml", "phpunit.xml.dist", "artisan",
-    "Dockerfile", "docker-compose.yml", "docker-compose.dev.yml", ".editorconfig", "e2e",
-  ];
-  const tooling = { present: candidates.filter(exists) };
-  try {
-    tooling.env_file_names = readdirSync(root).filter(n => n.startsWith(".env")).sort();
-  } catch { tooling.env_file_names = []; }
-  if (toplevel) {
-    const testFiles = run("git", ["ls-files", "*.test.*", "*Test.php", "*_test.*"]);
-    tooling.test_file_count = testFiles ? testFiles.split("\n").filter(Boolean).length : 0;
-  }
-  snapshot.tooling = tooling;
 }
 
 // ---------- validation command derivation ----------
@@ -206,7 +221,7 @@ function narrowSegment(segment, spec, runner) {
   return { command: kept.join(" ") };
 }
 
-{
+if (!skip.has("validation")) {
   const checks = [];
   const suite = [];
   const notes = [];
@@ -304,11 +319,12 @@ if (!skip.has("docs")) {
   for (const extra of ["CONTRIBUTING.md"]) {
     if (!seen.has(extra) && exists(extra)) { const d = readIf(join(root, extra)); if (d) found.push({ path: extra, ...d }); }
   }
-  const readme = readIf(join(root, "README.md"), 4096);
-  if (readme && !seen.has("README.md")) found.push({ path: "README.md", ...readme, note: "head only" });
   snapshot.rules = skip.has("rules")
     ? found.map(({ path, bytes }) => ({ path, bytes, content_skipped: true }))
     : found;
+  // The README is orientation, not a rule: listed for a later read, never embedded.
+  const readme = readIf(join(root, "README.md"), 0);
+  if (readme && !seen.has("README.md")) snapshot.rules.push({ path: "README.md", bytes: readme.bytes, content_skipped: true });
 }
 
 // ---------- output ----------
@@ -325,8 +341,11 @@ if (snapshot.workspace) {
   out.push(`\n## workspace`);
   out.push(`git toplevel: ${w.git_toplevel ?? "(not a git repository)"}`);
   if (w.git_toplevel) {
+    out.push(`placement: ${w.placement === "worktree" ? `linked worktree of ${w.primary}` : "primary checkout"}`);
     out.push(`HEAD ${w.head_short} on ${w.current_ref}`);
-    if (w.detected_base) out.push(`detected base: ${w.detected_base} (${w.base_note})`);
+    if (w.detected_base) out.push(`base: ${w.detected_base} (${w.base_note})`);
+    if (w.base_error) out.push(w.base_error);
+    out.push(`env files (names only, contents never read): ${w.env_file_names.join(", ") || "(none)"}`);
     out.push(`\nstatus --short:${w.status.length ? "" : " (clean)"}`);
     out.push(...w.status.map(s => "  " + s));
     out.push(`\nrecent commits:`);
@@ -334,7 +353,6 @@ if (snapshot.workspace) {
     if (w.commits_on_top_of_base?.length) { out.push(`\ncommits on top of ${w.detected_base}:`); out.push(...w.commits_on_top_of_base.map(s => "  " + s)); }
     if (w.changed_paths_vs_base?.length) { out.push(`\nchanged paths vs ${w.detected_base} (name-status):`); out.push(...w.changed_paths_vs_base.map(s => "  " + s)); if (w.diffstat_vs_base_tail?.length) out.push("  " + w.diffstat_vs_base_tail.join(" ")); }
     if (w.uncommitted_diffstat?.length) { out.push(`\nuncommitted diffstat:`); out.push(...w.uncommitted_diffstat.map(s => "  " + s)); }
-    if (w.worktrees?.length > 1) { out.push(`\nworktrees:`); out.push(...w.worktrees.map(s => "  " + s)); }
   }
 }
 if (snapshot.runtime) {
@@ -353,29 +371,7 @@ if (project.php) {
 }
 if (project.lockfiles?.length) out.push(`lockfiles: ${project.lockfiles.join(", ")}`);
 if (project.makefile_targets?.length) out.push(`Makefile targets: ${project.makefile_targets.join(", ")}`);
-out.push(`\n## validation (default width: the paths this change touched — the shared engineering reference states when a check runs at full width instead)`);
-out.push(`scope of a run: ${snapshot.validation.scope_source}`);
-for (const [label, kept] of [
-  ["narrowed by dependents", (c) => c.scope === "related"],
-  ["narrowed by paths", (c) => c.scope === "paths" || c.scope === "tests-by-path"],
-  ["full width only", (c) => c.scope === "none"],
-]) {
-  const group = snapshot.validation.checks.filter(kept);
-  if (!group.length) continue;
-  out.push(`${label}:`);
-  for (const c of group) out.push(`  ${c.command}   (${c.tool}, from ${c.source}${c.note ? `; ${c.note}` : c.reason ? `; ${c.reason}` : ""})`);
-}
-if (snapshot.validation.suite.length) {
-  out.push(`project suite (only when the shared reference calls for full width):`);
-  for (const c of snapshot.validation.suite) out.push("  " + c);
-}
-for (const n of snapshot.validation.notes) out.push("  note: " + n);
-if (snapshot.tooling) {
-  out.push(`\n## tooling`);
-  out.push(`present: ${snapshot.tooling.present.join(", ") || "(none detected)"}`);
-  out.push(`env files (names only, contents never read): ${snapshot.tooling.env_file_names.join(", ") || "(none)"}`);
-  if (snapshot.tooling.test_file_count !== undefined) out.push(`tracked test files: ${snapshot.tooling.test_file_count}`);
-}
+for (const [dir, state] of Object.entries(project.dependencies)) out.push(`${dir}: ${state}`);
 if (snapshot.docs_index) {
   out.push(`\n## docs index (${snapshot.docs_index.length} files${snapshot.docs_index.length === 150 ? ", capped" : ""})`);
   out.push(...snapshot.docs_index.map(s => "  " + s));
