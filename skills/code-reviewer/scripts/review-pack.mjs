@@ -12,7 +12,7 @@
 //   --budget <chars>       pack ceiling, default 300000
 //   --out <path>           pack file; default beside the packet file, or under
 //                          <tmpdir> when the packet came on stdin
-//   --skip=<sections>      passed through to env-snapshot (rules,docs,git,runtime,tooling)
+//   --skip=<sections>      passed through to env-snapshot (rules,docs,git,runtime,validation)
 //   --check                wrapper pre-launch gate: validate the packet strictly
 //                          (contracts/validate-assignment.mjs), resolve the base
 //                          and the diff, write nothing
@@ -700,8 +700,8 @@ function main() {
   fixed.push(section("qa_result", compactQa(qaResult), { note: "the gate, run once by the QA role: passed, failed, broken and skipped items at the width named on each; a failed item is a defect of the change unless its attribution says baseline, a broken one is residual risk, never coverage", ...(qaResult.path ? { file: qaResult.path } : {}) }));
   fixed.push(section("method", methodReference()));
 
-  const env = envSnapshot(cwd, `--skip=rules,docs${opts.skip ? `,${opts.skip.slice(7)}` : ""}`);
-  // The gate is the QA role's: the snapshot rides without its check templates.
+  const env = envSnapshot(cwd, `--skip=rules,docs,git,validation${opts.skip ? `,${opts.skip.slice(7)}` : ""}`);
+  // The gate is the QA role's and the pack reads git itself: only the runtime rides.
   const envRest = { ok: env.ok, runtime: env.runtime, workspace: { head: headCommit, base: mergeBase } };
   const envText = section("env", JSON.stringify(envRest, null, 1));
   const filesText = section("files", bullets(files.map((file) => `${file.status} ${file.from ? `${file.from} → ` : ""}${file.path}${TEST_PATH.test(file.path) ? " (test)" : ""}`)));

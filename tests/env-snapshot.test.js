@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -131,4 +131,85 @@ test('env files are reported by name and never read', async () => {
   const text = execFileSync(process.execPath, [scriptPath, '--skip=rules,docs'], { cwd: dir, encoding: 'utf8' });
   assert.match(text, /env files \(names only, contents never read\): \.env/);
   assert.equal(text.includes('do-not-print'), false);
+});
+
+const commit = (dir, message) => {
+  sh(dir, 'git', ['add', '-A']);
+  sh(dir, 'git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', message]);
+};
+const changed = (workspace) => workspace.changed_paths_vs_base.map((line) => line.split('\t')[1]);
+
+test('a linked worktree is told from the primary checkout, with the path of the primary', async () => {
+  const primary = await realpath(await repo({ 'a.txt': 'a\n' }));
+  commit(primary, 'init');
+  const tree = join(primary, '.worktrees', 'TASK-1');
+  sh(primary, 'git', ['worktree', 'add', '-q', '-b', 'TASK-1', tree]);
+
+  assert.equal(snapshot(primary).workspace.placement, 'primary');
+  assert.equal(snapshot(primary).workspace.primary, undefined);
+  const { workspace } = snapshot(tree);
+  assert.equal(workspace.placement, 'worktree');
+  assert.equal(workspace.primary, primary);
+  assert.equal(workspace.worktrees, undefined);
+});
+
+test('the base is the remote ref, not the local branch that lags it', async () => {
+  const dir = await repo({ 'a.txt': 'a\n' });
+  commit(dir, 'init');
+  sh(dir, 'git', ['checkout', '-q', '-b', 'upstream']);
+  await writeFile(join(dir, 'theirs.txt'), 'theirs\n');
+  commit(dir, 'someone else');
+  sh(dir, 'git', ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+  sh(dir, 'git', ['checkout', '-q', '-b', 'TASK-1']);
+  await writeFile(join(dir, 'mine.txt'), 'mine\n');
+  commit(dir, 'task');
+
+  const { workspace } = snapshot(dir);
+  assert.equal(workspace.detected_base, 'origin/main');
+  assert.deepEqual(changed(workspace), ['mine.txt']);
+});
+
+test('--base names the parent branch of a subtask; an unknown base is reported, never replaced', async () => {
+  const dir = await repo({ 'a.txt': 'a\n' });
+  commit(dir, 'init');
+  sh(dir, 'git', ['checkout', '-q', '-b', 'PARENT']);
+  await writeFile(join(dir, 'parent.txt'), 'parent\n');
+  commit(dir, 'parent');
+  sh(dir, 'git', ['checkout', '-q', '-b', 'SUB']);
+  await writeFile(join(dir, 'sub.txt'), 'sub\n');
+  commit(dir, 'sub');
+  const run = (...flags) => JSON.parse(execFileSync(process.execPath, [scriptPath, '--json', '--skip=rules,docs', ...flags], { cwd: dir, encoding: 'utf8' })).workspace;
+
+  assert.deepEqual(changed(run()), ['parent.txt', 'sub.txt']);
+  assert.deepEqual(changed(run('--base=PARENT')), ['sub.txt']);
+  const missing = run('--base=nope');
+  assert.equal(missing.base_error, 'base ref not found: nope');
+  assert.equal(missing.detected_base, undefined);
+});
+
+test('a run from a subdirectory reads the manifests and rules of the repository root', async () => {
+  const dir = await repo({ 'package.json': { name: 'x', scripts: {} }, 'package-lock.json': '{}', 'AGENTS.md': '# rules\n' });
+  await mkdir(join(dir, 'src'));
+  const out = JSON.parse(execFileSync(process.execPath, [scriptPath, '--json', '--skip=docs'], { cwd: join(dir, 'src'), encoding: 'utf8' }));
+  assert.deepEqual(out.project.lockfiles, ['package-lock.json']);
+  assert.deepEqual(out.rules.map((doc) => doc.path), ['AGENTS.md']);
+});
+
+test('dependency directories are reported as absent, present or a symlink with its target', async () => {
+  const dir = await repo({ 'package.json': { name: 'x' }, 'composer.json': { name: 'x/y' } });
+  assert.deepEqual(snapshot(dir).project.dependencies, { node_modules: 'absent', vendor: 'absent' });
+  await mkdir(join(dir, 'vendor'));
+  await symlink('/primary/node_modules', join(dir, 'node_modules'));
+  assert.deepEqual(snapshot(dir).project.dependencies, { node_modules: 'symlink → /primary/node_modules', vendor: 'present' });
+});
+
+test('validation rides in JSON only and can be skipped; the README is listed, never embedded', async () => {
+  const dir = await repo({ 'package.json': { name: 'x', scripts: { lint: 'eslint .' } }, 'README.md': 'readme-body\n' });
+  const text = execFileSync(process.execPath, [scriptPath], { cwd: dir, encoding: 'utf8' });
+  assert.equal(/validation|eslint/.test(text), false);
+  assert.match(text, /- README\.md \(12 bytes, content skipped\)/);
+  assert.equal(text.includes('readme-body'), false);
+  const out = JSON.parse(execFileSync(process.execPath, [scriptPath, '--json', '--skip=validation'], { cwd: dir, encoding: 'utf8' }));
+  assert.equal(out.validation, undefined);
+  assert.equal(out.tooling, undefined);
 });
