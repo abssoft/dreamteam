@@ -259,6 +259,11 @@ const PRICING_CATALOG = Object.freeze({
             standard: Object.freeze({ uncached_input: 5_000, cache_read_input: 500, cache_write_5m: 6_250, cache_write_1h: 10_000, output: 25_000 })
         },
         {
+            key: "claude-sonnet-5-5", provider: "claude", ids: Object.freeze(["claude-sonnet-5-5"]),
+            snapshot: /^claude-sonnet-5-5-\d{8}$/,
+            standard: Object.freeze({ uncached_input: 2_000, cache_read_input: 100, cache_write_5m: 2_500, cache_write_1h: 4_000, output: 10_000 })
+        },
+        {
             key: "claude-sonnet-5", provider: "claude", ids: Object.freeze(["claude-sonnet-5"]),
             snapshot: /^claude-sonnet-5-\d{8}$/,
             standard: Object.freeze({ uncached_input: 2_000, cache_read_input: 200, cache_write_5m: 2_500, cache_write_1h: 4_000, output: 10_000 })
