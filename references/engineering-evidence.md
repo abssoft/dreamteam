@@ -35,7 +35,7 @@ Write verified constraints, not personal preferences or conclusions from one une
 
 ## Probe behavior with counterexamples
 
-For each changed behavior, start with the accepted outcome and name an input or state that would distinguish it from a plausible wrong implementation. Select the applicable questions below, then follow their answers into callers and dependencies. This is a set of prompts, not a mandatory test matrix for every change.
+For each changed behavior, start with the accepted outcome and name an input or state that would distinguish it from a plausible wrong implementation. Select the applicable questions below, then follow their answers into callers and dependencies. Each answered question yields one input to check — by a case where the test rule calls for one, by reading otherwise — and the record of that check, never a case per row.
 
 | Signal in the change | Question to settle |
 | --- | --- |
@@ -58,7 +58,7 @@ For each added or changed behavior test, name a plausible production-code mutati
 
 For a defect fix, run the case or a permitted minimal probe asserting the expected behavior against the untouched code first: it must fail for the defect's reason, not for an import or setup error; a pass means the case does not catch the defect — sharpen the input or the boundary, never bend the assertion toward the current output; then run it against the fix. When an isolated mutation is useful and permitted, demonstrate that the assertion fails for the intended reason. A mutation run is not mandatory for every test. Record whether the counterexample was executed or only inspected, and the observed pre-fix failure line, or that none was observed and why (no test seam: the probe's output before and after is the record). Reviewers can use in-memory probes or permitted disposable fixtures while keeping the reviewed files unchanged.
 
-A green suite does not replace this analysis. Conversely, report a test weakness as required rework only when a concrete in-scope failure or required acceptance scenario lacks protection; do not require more tests solely to increase their number.
+A green suite does not replace this analysis. Conversely, the test rule calls for a case only for three things — a defect's reproduction, a branch or calculation reading cannot settle, an acceptance scenario no existing case claims — and its absence is required rework only where a concrete in-scope failure would pass the suite; elsewhere a recorded reading is the cover, and a case is required by the failure it would catch, never by the count.
 
 ## Reach for less before writing more
 
@@ -71,7 +71,7 @@ The developer climbs this ladder for every new piece of code — after reading t
 5. **A dependency already installed.** A new dependency needs an accepted decision naming it and is never added for what a few lines do.
 6. **New code**, the minimum that works: deletion over addition, the plain construct over the clever one, no interface with one implementation, no option nothing sets, no wrapper that only delegates, no scaffolding for later.
 
-Between two candidates of the same size the one correct on edge cases wins: the ladder cuts code, never correctness and never the reading. It never removes input validation at a trust boundary, error handling that prevents data loss, a security measure, accessibility basics, the test of a changed behavior, or anything the assignment asks for explicitly. A simplification that cuts a real corner with a known ceiling — a global lock, a quadratic scan, a naive heuristic — carries a comment naming the ceiling and the condition that calls for the upgrade.
+Between two candidates of the same size the one correct on edge cases wins: the ladder cuts code, never correctness and never the reading. It never removes input validation at a trust boundary, error handling that prevents data loss, a security measure, accessibility basics, the case the test rule calls for, or anything the assignment asks for explicitly. A simplification that cuts a real corner with a known ceiling — a global lock, a quadratic scan, a naive heuristic — carries a comment naming the ceiling and the condition that calls for the upgrade.
 
 A finding against the ladder names the rung skipped and what replaces the code — the existing path, the library function, the platform feature — or that nothing does. Code is dead only after its uses were searched by symbol and once as text.
 
