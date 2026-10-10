@@ -2,8 +2,9 @@
 
 DreamTeam is a public, cross-runtime skills-only plugin for Codex and Claude Code.
 
-It provides four authoritative professional roles:
+It provides five authoritative professional roles:
 
+- `project-manager` («проджект») — the process: one tracker item from summary to delivery
 - `product-technologist`
 - `software-developer`
 - `qa-engineer`
@@ -13,27 +14,31 @@ Plus three utility skills roles and wrappers share: `env-snapshot` (one-call wor
 
 ## Architecture
 
-DreamTeam is intentionally skills-only: no tracker MCP, no project selector, no Dispatcher, and no Git delivery authority.
+DreamTeam owns the process and the four engineering roles; a project dispatcher owns its tracker. The dispatcher is the entry the human invokes: it probes its tracker, writes a Tracker Adapter v1 manifest, runs DreamTeam's bootstrap probe and invokes `project-manager` in its own process with the merged bootstrap line, the manifest and the command. From there the role drives the item — modes, pipeline, gates, the launches of the developer and the reviewer, the in-process QA gate, the Git lifecycle through its bundled scripts, the report — and reaches the tracker only through the adapter's operations (`resolve`, `publish`, `prd`, `create`, `attach`, `comment`, `close`, optional `time`): the role never names a tracker, a state or a field, and every tracker write is the dispatcher's own script ([ADR 0003](docs/adr/0003-project-manager-role-owns-the-process.md)).
 
 ```text
-project wrapper
-  owns tracker adapter + Dispatcher + project stages + Git/worktree + reports
+project dispatcher (tracker entry)
+  owns credentials, the adapter manifest and its operations, tracker-only modes
         |
-        | Assignment v1
+        | bootstrap line + manifest + command, in-process
         v
-DreamTeam role
-  product-technologist | software-developer | code-reviewer
+project-manager
+  owns modes, pipeline, gates, role launches, Git lifecycle, QA gate, report
+        |                                     |
+        | Assignment v1                       | adapter operations
+        v                                     v
+software-developer | code-reviewer         tracker (through the dispatcher's script)
         |
         | Result v1
         v
-project wrapper translates result -> tracker-specific publication/state transition
+project-manager translates the result -> publish event -> adapter maps it to the tracker's stage
 ```
 
-`product-technologist` and `qa-engineer` run inside the wrapper's process, without Assignment v1 or Result v1. `qa-engineer` is the project's gate: after development and before review the wrapper states the workspace, the base ref and the run directory and invokes the skill; the role takes the gate from the `checks` list of the project profile `dreamteam.json` at the repository root — every command the gate consists of, as spelled, replacing anything derived — or, where the profile declares none, finds the gate's commands and executor in the repository rules, proves the executor sees this workspace, runs every check through `qa-run.mjs` / `checks-run.mjs` (bundled in `skills/qa-engineer/scripts/`), writes a result file and hands back its path with the verdict — `green`, `red` (the change goes back to the developer with the failed items) or `unconfirmed` (review proceeds, delivery needs a human decision). `product-technologist` is the interactive one: it runs inside the wrapper's process. The wrapper loads the issue material, states a brief (the target or the fields for a new issue, the user's words, whether a document exists, the issue's size, the repository root, the project's terminology document), and invokes the skill; the role interviews the human round by round, researches the repository through read-only children, and finishes with the document, the issue title, and the list of mockup files in-context. The wrapper persists the document and the title, attaches the mockups to the issue, and moves the state.
+Everything project-dependent lives in the project profile `dreamteam.json` at the repository root (Profile v1, `contracts/profile-v1.schema.json`, validated by `contracts/validate-profile.mjs`): the tracker block (`kind`, `prefix`, adapter-owned keys), the base branch, the delivery mode (`merge_push`: `сливай` merges into the base and pushes it; `branch`: `сливай` consolidates locally and `пуш` sends the task branch), the return limit, the terminology document, the QA gate `checks` (a string, or an object with a declared baseline policy the QA script applies itself), the worktree layout and the stages. A value is resolved profile → adapter defaults → DreamTeam defaults; secrets never live in the profile. The adapter manifest (Adapter v1, `contracts/adapter-v1.schema.json`, validated by `contracts/validate-adapter.mjs`, with a conformance `--check` that calls `resolve`) carries the adapter's command, its operations, its policy defaults, the tracker-only modes the dispatcher keeps and its help lines. `skills/project-manager/scripts/adapter-file.mjs` is the reference adapter over a directory of Markdown items and the role's test bench.
 
-DreamTeam role skills and the public Assignment v1 / Result v1 contracts are the sole source of professional behavior. Project wrappers supply assignments and translate results, but do not supply source prompts or redefine role judgment. Tracker adapters, project identifiers, statuses, publication schemas, and Git delivery policy remain wrapper-owned. DreamTeam roles receive a bounded assignment and return a neutral Result v1; they do not write tracker artifacts or perform mutable Git lifecycle operations.
+`product-technologist` and `qa-engineer` run inside the process the dispatcher started, without Assignment v1 or Result v1, invoked by the project-manager. `qa-engineer` is the project's gate: after development and before review the role states the workspace, the base ref and the run directory and invokes the skill; the role takes the gate from the `checks` list of the project profile — every command the gate consists of, as spelled, replacing anything derived — or, where the profile declares none, finds the gate's commands and executor in the repository rules, proves the executor sees this workspace, runs every check through `qa-run.mjs` / `checks-run.mjs` (bundled in `skills/qa-engineer/scripts/`), writes a result file and hands back its path with the verdict — `green`, `red` (the change goes back to the developer with the failed items) or `unconfirmed` (review proceeds, delivery needs a human decision). `product-technologist` is the interactive one: the project-manager loads the issue material through the adapter, states a brief (the target or the fields for a new issue, the user's words, whether a document exists, the issue's size, the repository root, the project's terminology document), and invokes the skill; the role interviews the human round by round, researches the repository through read-only children, and finishes with the document, the issue title, and the list of mockup files in-context. The project-manager shows the document to the human, and only on their word persists it and the mockups through the adapter.
 
-The wrapper also owns launch profiles. Every role runs on the wrapper/Dispatcher's current model; DreamTeam never pins a model family. Product Technologist runs inside the wrapper's own process on the session model, and its research children use the wrapper's research profile. The wrapper varies reasoning for the launched roles: initial Software Developer uses `xhigh`; review-retry Software Developer uses `max`. Code Reviewer runs at the review depth 1–5 that `review-pack.mjs --check` reports — the most expensive hunk decides, size never raises it — and the wrapper maps each level to its runtime's model and effort ([ADR 0002](docs/adr/0002-review-depth-chosen-by-script.md)).
+DreamTeam role skills and the public contracts are the sole source of professional behavior. The four engineering roles stay tracker-neutral and never perform a mutable Git operation; the project-manager is the one role that owns the Git lifecycle (`prepare-worktree.mjs`, `deliver.mjs`, `stage.mjs`) and it still writes to a tracker only through the adapter. Launch profiles ship with DreamTeam too: the bootstrap probe's `models` table resolves within the session's own vendor — DreamTeam never pins a model family — and the `модель` token overrides it for one run. Initial Software Developer runs at the row of the task size; a review-retry Software Developer at the same row; Code Reviewer at the review depth 1–5 that `review-pack.mjs --check` reports — the most expensive hunk decides, size never raises it ([ADR 0002](docs/adr/0002-review-depth-chosen-by-script.md)).
 
 ## Contract boundary
 
@@ -58,7 +63,7 @@ npm test
 claude plugin validate .
 ```
 
-Each role is created and verified independently. DreamTeam role skills and the public Assignment v1 / Result v1 contracts define professional behavior; project-specific tracker and Dispatcher rules stay in wrappers.
+Each role is created and verified independently. DreamTeam role skills and the public contracts — Assignment v1, Result v1, Profile v1, Adapter v1 — define professional behavior; a dispatcher keeps only its tracker: credentials, the adapter and its tracker-only modes.
 
 ## Installation
 

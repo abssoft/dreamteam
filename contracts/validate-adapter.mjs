@@ -24,7 +24,7 @@ export const STAGES = ["backlog", "prd", "dev", "review", "done", "cancelled", "
 export const KINDS = ["ordinary", "parent", "child"];
 export const MARKERS = ["development_done", "review_done"];
 export const SIZES = ["XS", "S", "M", "L", "XL", "XXL"];
-const MANIFEST_KEYS = ["contract_version", "kind", "label", "command", "operations", "defaults", "modes", "help"];
+const MANIFEST_KEYS = ["contract_version", "kind", "label", "command", "operations", "defaults", "modes", "help", "create_fields"];
 
 const isText = (value) => typeof value === "string" && value.trim() !== "";
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -59,6 +59,7 @@ export function manifestProblems(raw) {
     });
   }
   if (raw.help !== undefined && !(Array.isArray(raw.help) && raw.help.every((line) => typeof line === "string"))) problems.push("help must be a list of lines");
+  if (raw.create_fields !== undefined && !(Array.isArray(raw.create_fields) && raw.create_fields.every(isText))) problems.push("create_fields must be a list of field names");
   return problems;
 }
 
@@ -147,7 +148,7 @@ function main() {
   if (problems.length) fail("bad_manifest", problems);
   const report = {
     ok: true, kind: manifest.kind, label: manifest.label ?? null, command: manifest.command, operations: manifest.operations,
-    optional: OPTIONAL_OPERATIONS.filter((op) => manifest.operations.includes(op)), defaults: manifest.defaults ?? {}, modes: manifest.modes ?? [],
+    optional: OPTIONAL_OPERATIONS.filter((op) => manifest.operations.includes(op)), defaults: manifest.defaults ?? {}, modes: manifest.modes ?? [], create_fields: manifest.create_fields ?? [],
   };
   if (!opts.check) { out(report); return; }
   if (!(isText(opts.key) || isText(opts.child)) || !isText(opts.dir) || !isAbsolute(opts.dir)) fail("bad_args", "--check needs --key <KEY> (or --child) and an absolute --dir");

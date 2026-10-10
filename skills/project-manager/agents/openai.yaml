@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Manager"
+  short_description: "Drive one tracker item through the DreamTeam process"
+  default_prompt: "Use $project-manager from a project dispatcher: the brief names the bootstrap line, the adapter manifest and the command."

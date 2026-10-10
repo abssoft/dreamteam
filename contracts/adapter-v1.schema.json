@@ -33,7 +33,8 @@
           "items": { "type": "object", "additionalProperties": false, "required": ["token", "summary"], "properties": { "token": { "type": "string", "minLength": 1 }, "aliases": { "type": "array", "items": { "type": "string" } }, "summary": { "type": "string" } } },
           "description": "Tracker-only modes the dispatcher keeps: the role names them in help and hands such a command back to the dispatcher."
         },
-        "help": { "type": "array", "items": { "type": "string" }, "description": "Lines the role appends to the help block, verbatim." }
+        "help": { "type": "array", "items": { "type": "string" }, "description": "Lines the role appends to the help block, verbatim." },
+        "create_fields": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Names of the fields the tracker needs when an item is created; the PRD interview collects them in its first round and the role passes them to `create` as `fields`." }
       }
     },
     "resolution": {

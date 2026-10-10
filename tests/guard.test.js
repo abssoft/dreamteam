@@ -15,7 +15,7 @@ const assertValid = (validate, value, label) => {
   assert.equal(validate(value), true, `${label}: ${ajv.errorsText(validate.errors)}`);
 };
 
-const roles = ['product-technologist', 'software-developer', 'qa-engineer', 'code-reviewer'];
+const roles = ['project-manager', 'product-technologist', 'software-developer', 'qa-engineer', 'code-reviewer'];
 // product-technologist and qa-engineer run in the wrapper's process and hand off in-context; only launched roles return Result v1.
 const roleDeliverables = {
   'software-developer': 'implementation_summary',
@@ -103,6 +103,7 @@ const structuredValuePattern = /(?:^|[\s{,])["'`]?([A-Za-z_][A-Za-z0-9_.-]*)["'`
 const repositoryKeyPattern = /(?:^|_)(?:repo|repository|location|origin|source)(?:_|$)/i;
 const repositoryUrlPattern = /^(?:git@|(?:git|https?|ssh|file):\/\/)/i;
 const locationPattern = /^(?:\/(?!\/)|[A-Za-z]:(?:[\\/]|[A-Za-z0-9._-])|\\\\|\.\.[\\/])/;
+const httpPathKeys = new Set(['health']);
 
 const findSerializedCoordinates = (source) => {
   const findings = [];
@@ -114,7 +115,7 @@ const findSerializedCoordinates = (source) => {
   for (const match of source.matchAll(structuredValuePattern)) {
     const [, key, doubleQuoted, singleQuoted, backtickQuoted, unquoted] = match;
     const value = doubleQuoted ?? singleQuoted ?? backtickQuoted ?? unquoted;
-    if (locationPattern.test(value)) {
+    if (locationPattern.test(value) && !httpPathKeys.has(key)) {
       findings.push(`structured location: ${key}: ${value}`);
     }
     if (
@@ -131,6 +132,9 @@ const findSerializedCoordinates = (source) => {
 test('role instructions do not leak tracker or private project vocabulary', () => {
   for (const role of roles) {
     assert.equal(forbiddenVocabulary.test(readText(`skills/${role}/SKILL.md`)), false, role);
+  }
+  for (const route of fs.readdirSync(path.join(root, 'skills/project-manager/routes'))) {
+    assert.equal(forbiddenVocabulary.test(readText(`skills/project-manager/routes/${route}`)), false, route);
   }
 });
 
