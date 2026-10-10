@@ -7,3 +7,4 @@ coverage/
 dist/
 .idea/
 .DS_Store
+.scratch/

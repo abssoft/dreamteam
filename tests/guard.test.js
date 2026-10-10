@@ -24,9 +24,11 @@ const roleDeliverables = {
 
 test('contract examples validate against their schemas', () => {
   const examples = fs.readdirSync(path.join(root, 'contracts/examples')).sort();
-  assert.deepEqual(examples, ['assignment-review.json', 'assignment.json', 'result-review.json', 'result.json']);
+  assert.deepEqual(examples, ['adapter-manifest.json', 'assignment-review.json', 'assignment.json', 'profile.json', 'result-review.json', 'result.json']);
+  const validateProfile = ajv.compile(readJson('contracts/profile-v1.schema.json'));
+  const validateManifest = ajv.compile(readJson('contracts/adapter-v1.schema.json'));
   for (const file of examples) {
-    const validate = file.startsWith('assignment') ? validateAssignment : validateResult;
+    const validate = file.startsWith('assignment') ? validateAssignment : file.startsWith('result') ? validateResult : file === 'profile.json' ? validateProfile : validateManifest;
     assertValid(validate, readJson(`contracts/examples/${file}`), file);
   }
   const review = readJson('contracts/examples/assignment-review.json');

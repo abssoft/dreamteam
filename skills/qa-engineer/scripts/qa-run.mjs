@@ -38,7 +38,8 @@
 //   changed_paths}, executor, gate: profile|derived (profile: the checks came
 //   from dreamteam.json), verdict, checks: [{id, tool, command, ran,
 //   scope, width, source, status: passed|failed|broken|skipped, reason?,
-//   attribution?: in_change|outside_change|unknown|baseline, exit, seconds,
+//   attribution?: in_change|outside_change|unknown|baseline (a passed item with
+//   attribution baseline was settled by its declared baseline policy), exit, seconds,
 //   log, tail, skipped_cases?: [{file, name}], skipped_count?}], obstacles:
 //   [text], summary: {passed, failed, broken, skipped}}. skipped_cases: the
 //   cases JUnit marks skipped in the selected test files, the first 20;
@@ -61,6 +62,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { collectRules, parseNameStatus, TEST_PATH } from "../../code-reviewer/scripts/review-pack.mjs";
 import { shellArg, waitResults } from "./checks-run.mjs";
+import { checkItems, profileProblems } from "../../../contracts/validate-profile.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
@@ -106,6 +108,8 @@ executor, gate profile|derived, verdict green|red|unconfirmed, checks[{id, tool,
 status passed|failed|broken|skipped, reason?, attribution?, exit, seconds, log, tail,
 skipped_cases?[{file, name}] (first 20), skipped_count? (total)}], obstacles[], summary}.
 No check ran over a change that is not prose only (.md .mdx .rst .adoc): unconfirmed.
+A profile item {run, baseline: files_outside_diff, diagnostic} settles itself from its log:
+diagnostics only in files outside the change → passed with attribution baseline.
 ok:false codes: bad_args |
 not_a_git_repository | base_ref_not_found | empty_diff | bad_profile | bad_spec |
 not_a_command | running | results_missing | write_failed.
@@ -241,19 +245,24 @@ export function deriveChecks(env, codePaths, testPaths) {
 }
 
 // The gate the project profile declares: every command of `checks` as it is
-// spelled, full width. null when the profile or the key is absent — the gate
-// is then derived; {error} when the file or the list is malformed.
+// spelled, full width, with the baseline policy an object item declares. null
+// when the profile or the key is absent — the gate is then derived; {error}
+// when the file is not a profile (contracts/validate-profile.mjs judges it).
 export function declaredChecks(root) {
   const path = join(root, PROFILE_FILE);
   if (!existsSync(path)) return null;
   let raw;
   try { raw = readJson(path); } catch { return { error: `${PROFILE_FILE} is not valid JSON` }; }
   if (!isPlainObject(raw) || raw.checks === undefined) return null;
-  if (!Array.isArray(raw.checks) || !raw.checks.length || !raw.checks.every(isText)) return { error: `${PROFILE_FILE}: checks must be a non-empty list of commands` };
+  const problems = profileProblems(raw);
+  if (problems.length) return { error: problems.join("; ") };
   const items = [];
-  for (const command of new Set(raw.checks.map((item) => item.trim()))) {
-    const base = { id: `p${items.length + 1}`, tool: "profile", command, scope: "none", source: PROFILE_FILE, note: "" };
-    items.push(MUTATING.test(command)
+  const seen = new Set();
+  for (const check of checkItems(raw)) {
+    if (seen.has(check.run)) continue;
+    seen.add(check.run);
+    const base = { id: `p${items.length + 1}`, tool: "profile", command: check.run, scope: "none", source: PROFILE_FILE, note: check.baseline ? `baseline ${check.baseline}` : "", ...(check.baseline ? { baseline: check.baseline, diagnostic: check.diagnostic } : {}) };
+    items.push(MUTATING.test(check.run)
       ? { ...base, width: "not run", runnable: false, reason: "rewrites files: not a check" }
       : { ...base, width: "full", runnable: true });
   }
@@ -330,8 +339,9 @@ function plan(opts) {
   const spec = {
     cwd, results: resultsPath, exec: null, base, head, merge_base: mergeBase,
     changed_paths: files.map((file) => file.path),
+    changed_from: files.filter((file) => file.from).map((file) => file.from),
     ...(declared ? { declared: true } : {}),
-    checks: runnable.map(({ id: checkId, tool, command, run, scope, width, source, expected_test_paths }) => ({ id: checkId, tool, command, ...(run && run !== command ? { run } : {}), scope, width, source, ...(expected_test_paths ? { expected_test_paths } : {}) })),
+    checks: runnable.map(({ id: checkId, tool, command, run, scope, width, source, expected_test_paths, baseline, diagnostic }) => ({ id: checkId, tool, command, ...(run && run !== command ? { run } : {}), scope, width, source, ...(expected_test_paths ? { expected_test_paths } : {}), ...(baseline ? { baseline, diagnostic } : {}) })),
   };
   try {
     mkdirSync(outDir, { recursive: true });
@@ -469,6 +479,46 @@ export function skippedCount(tail) {
   return 0;
 }
 
+// Every diagnostic line the declared pattern finds in a log, with the file it
+// names; null when the pattern does not compile.
+export function diagnosticFiles(log, pattern) {
+  let regex;
+  try { regex = new RegExp(pattern, "gm"); } catch { return null; }
+  const text = String(log);
+  const hits = [];
+  for (const match of text.matchAll(regex)) {
+    const file = match.groups?.file;
+    if (!isText(file)) continue;
+    const start = text.lastIndexOf("\n", match.index) + 1;
+    const end = text.indexOf("\n", match.index);
+    hits.push({ file: file.replace(/^\.\//, ""), line: text.slice(start, end < 0 ? undefined : end) });
+  }
+  return hits;
+}
+
+// A failed item whose profile entry declares `baseline: files_outside_diff`
+// is settled by its full log: every diagnostic in a file outside the change →
+// passed, attribution baseline; a diagnostic in a changed file → stays failed
+// and the tail keeps those lines only; nothing parsed → stays failed, for the
+// role to judge.
+export function applyBaselinePolicy(row, check, changedPaths) {
+  let log = "";
+  try { log = readFileSync(row.log, "utf8"); } catch { return row; }
+  const hits = diagnosticFiles(log, check.diagnostic);
+  if (!hits || !hits.length) { row.baseline_policy = "no diagnostic matched the declared pattern"; return row; }
+  const inside = hits.filter((hit) => changedPaths.some((path) => hit.file === path || hit.file.endsWith(`/${path}`)));
+  if (!inside.length) {
+    row.status = "passed";
+    row.attribution = "baseline";
+    row.reason = `baseline: ${hits.length} diagnostic(s), every one in a file outside the change`;
+    return row;
+  }
+  row.attribution = "in_change";
+  row.reason = `${inside.length} of ${hits.length} diagnostic(s) name a changed file`;
+  row.tail = inside.map((hit) => hit.line).join("\n").slice(-RESULT_TAIL_CHARS);
+  return row;
+}
+
 async function report(opts) {
   const resultsPath = resolve(opts.results);
   const results = await waitResults(resultsPath, opts.timeout);
@@ -509,6 +559,8 @@ async function report(opts) {
     if (item.status === "pending") { row.status = "broken"; row.reason = "runner ended before this check"; }
     const attribution = attribute(row, changed);
     if (attribution) row.attribution = attribution;
+    const declared = spec.checks?.find((check) => check.id === item.id);
+    if (row.status === "failed" && declared?.baseline === "files_outside_diff" && isText(declared.diagnostic)) applyBaselinePolicy(row, declared, [...changed, ...(Array.isArray(spec.changed_from) ? spec.changed_from : [])]);
     if (baseline.has(row.id)) {
       if (row.status !== "failed") fail("bad_args", `--baseline ${row.id}: the item is ${row.status}, only a failed item can be baseline`);
       row.status = "broken";

@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dreamteam.dev/contracts/adapter-v1.schema.json",
+  "title": "DreamTeam Tracker Adapter v1",
+  "description": "The seam between the project-manager role and a tracker. A dispatcher writes the manifest into the run directory before invoking the role; the role calls every tracker operation as `<command> <operation> '<json>'` and reads one JSON line back (`ok` true, or `ok` false with `code`; exit 2 means a write may have landed and must be re-read, never repeated). The role never names a tracker, a state or a field: the adapter maps the abstract stages and events below onto its tracker.",
+  "$defs": {
+    "stage": { "type": "string", "enum": ["backlog", "prd", "dev", "review", "done", "cancelled", "unknown"] },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "kind", "command", "operations"],
+      "properties": {
+        "contract_version": { "const": 1 },
+        "kind": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$", "description": "The tracker kind the profile's tracker.kind is checked against." },
+        "label": { "type": "string", "description": "The dispatcher's name as the human invokes it; used in messages." },
+        "command": { "type": "string", "minLength": 1, "description": "Shell prefix of the adapter; the role appends `<operation> '<json>'`." },
+        "operations": {
+          "type": "array", "uniqueItems": true,
+          "items": { "type": "string", "enum": ["resolve", "publish", "prd", "create", "attach", "comment", "close", "time"] },
+          "description": "resolve, publish, prd, create, attach, comment and close are required; time is optional."
+        },
+        "defaults": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "base": { "type": "string" },
+            "delivery": { "type": "string", "enum": ["merge_push", "branch"] },
+            "returns": { "type": "integer", "minimum": 0, "maximum": 20 }
+          },
+          "description": "The adapter's policy defaults: the rung between the project profile and DreamTeam's own defaults."
+        },
+        "modes": {
+          "type": "array",
+          "items": { "type": "object", "additionalProperties": false, "required": ["token", "summary"], "properties": { "token": { "type": "string", "minLength": 1 }, "aliases": { "type": "array", "items": { "type": "string" } }, "summary": { "type": "string" } } },
+          "description": "Tracker-only modes the dispatcher keeps: the role names them in help and hands such a command back to the dispatcher."
+        },
+        "help": { "type": "array", "items": { "type": "string" }, "description": "Lines the role appends to the help block, verbatim." }
+      }
+    },
+    "resolution": {
+      "type": "object",
+      "required": ["ok", "target", "parent", "children", "document", "files", "media", "route_hint", "mark"],
+      "properties": {
+        "ok": { "const": true },
+        "target": {
+          "type": "object", "required": ["key", "kind", "title", "stage", "size", "marker"],
+          "properties": {
+            "key": { "type": "string", "minLength": 1 },
+            "id": { "type": ["string", "null"] },
+            "kind": { "type": "string", "enum": ["ordinary", "parent", "child"] },
+            "title": { "type": "string" },
+            "stage": { "$ref": "#/$defs/stage" },
+            "status": { "type": ["string", "null"], "description": "The tracker's own status text, for the report only." },
+            "size": { "type": ["string", "null"], "enum": ["XS", "S", "M", "L", "XL", "XXL", null] },
+            "marker": { "type": ["string", "null"], "enum": ["development_done", "review_done", null], "description": "The latest stage marker among the comments." },
+            "url": { "type": ["string", "null"] }
+          }
+        },
+        "parent": { "type": ["object", "null"], "required": ["key", "title", "stage"], "properties": { "key": { "type": "string" }, "title": { "type": "string" }, "stage": { "$ref": "#/$defs/stage" }, "status": { "type": ["string", "null"] } } },
+        "children": {
+          "type": "object", "required": ["list", "unfinished", "position"],
+          "properties": {
+            "list": { "type": "array", "items": { "type": "object", "required": ["key", "title", "stage", "finished"], "properties": { "key": { "type": "string" }, "title": { "type": "string" }, "stage": { "$ref": "#/$defs/stage" }, "finished": { "type": "boolean" } } } },
+            "unfinished": { "type": "array", "items": { "type": "string" } },
+            "position": { "type": ["string", "null"], "description": "«N из M» for a child target." }
+          }
+        },
+        "document": { "type": "object", "required": ["managed", "scope", "legacy", "subsections"], "properties": { "managed": { "type": "boolean" }, "scope": { "type": "boolean" }, "legacy": { "type": "boolean" }, "subsections": { "type": "array", "items": { "type": "string" } } } },
+        "files": { "type": "object", "required": ["issue", "parent_issue", "comments"], "properties": { "issue": { "type": "string" }, "parent_issue": { "type": ["string", "null"] }, "comments": { "type": ["string", "null"] } }, "description": "Absolute paths of the files the adapter wrote into the run directory: the issue text (title plus description), the parent's, the comments. Roles read them by path; the project-manager never retypes them." },
+        "media": { "type": "array", "items": { "type": "object", "required": ["path", "name"], "properties": { "path": { "type": "string" }, "name": { "type": "string" } } } },
+        "route_hint": { "type": ["string", "null"] },
+        "mark": { "type": "object", "required": ["applied"], "properties": { "applied": { "type": "boolean" }, "warning": { "type": ["string", "null"] } } }
+      }
+    },
+    "operations": {
+      "description": "Inputs and outputs per operation; every call takes one JSON object and answers one JSON line.",
+      "resolve": { "input": { "key": "the item key (absent with `child`), ", "dir": "absolute run directory the files land in", "self": "boolean: a parent key stays the target instead of selecting its first unfinished child", "parent": "boolean: load the parent of a child", "attachments": "boolean: download images into <dir>/media", "mark": "boolean: apply the tracker's AI mark (a mutating mode)", "terminal": "boolean: a finished explicit child is a valid target", "child": "explicit child key" }, "output": "resolution" },
+      "publish": { "input": { "key": "", "event": "dev_started | development_done | review_done", "comment": "absolute path of the comment text, optional" }, "output": { "ok": true, "comment": { "posted": "boolean" }, "stage": { "moved": "boolean", "to": "stage" } } },
+      "comment": { "input": { "key": "", "comment": "absolute path", "required": "boolean, default true" }, "output": { "ok": true, "posted": "boolean" } },
+      "prd": { "input": { "key": "", "document": "absolute path of the PRD Markdown", "title": "new title or null", "size": "XS…XXL or null" }, "output": { "ok": true, "sections": { "inserted": [], "replaced": [] }, "legacy_removed": [], "title": "replaced | unchanged", "size": "replaced | unchanged | none" }, "errors": "malformed_sections (problems: [text]), write_uncertain" },
+      "create": { "input": { "title": "", "description": "absolute path of the body or null", "parent": "parent key or null", "fields": "adapter-owned creation fields" }, "output": { "ok": true, "key": "", "id": "string | null", "url": "string | null" }, "errors": "create_uncertain, nested_subtask, parent_not_found" },
+      "attach": { "input": { "key": "", "files": ["absolute paths"], "replace": "boolean, default true" }, "output": { "ok": true, "items": [{ "path": "", "name": "", "attached": "boolean", "code": "string when not attached" }] } },
+      "close": { "input": { "key": "", "comment": "absolute path or null" }, "output": { "ok": true, "fields": [{ "name": "", "value": "", "done": "boolean" }], "pending": [] }, "description": "The merged child is finalized: every closing field the tracker needs." },
+      "time": { "input": { "key": "", "stage": "prd | developer | reviewer", "runtime": "codex | claude", "session_id": "", "root_agent_ref": "string or null" }, "output": { "ok": true, "created": 0, "duplicates": 0, "failed": 0 } }
+    }
+  },
+  "$ref": "#/$defs/manifest"
+}
