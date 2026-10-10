@@ -1,0 +1,8 @@
+# Creating Subtasks — `разбей` (§10)
+
+Loaded on the same-session `разбей` follow-up (aliases `декомпозируй`, `split`) after a PRD whose document carries «Рекомендация по разбивке», on a parent/ordinary item — nested children are unsupported, so a child target gets one chat line and no children. The PRD and the §3 resolution are already in context — continuation discipline applies in full; a fresh-session `разбей` stops `needs_human` and never reconstructs a plan from tracker text or re-runs PRD.
+
+1. Cut the subtasks from the persisted «Рекомендация по разбивке» already in context — one child per numbered item: the item's name as the title, the item's text as its description slice (what it delivers, its paths, its acceptance scenarios), written to `<run_dir>/child-<n>.md`; never reload the parent to re-read them.
+2. Preflight the existing direct children (`children.list` from the §3 resolution): a child whose title equals a slice's title already exists and is skipped — a retry after a partial failure completes the set instead of duplicating it.
+3. Create the missing children in order — one `create` call per child: `create '{"title":"<name>","description":"<run_dir>/child-<n>.md","parent":"<PARENT_KEY>","fields":{}}'`. Children start in the backlog; the parent's managed sections and stage stay untouched. Preserve already created children on failure.
+4. Then stop (Run model: every command is atomic). `разбей` never enters development, never reloads the parent, never launches a role. The terminal report lists the created keys in order and names `<FIRST_KEY> разработка` as the recommended next command — a recommendation the human issues explicitly, never a step this run takes.

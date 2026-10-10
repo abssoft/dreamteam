@@ -15,7 +15,7 @@ const assertValid = (validate, value, label) => {
   assert.equal(validate(value), true, `${label}: ${ajv.errorsText(validate.errors)}`);
 };
 
-const roles = ['product-technologist', 'software-developer', 'qa-engineer', 'code-reviewer'];
+const roles = ['project-manager', 'product-technologist', 'software-developer', 'qa-engineer', 'code-reviewer'];
 // product-technologist and qa-engineer run in the wrapper's process and hand off in-context; only launched roles return Result v1.
 const roleDeliverables = {
   'software-developer': 'implementation_summary',
@@ -24,9 +24,11 @@ const roleDeliverables = {
 
 test('contract examples validate against their schemas', () => {
   const examples = fs.readdirSync(path.join(root, 'contracts/examples')).sort();
-  assert.deepEqual(examples, ['assignment-review.json', 'assignment.json', 'result-review.json', 'result.json']);
+  assert.deepEqual(examples, ['adapter-manifest.json', 'assignment-review.json', 'assignment.json', 'profile.json', 'result-review.json', 'result.json']);
+  const validateProfile = ajv.compile(readJson('contracts/profile-v1.schema.json'));
+  const validateManifest = ajv.compile(readJson('contracts/adapter-v1.schema.json'));
   for (const file of examples) {
-    const validate = file.startsWith('assignment') ? validateAssignment : validateResult;
+    const validate = file.startsWith('assignment') ? validateAssignment : file.startsWith('result') ? validateResult : file === 'profile.json' ? validateProfile : validateManifest;
     assertValid(validate, readJson(`contracts/examples/${file}`), file);
   }
   const review = readJson('contracts/examples/assignment-review.json');
@@ -101,6 +103,7 @@ const structuredValuePattern = /(?:^|[\s{,])["'`]?([A-Za-z_][A-Za-z0-9_.-]*)["'`
 const repositoryKeyPattern = /(?:^|_)(?:repo|repository|location|origin|source)(?:_|$)/i;
 const repositoryUrlPattern = /^(?:git@|(?:git|https?|ssh|file):\/\/)/i;
 const locationPattern = /^(?:\/(?!\/)|[A-Za-z]:(?:[\\/]|[A-Za-z0-9._-])|\\\\|\.\.[\\/])/;
+const httpPathKeys = new Set(['health']);
 
 const findSerializedCoordinates = (source) => {
   const findings = [];
@@ -112,7 +115,7 @@ const findSerializedCoordinates = (source) => {
   for (const match of source.matchAll(structuredValuePattern)) {
     const [, key, doubleQuoted, singleQuoted, backtickQuoted, unquoted] = match;
     const value = doubleQuoted ?? singleQuoted ?? backtickQuoted ?? unquoted;
-    if (locationPattern.test(value)) {
+    if (locationPattern.test(value) && !httpPathKeys.has(key)) {
       findings.push(`structured location: ${key}: ${value}`);
     }
     if (
@@ -129,6 +132,9 @@ const findSerializedCoordinates = (source) => {
 test('role instructions do not leak tracker or private project vocabulary', () => {
   for (const role of roles) {
     assert.equal(forbiddenVocabulary.test(readText(`skills/${role}/SKILL.md`)), false, role);
+  }
+  for (const route of fs.readdirSync(path.join(root, 'skills/project-manager/routes'))) {
+    assert.equal(forbiddenVocabulary.test(readText(`skills/project-manager/routes/${route}`)), false, route);
   }
 });
 

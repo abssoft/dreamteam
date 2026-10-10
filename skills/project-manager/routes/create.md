@@ -1,0 +1,22 @@
+# Creating Items
+
+Loaded on an explicit creation request (`создай`, `сделай`), on a keyless `PRD`, or on a submitted plan. The request decides the shape: a named existing parent key creates a direct child; otherwise a standalone item. The mode decides the moment: a development mode creates the item first and runs on it; PRD interviews first and creates the item for the document. You never author managed sections.
+
+## Creating first — development modes
+
+Only on an explicit creation request with `разработка` (with or without `просто`).
+
+1. Standalone: one adapter call creates: `create '{"title":"<name>","description":"<run_dir>/description.md"|null,"parent":null,"fields":{…}}` — the adapter creates the item in its backlog with the AI mark applied best-effort and answers `{key, id, url}`; then resolve it with the §3 call (`"mark": true`). `create_uncertain` retains nothing to act on: stop for the human to reconcile.
+2. Description at creation: the substantive body the user passed with the creation request goes into `<run_dir>/description.md` verbatim — user-authored source material persisted into the item, so later stages work from the item itself, not from chat history. You copy, never compose: no managed sections, no rewording, no summaries of your own; a request carrying nothing beyond the name creates an empty description (`"description": null`).
+3. Fields: the manifest's `create_fields` name what the tracker needs at creation (a type, a module, a client); take their values from the user's words when the request names them, ask for the missing ones in one short line and stop when the request names none — the adapter applies its own defaults for everything it does not list. A field the adapter refuses (`unknown_name` with `nearest`, `missing_required`) names every problem at once: fix them from the answer and retry once.
+4. Child under a named parent — the epic-style flow, new full tasks joining the main task as work evolves: `create '{"title":"<name>","description":…,"parent":"<PARENT_KEY>","fields":{…}}'` per requested task — the adapter creates it in the parent's project with the parent's context fields and links it as a subtask; a parent that is itself a child is `nested_subtask` — stop before mutation.
+5. Derive the canonical key only from the answer's `key`. Prepare the workspace through §5 with `ensure: "develop"` (a child: with `parentKey`, from the parent branch) and require `prepared.created_branch` to be true — an already existing branch or occupied canonical path for a freshly created key is a provenance mismatch: retain the item and stop before any role launch. Preserve the item and workspace on any preparation blocker.
+6. Then load `routes/develop.md` on the created key — an explicit target, so `просто` holds on it. Several requested children → create every one first, run the mode on the first, and name the same command with `<KEY>` for each remaining as the next commands. Development runs with best-available materials — the item's own text, plus the parent description for a child.
+
+## Creating after the interview — PRD
+
+A keyless `PRD`, a creation request carrying `PRD` (or its aliases), a submitted plan, or a creation request with no mode at all — PRD is the default whenever the governing mode is unclear.
+
+1. Run the interview first (`routes/spec.md`) with the brief naming «новая задача» (or «подзадача под <PARENT_KEY>») and the creation fields the manifest's `create_fields` names — the interview collects them in its first round; the item's name is the interview's title. Imported plan: recognize a generated, expanded or ready plan (`план`, `расширенный план`, …) — approved PRD input, settled material of the interview's design tree, never re-asked; raw notes are ordinary source material. The body the user passed is absorbed by the document — «Проблематика» is the record of the idea.
+2. Pass the `routes/spec.md` confirmation gate first — the document and the title go to the human and the run waits for their word; a refusal creates nothing. Then one `create` call with the interview's title, `"description": null`, the parent when one is named, and the collected fields. `create_uncertain` → stop for the human to reconcile.
+3. Then the `routes/spec.md` Persistence steps on the created key: resolve it (`"mark": false` — a PRD never marks), the mockups, one `prd` call with `title` null (the name already is the title) and the size, the time record and the usage, no stage move, stop. A newly created item never starts at Review.

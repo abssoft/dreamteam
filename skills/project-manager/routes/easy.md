@@ -1,0 +1,8 @@
+# Trivial Fast-Path — `разработка просто`
+
+Loaded only when `просто` (`easy`, `легко`; legacy `быстро`, `изи`, `тривиально`, `trivial`) modifies an explicit `разработка` command. A genuinely small, self-contained change runs Development → QA → Review without spec sections and obeys every other rail. When in doubt whether `просто` fits, run bare `разработка` — the full pipeline is the safe default.
+
+1. Valid targets: an ordinary/parent item or an explicitly invoked child key — an epic-style child is a full task, so the modifier holds there unchanged. Never fast-path a child auto-selected from a bare parent key: name the resolved child and ask for `<CHILD> разработка просто`.
+2. The modifier forces the fast-path unless hard-suppressed. Hard suppression, wins even over the explicit modifier: migration/schema/data-deletion risk; security-sensitive change (auth, permissions, tokens, sessions, secrets, crypto); multiple areas or cross-contract scope; ambiguous expected behavior. On suppression, name the reason in one short line and continue as ordinary `разработка` with best-available material.
+3. Active fast-path: no managed sections are backfilled — their absence is expected. Entering Development publishes `dev_started`; the Developer scopes the smallest complete change from item text and self-derives verification; the Reviewer verifies against item text and diff. Delivery semantics are unchanged.
+4. If Development or Review reveals the change is not trivial — a suppression signal surfaces or scope blows out — stop `needs_human` and name the exact decision needed; never silently keep fast-pathing.

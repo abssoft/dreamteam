@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dreamteam.dev/contracts/profile-v1.schema.json",
+  "title": "DreamTeam Project Profile v1",
+  "description": "dreamteam.json at the repository root: the single home of everything project-dependent that the project-manager role, the four engineering roles and the tracker adapter read. Secrets never live here. Resolution of a policy value: this file, then the adapter's defaults, then the DreamTeam defaults (delivery branch, returns 2, base = the repository's default branch).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version"],
+  "properties": {
+    "version": { "const": 1 },
+    "tracker": {
+      "type": "object",
+      "description": "The tracker the project is served by. `kind` and `prefix` are checked by the project-manager role against the dispatcher that invoked it and the key of the command; every other key belongs to that tracker's adapter and is validated there. A key that looks like a secret is refused.",
+      "properties": {
+        "kind": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+        "prefix": { "type": "string", "pattern": "^[A-Z][A-Z0-9]*$" }
+      },
+      "additionalProperties": true
+    },
+    "base": { "type": "string", "description": "The base branch of ordinary tasks; a subtask's base is its parent branch.", "pattern": "^(?!-)(?!.*\\.\\.)[^\\s~^:?*\\[\\\\]+$" },
+    "delivery": { "type": "string", "enum": ["merge_push", "branch"], "description": "merge_push: `сливай` merges the accepted task branch into the base and pushes it, there is no `пуш`. branch: `сливай` consolidates locally, `пуш` sends the task branch; the base is never merged or pushed by the role." },
+    "returns": { "type": "integer", "minimum": 0, "maximum": 20, "description": "Returns to development per run: red QA gates, failed branch migrations and review fixes counted together." },
+    "references": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "terminology": { "type": "string", "description": "The project's terminology document the PRD interview reads, relative to the repository root.", "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$)).+$" }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The QA gate: every command of the project's full check set, as the repository rules spell it, run from the checkout root on the host. A string item is the command; an object item adds a baseline policy.",
+      "items": {
+        "oneOf": [
+          { "type": "string", "minLength": 1 },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["run"],
+            "properties": {
+              "run": { "type": "string", "minLength": 1 },
+              "baseline": { "type": "string", "enum": ["files_outside_diff"], "description": "files_outside_diff: diagnostics of this check that all name files outside the full diff of the task do not affect the verdict; the QA role marks the item passed with attribution baseline. Requires `diagnostic`." },
+              "diagnostic": { "type": "string", "minLength": 1, "description": "A regular expression with a named group `file` that matches one diagnostic line of the tool's output and captures the file it names." }
+            },
+            "dependentRequired": { "baseline": ["diagnostic"] }
+          }
+        ]
+      }
+    },
+    "worktree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root"],
+      "properties": {
+        "root": { "type": "string", "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$)).+$", "description": "Every task tree lives at <primary>/<root>/<KEY>; the directory is git-ignored." },
+        "link": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Paths symlinked from the primary into a fresh tree." },
+        "copy": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Paths copied from the primary into a fresh tree." },
+        "setup": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Commands run inside a fresh tree, in order; a non-zero exit stops the run and keeps the tree." }
+      }
+    },
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ports", "health"],
+      "properties": {
+        "ports": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]*$" } },
+        "scheme": { "type": "string", "enum": ["http", "https"] },
+        "start": { "type": "string", "minLength": 1 },
+        "up": { "type": "string", "minLength": 1 },
+        "down": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "health": { "type": "string", "pattern": "^/" },
+        "env": { "type": "object", "additionalProperties": { "type": "string" }, "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" } },
+        "migrations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pending", "apply"],
+          "properties": { "pending": { "type": "string", "minLength": 1 }, "apply": { "type": "string", "minLength": 1 } }
+        },
+        "cleanup": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    }
+  }
+}

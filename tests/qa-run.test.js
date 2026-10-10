@@ -364,3 +364,49 @@ test('--run proves the executor sees this workspace before anything runs', async
   assert.equal(file.checks[0].ran, "sh -c 'npx vitest related src/totals.js'");
   assert.equal(file.executor.status, 'ok');
 });
+
+test('a declared baseline policy settles a failed item from its log: outside the change passes, a changed file keeps it failed', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qa-baseline-'));
+  const item = (id, log, tail) => ({ id, tool: 'profile', command: `run ${id}`, ran: `run ${id}`, scope: 'none', width: 'full', source: 'dreamteam.json', status: 'failed', exit: 1, seconds: 0.1, log: join(dir, `${id}.log`), tail });
+  await writeFile(join(dir, 'p1.log'), 'lib/legacy.php:12 undefined method\nlib/old.php:3 unused variable\n');
+  await writeFile(join(dir, 'p2.log'), 'lib/legacy.php:12 undefined method\nsrc/Totals.php:7 unused variable\n');
+  await writeFile(join(dir, 'p3.log'), 'the analyzer crashed\n');
+  await writeFile(join(dir, 'p4.log'), 'src/Renamed.php:1 unused variable\n');
+  const diagnostic = '^(?<file>\\S+\\.php):\\d+';
+  await writeFile(join(dir, 'qa-spec-policy.json'), JSON.stringify({ cwd: dir, declared: true, changed_paths: ['src/Totals.php'], changed_from: ['src/Renamed.php'], checks: [
+    { id: 'p1', baseline: 'files_outside_diff', diagnostic }, { id: 'p2', baseline: 'files_outside_diff', diagnostic }, { id: 'p3', baseline: 'files_outside_diff', diagnostic }, { id: 'p4', baseline: 'files_outside_diff', diagnostic }, { id: 'p5' },
+  ] }));
+  const results = join(dir, 'qa-checks-policy-results.json');
+  await writeFile(results, JSON.stringify({ ok: true, status: 'complete', cwd: dir, exec: null, pid: null, checks: [
+    item('p1', 'p1.log', 'lib/old.php:3 unused variable'), item('p2', 'p2.log', 'src/Totals.php:7 unused variable'), item('p3', 'p3.log', 'the analyzer crashed'), item('p4', 'p4.log', 'src/Renamed.php:1'),
+    { ...item('p5', 'none', 'lib/legacy.php:12 undefined method'), log: join(dir, 'p1.log') },
+  ] }));
+  const reported = run(dir, ['--report', '--results', results, '--timeout', '5']);
+  assert.equal(reported.json.verdict, 'red', JSON.stringify(reported));
+  const result = JSON.parse(await readFile(reported.json.result, 'utf8'));
+  assert.deepEqual(result.checks.map((check) => [check.id, check.status, check.attribution ?? null]), [
+    ['p1', 'passed', 'baseline'], ['p2', 'failed', 'in_change'], ['p3', 'failed', 'unknown'], ['p4', 'failed', 'in_change'], ['p5', 'failed', 'outside_change'],
+  ]);
+  assert.equal(result.checks[0].reason, 'baseline: 2 diagnostic(s), every one in a file outside the change');
+  assert.equal(result.checks[1].tail, 'src/Totals.php:7 unused variable', 'only the diagnostics of changed files reach the developer');
+  assert.equal(result.checks[2].baseline_policy, 'no diagnostic matched the declared pattern');
+  assert.equal(result.summary.passed, 1);
+  assert.equal(result.gate, 'profile');
+});
+
+test('--plan carries a declared baseline policy into the spec and refuses a profile the contract rejects', async () => {
+  const dir = await repo();
+  const out = join(dir, '..', `qa-out-${Date.now()}`);
+  await writeFile(join(dir, 'dreamteam.json'), JSON.stringify({ version: 1, checks: ['make check', { run: 'vendor/bin/noverify check ./src', baseline: 'files_outside_diff', diagnostic: '^(?<file>\\S+\\.php):\\d+' }] }));
+  const { json } = run(dir, ['--plan', '--base', 'main', '--out', out, '--id', 'policy']);
+  assert.equal(json.checks, 2, JSON.stringify(json));
+  const spec = JSON.parse(await readFile(json.spec, 'utf8'));
+  assert.deepEqual(spec.checks[1], { id: 'p2', tool: 'profile', command: 'vendor/bin/noverify check ./src', scope: 'none', width: 'full', source: 'dreamteam.json', baseline: 'files_outside_diff', diagnostic: '^(?<file>\\S+\\.php):\\d+' });
+  assert.equal(Object.hasOwn(spec.checks[0], 'baseline'), false);
+  assert.deepEqual(spec.changed_from, []);
+  assert.match(await readFile(json.plan, 'utf8'), /\[p2\] vendor\/bin\/noverify check \.\/src — profile, full, from dreamteam\.json; baseline files_outside_diff/);
+  await writeFile(join(dir, 'dreamteam.json'), JSON.stringify({ version: 1, checks: [{ run: 'x', baseline: 'files_outside_diff' }] }));
+  const refused = run(dir, ['--plan', '--base', 'main', '--out', out]);
+  assert.equal(refused.json.code, 'bad_profile');
+  assert.match(refused.json.detail, /checks\[0\]\.baseline требует diagnostic/);
+});
