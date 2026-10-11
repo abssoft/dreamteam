@@ -321,6 +321,24 @@ test('a declared item bound to paths runs over the files of the change it names 
   assert.equal(attribute(narrowed, ['src/totals.js']), 'in_change');
 });
 
+test('checks of .dreamteam/local.json in the primary checkout replace the committed list and name themselves as the source', async () => {
+  const dir = await repo();
+  const out = join(dir, '..', `qa-out-${Date.now()}`);
+  await writeFile(join(dir, 'dreamteam.json'), JSON.stringify({ version: 1, checks: ['make build'] }));
+  await mkdir(join(dir, '.dreamteam'), { recursive: true });
+  await writeFile(join(dir, '.dreamteam', 'local.json'), JSON.stringify({ host: '', checks: ['make mine', { run: 'npx eslint {paths}', paths: '^src/.+\\.js$' }] }));
+  const { code, json } = run(dir, ['--plan', '--base', 'main', '--out', out, '--id', 'local']);
+  assert.equal(code, 0, JSON.stringify(json));
+  const spec = JSON.parse(await readFile(json.spec, 'utf8'));
+  assert.deepEqual(spec.checks.map((check) => [check.command, check.source]), [
+    ['make mine', '.dreamteam/local.json'],
+    ['npx eslint src/totals.js src/totals.test.js', '.dreamteam/local.json'],
+  ]);
+  assert.match(await readFile(json.plan, 'utf8'), /declared in \.dreamteam\/local\.json/);
+  await writeFile(join(dir, '.dreamteam', 'local.json'), JSON.stringify({ checks: [] }));
+  assert.equal(run(dir, ['--plan', '--base', 'main', '--out', out]).json.code, 'bad_profile');
+});
+
 test('--run refuses prose and rewrites, applies additions and drops, and --report attributes and settles the verdict', async () => {
   const dir = await repo();
   const out = join(dir, '..', `qa-out-${Date.now()}`);

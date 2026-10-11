@@ -22,6 +22,7 @@ import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const PROFILE_FILE = "dreamteam.json";
+export const LOCAL_FILE = ".dreamteam/local.json";
 export const PROFILE_KEYS = ["version", "tracker", "base", "delivery", "returns", "references", "checks", "worktree", "stage"];
 export const DELIVERY_MODES = ["merge_push", "branch"];
 export const BASELINE_MODES = ["files_outside_diff"];
@@ -150,6 +151,14 @@ export function profileProblems(raw) {
     }
   }
   return problems;
+}
+
+// `checks` of the machine settings file (.dreamteam/local.json, outside git):
+// the one profile key a machine may replace. Problems read as the profile's
+// own, named after the local file; [] when the key is absent.
+export function localChecksProblems(local) {
+  if (!local || typeof local !== "object" || Array.isArray(local) || local.checks === undefined) return [];
+  return profileProblems({ version: 1, checks: local.checks }).map((message) => message.replace(`${PROFILE_FILE}: `, `${LOCAL_FILE}: `));
 }
 
 // The check items as the QA role runs them: {run, baseline, diagnostic} and,

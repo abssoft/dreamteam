@@ -40,6 +40,10 @@ _Avoid_: push policy, merge strategy
 A profile check's declared rule — files_outside_diff with a diagnostic pattern — by which the QA script settles a failure whose every diagnostic names a file outside the change as passed with attribution baseline.
 _Avoid_: ignore list, suppression
 
+**Local checks** (of a machine):
+The `checks` key of `.dreamteam/local.json` in the primary checkout, outside git: it replaces the profile's committed `checks` for that machine only, as a whole list, and no other profile key can be replaced this way. The QA plan and the check rows name the local file as their source, the gate stays a profile gate.
+_Avoid_: override file, personal profile
+
 **Path binding** (of a check):
 A profile check's `paths` pattern: the check runs only when the change carries a matching file, and `{paths}` in its command is replaced by those files, so the check runs over the change alone and not over the whole project.
 _Avoid_: scope, filter

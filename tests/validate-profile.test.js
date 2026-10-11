@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import { join } from 'node:path';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { checkItems, normalizeProfile, profileProblems, resolvePolicy, trackerProblems } from '../contracts/validate-profile.mjs';
@@ -108,4 +109,28 @@ test('the CLI validates a file or stdin, resolves the policy and exits 1 on a ba
   assert.equal(run(['--profile', '-', '--defaults', 'x'], '{}').json.code, 'bad_args');
   const usage = execFileSync(process.execPath, [scriptPath, '--profile', join(root, 'contracts', 'examples', 'profile.json')], { encoding: 'utf8' });
   assert.ok(usage.startsWith('{"ok":true'));
+});
+
+test('localChecksProblems judges only the checks key of the machine settings', async () => {
+  const { localChecksProblems } = await import('../contracts/validate-profile.mjs');
+  assert.deepEqual(localChecksProblems({ host: '', ports: '3100-3199' }), []);
+  assert.deepEqual(localChecksProblems({ checks: ['make check', { run: 'npx eslint {paths}', paths: '^src/' }] }), []);
+  assert.deepEqual(localChecksProblems({ checks: [] }).map((message) => message.split(' ')[0]), ['.dreamteam/local.json:']);
+  assert.equal(localChecksProblems({ checks: 'make' }).length, 1);
+});
+
+test('loadProfile lets the machine settings replace checks and reports a broken override as local_config_invalid', async () => {
+  const { loadProfile } = await import('../skills/project-manager/scripts/lib/profile.mjs');
+  const dir = fs.mkdtempSync(join(os.tmpdir(), 'dt-local-'));
+  fs.writeFileSync(join(dir, 'dreamteam.json'), JSON.stringify({ version: 1, base: 'main', checks: ['make check'] }));
+  assert.deepEqual(loadProfile(dir).profile.checks.map((item) => item.run), ['make check']);
+  fs.mkdirSync(join(dir, '.dreamteam'));
+  fs.writeFileSync(join(dir, '.dreamteam', 'local.json'), JSON.stringify({ checks: ['make mine'] }));
+  const loaded = loadProfile(dir);
+  assert.deepEqual(loaded.profile.checks.map((item) => item.run), ['make mine']);
+  assert.equal(loaded.profile.base, 'main');
+  fs.writeFileSync(join(dir, '.dreamteam', 'local.json'), JSON.stringify({ checks: [] }));
+  const broken = loadProfile(dir);
+  assert.equal(broken.profile, null);
+  assert.deepEqual([broken.error.code, broken.error.key], ['local_config_invalid', 'checks']);
 });
