@@ -291,6 +291,36 @@ test('a checks list in dreamteam.json is the whole gate: nothing is derived, a r
   }
 });
 
+test('a declared item bound to paths runs over the files of the change it names and is not run when the change misses them', async () => {
+  const dir = await repo();
+  const out = join(dir, '..', `qa-out-${Date.now()}`);
+  await writeFile(join(dir, 'dreamteam.json'), JSON.stringify({ version: 1, checks: [
+    'make build',
+    { run: 'npx eslint {paths}', paths: '^src/.+\\.js$' },
+    { run: 'vendor/bin/pint --test {paths}', paths: '^src/.+\\.php$' },
+    { run: 'make types', paths: '^src/.+\\.php$' },
+    { run: 'make e2e {paths}', paths: '^tests/e2e/' },
+    { run: 'npx prettier --write {paths}', paths: '\\.js$' },
+  ] }));
+  const { code, json } = run(dir, ['--plan', '--base', 'main', '--out', out, '--id', 'narrow']);
+  assert.equal(code, 0, JSON.stringify(json));
+  assert.deepEqual(json.not_runnable, [
+    { command: 'make e2e {paths}', reason: 'the change carries no path matching ^tests/e2e/' },
+    { command: 'npx prettier --write {paths}', reason: 'rewrites files: not a check' },
+  ]);
+  const spec = JSON.parse(await readFile(json.spec, 'utf8'));
+  assert.deepEqual(spec.checks.map((check) => [check.id, check.command, check.width]), [
+    ['p1', 'make build', 'full'],
+    ['p2', 'npx eslint src/totals.js src/totals.test.js', 'narrowed to the change'],
+    ['p3', 'vendor/bin/pint --test src/style.php', 'narrowed to the change'],
+    ['p4', 'make types', 'full'],
+  ]);
+  const plan = await readFile(json.plan, 'utf8');
+  assert.match(plan, /\[p4\] make types — profile, full, from dreamteam\.json; gated by paths \^src\/\.\+\\\.php\$/);
+  const narrowed = { id: 'p2', tool: 'profile', command: 'npx eslint src/totals.js', ran: 'npx eslint src/totals.js', scope: 'none', width: 'narrowed to the change', source: 'dreamteam.json', status: 'failed', exit: 1, seconds: 0.1, log: null, tail: 'x' };
+  assert.equal(attribute(narrowed, ['src/totals.js']), 'in_change');
+});
+
 test('--run refuses prose and rewrites, applies additions and drops, and --report attributes and settles the verdict', async () => {
   const dir = await repo();
   const out = join(dir, '..', `qa-out-${Date.now()}`);

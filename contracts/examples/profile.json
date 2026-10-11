@@ -7,6 +7,7 @@
   "references": { "terminology": "docs/terms.md" },
   "checks": [
     "npm test",
+    { "run": "npx eslint {paths}", "paths": "^src/.+\\.(js|ts)$" },
     { "run": "vendor/bin/noverify check ./src", "baseline": "files_outside_diff", "diagnostic": "^(?<file>\\S+\\.php):\\d+" }
   ],
   "worktree": { "root": ".worktrees", "link": ["docker-compose.dev.yml"], "copy": [".env"], "setup": ["npm ci"] },

@@ -44,7 +44,7 @@
 // the profile names one and the file exists.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -350,7 +350,8 @@ function main() {
   const terminologyPath = terminology && toplevel ? join(toplevel, terminology) : null;
   const models = resolveModels(runtime, modelOverride, cachePathOverride);
 
-  out({
+  const runDir = createRunDir(key);
+  const line = {
     ok: true,
     version,
     plugin_root: pluginRoot,
@@ -368,7 +369,7 @@ function main() {
       mockup_render: optional(join(pluginRoot, "skills", "product-technologist", "scripts", "mockup-render.mjs")),
       agent_usage: optional(join(pluginRoot, "skills", "agent-usage", "scripts", "agent-usage.mjs")),
     },
-    run_dir: createRunDir(key),
+    run_dir: runDir,
     repo: {
       toplevel,
       current_branch: toplevel ? git(toplevel, ["rev-parse", "--abbrev-ref", "HEAD"]) : null,
@@ -386,7 +387,10 @@ function main() {
     references_missing: terminology && !(terminologyPath && existsSync(terminologyPath)) ? ["terminology"] : [],
     models,
     spawn_args: spawnArgs(runtime, models),
-  });
+  };
+  // A compacted context loses this line; the run directory keeps it.
+  try { writeFileSync(join(runDir, "bootstrap.json"), `${JSON.stringify(line, null, 1)}\n`); } catch { /* the line below is the report */ }
+  out(line);
 }
 
 try {

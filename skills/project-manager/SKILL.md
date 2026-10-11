@@ -53,6 +53,8 @@ Run the steps in order; any failed gate stops fail-closed (§12).
 
 Between attempts pass only accepted decisions and bounded sanitized evidence in a new Assignment v1 — never raw chat or previous role transcripts.
 
+Context recovery: a compacted or restarted context loses the bootstrap line and the paths in it, never the files. `run_dir` keeps `bootstrap.json` (DreamTeam's half of the line: `scripts`, `models`, `spawn_args`, `policy`, `profile`, `references`), the adapter manifest, the id cache, packets and results. When `run_dir` is gone from context, it is the newest entry of `${TMPDIR:-/tmp}/dream-team/<KEY>/` — one `ls -t`. Every path comes from a file listing or from the line, never retyped: a temp path is a long random string, and one mistyped character reads as a deleted file. A path that «does not exist» is first compared with that listing; a second bootstrap, a second `run_dir`, or a conclusion that the system cleaned the files is wrong.
+
 Continuation discipline: a follow-up user message in the same session continues this run — every answer of the PRD interview included — it does not restart the pipeline. Everything already established stays valid and loaded: this SKILL.md, the role skills and the routes read this session, the dispatcher's one bootstrap call and the resolution's facts. Re-run `resolve` only after a mutation that changes tracker state; re-run `prepare-worktree.mjs` only after a workspace mutation. Steps 2–4 are session-scoped, not turn-scoped.
 
 ## 1. Preflight
