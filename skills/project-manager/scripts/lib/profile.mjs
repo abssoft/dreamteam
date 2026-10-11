@@ -10,7 +10,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
-import { normalizeProfile, profileProblems } from "../../../../contracts/validate-profile.mjs";
+import { localChecksProblems, normalizeProfile, profileProblems } from "../../../../contracts/validate-profile.mjs";
 
 export const PROFILE_FILE = "dreamteam.json";
 export const LOCAL_DIR = ".dreamteam";
@@ -58,6 +58,13 @@ export function loadProfile(primary) {
   }
   const problems = profileProblems(raw);
   if (problems.length) return { present: true, profile: null, error: { code: "profile_invalid", key: problemKey(problems[0]), detail: problems } };
+  // `checks` of the machine settings replaces the committed list for this machine.
+  const local = readTreeLocal(primary);
+  if (local?.checks !== undefined) {
+    const overridden = localChecksProblems(local);
+    if (overridden.length) return { present: true, profile: null, error: { code: "local_config_invalid", key: "checks", path: join(primary, LOCAL_FILE), detail: overridden } };
+    raw = { ...raw, checks: local.checks };
+  }
   return { present: true, profile: normalizeProfile(raw), error: null };
 }
 

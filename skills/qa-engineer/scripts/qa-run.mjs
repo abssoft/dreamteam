@@ -62,7 +62,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { collectRules, parseNameStatus, TEST_PATH } from "../../code-reviewer/scripts/review-pack.mjs";
 import { shellArg, waitResults } from "./checks-run.mjs";
-import { checkItems, profileProblems } from "../../../contracts/validate-profile.mjs";
+import { checkItems, LOCAL_FILE, localChecksProblems, profileProblems } from "../../../contracts/validate-profile.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
@@ -251,6 +251,8 @@ export function deriveChecks(env, codePaths, testPaths) {
 // spelled, with the baseline policy an object item declares. An item bound to
 // `paths` runs only when the change (`changed`: its non-deleted files) carries
 // a matching path, and `{paths}` in its command is replaced by those paths.
+// `checks` of .dreamteam/local.json in the primary checkout (outside git)
+// replaces the committed list on this machine; the item `source` names it.
 // null when the profile or the key is absent — the gate is then derived;
 // {error} when the file is not a profile (contracts/validate-profile.mjs
 // judges it).
@@ -259,7 +261,21 @@ export function declaredChecks(root, changed = []) {
   if (!existsSync(path)) return null;
   let raw;
   try { raw = readJson(path); } catch { return { error: `${PROFILE_FILE} is not valid JSON` }; }
-  if (!isPlainObject(raw) || raw.checks === undefined) return null;
+  if (!isPlainObject(raw)) return null;
+  let source = PROFILE_FILE;
+  const primary = (git(["worktree", "list", "--porcelain"], root) ?? "").match(/^worktree (.+)$/m)?.[1] ?? root;
+  const localPath = join(primary, LOCAL_FILE);
+  if (existsSync(localPath)) {
+    let local = null;
+    try { local = readJson(localPath); } catch { return { error: `${LOCAL_FILE} is not valid JSON` }; }
+    if (isPlainObject(local) && local.checks !== undefined) {
+      const overridden = localChecksProblems(local);
+      if (overridden.length) return { error: overridden.join("; ") };
+      raw = { ...raw, checks: local.checks };
+      source = LOCAL_FILE;
+    }
+  }
+  if (raw.checks === undefined) return null;
   const problems = profileProblems(raw);
   if (problems.length) return { error: problems.join("; ") };
   const items = [];
@@ -267,7 +283,7 @@ export function declaredChecks(root, changed = []) {
   for (const check of checkItems(raw)) {
     if (seen.has(check.run)) continue;
     seen.add(check.run);
-    const base = { id: `p${items.length + 1}`, tool: "profile", command: check.run, scope: "none", source: PROFILE_FILE, note: check.baseline ? `baseline ${check.baseline}` : "", ...(check.baseline ? { baseline: check.baseline, diagnostic: check.diagnostic } : {}) };
+    const base = { id: `p${items.length + 1}`, tool: "profile", command: check.run, scope: "none", source, note: check.baseline ? `baseline ${check.baseline}` : "", ...(check.baseline ? { baseline: check.baseline, diagnostic: check.diagnostic } : {}) };
     if (MUTATING.test(check.run)) {
       items.push({ ...base, width: "not run", runnable: false, reason: "rewrites files: not a check" });
       continue;
@@ -289,7 +305,7 @@ export function declaredChecks(root, changed = []) {
     const wanted = collapse(matched);
     items.push({ ...base, command: check.run.replaceAll("{paths}", wanted.list), width: `narrowed to the change${wanted.note}`, runnable: true });
   }
-  return { items };
+  return { items, source };
 }
 
 function changedPaths(mergeBase, cwd) {
@@ -339,7 +355,7 @@ function plan(opts) {
   const attention = [
     `Change: merge base of ${base} and HEAD, plus the working tree. The files listed are the whole change.`,
     declared
-      ? `Gate declared in ${PROFILE_FILE}: ${runnable.length} runnable, ${notRunnable.length} not runnable (reasons in <checks>). These commands are the whole gate — an item bound to paths runs over the files of the change it names, one the change does not touch is not run: nothing is derived, and the rules add no command and no executor.`
+      ? `Gate declared in ${declared.source}: ${runnable.length} runnable, ${notRunnable.length} not runnable (reasons in <checks>). These commands are the whole gate — an item bound to paths runs over the files of the change it names, one the change does not touch is not run: nothing is derived, and the rules add no command and no executor.`
       : `Derived checks: ${runnable.length} runnable, ${notRunnable.length} not runnable (reasons in <checks>).`,
     !declared && env.ok === false ? `env-snapshot failed: derive the checks from the rules and the manifests yourself.` : null,
     rules.dropped.length ? `rules omitted for budget, read them yourself: ${rules.dropped.join(", ")}` : null,
@@ -355,7 +371,7 @@ function plan(opts) {
     section("attention", bullets(attention)),
     section("workspace", [`cwd: ${cwd}`, `base: ${base}`, `merge_base: ${mergeBase}`, `head: ${head ?? ""}`, `php: ${env?.runtime?.php ?? "(not detected)"}`, `node: ${env?.runtime?.node ?? ""}`].join("\n")),
     section("files", bullets(files.map((file) => `${file.status} ${file.from ? `${file.from} → ` : ""}${file.path}${TEST_PATH.test(file.path) ? " (test)" : ""}`))),
-    section("checks", `${bullets(rows) || "- (nothing derived)"}${suite.length ? `\n\nproject suite, full width only, when the rules call for it:\n${bullets(suite)}` : ""}`, { note: declared ? `declared in ${PROFILE_FILE}: the whole gate, each command as spelled (narrowed or skipped where it is bound to paths), on the host` : "derived from the project's own scripts at the width of the change; the rules below decide the executor and what they add or forbid" }),
+    section("checks", `${bullets(rows) || "- (nothing derived)"}${suite.length ? `\n\nproject suite, full width only, when the rules call for it:\n${bullets(suite)}` : ""}`, { note: declared ? `declared in ${declared.source}: the whole gate, each command as spelled (narrowed or skipped where it is bound to paths), on the host` : "derived from the project's own scripts at the width of the change; the rules below decide the executor and what they add or forbid" }),
     section("rules", rulesText),
     "</qa_plan>",
   ].join("\n\n");
