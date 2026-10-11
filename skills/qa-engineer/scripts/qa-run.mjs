@@ -193,6 +193,14 @@ function envSnapshot(cwd, skip) {
   }
 }
 
+// The paths a narrowed command takes; past the cap the list collapses to its
+// directories.
+function collapse(paths) {
+  if (paths.length <= CHECK_PATH_CAP) return { list: paths.map(quotePath).join(" "), note: "" };
+  const dirs = [...new Set(paths.map((path) => path.split("/").slice(0, -1).join("/") || "."))];
+  return { list: dirs.slice(0, CHECK_PATH_CAP).map(quotePath).join(" "), note: ` (${paths.length} paths collapsed to their directories)` };
+}
+
 // The width of a check is a fact of the plan: the templates come from the
 // environment snapshot, the paths from the change, filtered to the files the
 // tool reads. Past the cap the list collapses to its directories, so a wide
@@ -207,11 +215,6 @@ export function deriveChecks(env, codePaths, testPaths) {
       seen.add(item.command);
     }
     items.push({ id: `c${items.length + 1}`, ...item });
-  };
-  const collapse = (paths) => {
-    if (paths.length <= CHECK_PATH_CAP) return { list: paths.map(quotePath).join(" "), note: "" };
-    const dirs = [...new Set(paths.map((path) => path.split("/").slice(0, -1).join("/") || "."))];
-    return { list: dirs.slice(0, CHECK_PATH_CAP).map(quotePath).join(" "), note: ` (${paths.length} paths collapsed to their directories)` };
   };
   for (const check of checks) {
     if (!isPlainObject(check) || !isText(check.command)) continue;
@@ -245,10 +248,13 @@ export function deriveChecks(env, codePaths, testPaths) {
 }
 
 // The gate the project profile declares: every command of `checks` as it is
-// spelled, full width, with the baseline policy an object item declares. null
-// when the profile or the key is absent — the gate is then derived; {error}
-// when the file is not a profile (contracts/validate-profile.mjs judges it).
-export function declaredChecks(root) {
+// spelled, with the baseline policy an object item declares. An item bound to
+// `paths` runs only when the change (`changed`: its non-deleted files) carries
+// a matching path, and `{paths}` in its command is replaced by those paths.
+// null when the profile or the key is absent — the gate is then derived;
+// {error} when the file is not a profile (contracts/validate-profile.mjs
+// judges it).
+export function declaredChecks(root, changed = []) {
   const path = join(root, PROFILE_FILE);
   if (!existsSync(path)) return null;
   let raw;
@@ -262,9 +268,26 @@ export function declaredChecks(root) {
     if (seen.has(check.run)) continue;
     seen.add(check.run);
     const base = { id: `p${items.length + 1}`, tool: "profile", command: check.run, scope: "none", source: PROFILE_FILE, note: check.baseline ? `baseline ${check.baseline}` : "", ...(check.baseline ? { baseline: check.baseline, diagnostic: check.diagnostic } : {}) };
-    items.push(MUTATING.test(check.run)
-      ? { ...base, width: "not run", runnable: false, reason: "rewrites files: not a check" }
-      : { ...base, width: "full", runnable: true });
+    if (MUTATING.test(check.run)) {
+      items.push({ ...base, width: "not run", runnable: false, reason: "rewrites files: not a check" });
+      continue;
+    }
+    if (check.paths === undefined) {
+      items.push({ ...base, width: "full", runnable: true });
+      continue;
+    }
+    const pattern = new RegExp(check.paths);
+    const matched = changed.filter((candidate) => pattern.test(candidate));
+    if (!matched.length) {
+      items.push({ ...base, width: "not run", runnable: false, reason: `the change carries no path matching ${check.paths}` });
+      continue;
+    }
+    if (!check.run.includes("{paths}")) {
+      items.push({ ...base, width: "full", runnable: true, note: [base.note, `gated by paths ${check.paths}`].filter(Boolean).join("; ") });
+      continue;
+    }
+    const wanted = collapse(matched);
+    items.push({ ...base, command: check.run.replaceAll("{paths}", wanted.list), width: `narrowed to the change${wanted.note}`, runnable: true });
   }
   return { items };
 }
@@ -293,7 +316,7 @@ function plan(opts) {
   const codePaths = present.filter((file) => !TEST_PATH.test(file.path)).map((file) => file.path);
   const testPaths = present.filter((file) => TEST_PATH.test(file.path)).map((file) => file.path);
 
-  const declared = declaredChecks(root);
+  const declared = declaredChecks(root, present.map((file) => file.path));
   if (declared?.error) fail("bad_profile", declared.error);
   // The plan takes the runtime and the check templates; a declared gate replaces the templates.
   const env = envSnapshot(cwd, ["rules", "docs", "git", ...(declared ? ["validation"] : []), ...(opts.skip ? [opts.skip.slice(7)] : [])]);
@@ -316,7 +339,7 @@ function plan(opts) {
   const attention = [
     `Change: merge base of ${base} and HEAD, plus the working tree. The files listed are the whole change.`,
     declared
-      ? `Gate declared in ${PROFILE_FILE}: ${runnable.length} runnable, ${notRunnable.length} not runnable (reasons in <checks>). These commands are the whole gate: nothing is derived, and the rules add no command and no executor.`
+      ? `Gate declared in ${PROFILE_FILE}: ${runnable.length} runnable, ${notRunnable.length} not runnable (reasons in <checks>). These commands are the whole gate — an item bound to paths runs over the files of the change it names, one the change does not touch is not run: nothing is derived, and the rules add no command and no executor.`
       : `Derived checks: ${runnable.length} runnable, ${notRunnable.length} not runnable (reasons in <checks>).`,
     !declared && env.ok === false ? `env-snapshot failed: derive the checks from the rules and the manifests yourself.` : null,
     rules.dropped.length ? `rules omitted for budget, read them yourself: ${rules.dropped.join(", ")}` : null,
@@ -332,7 +355,7 @@ function plan(opts) {
     section("attention", bullets(attention)),
     section("workspace", [`cwd: ${cwd}`, `base: ${base}`, `merge_base: ${mergeBase}`, `head: ${head ?? ""}`, `php: ${env?.runtime?.php ?? "(not detected)"}`, `node: ${env?.runtime?.node ?? ""}`].join("\n")),
     section("files", bullets(files.map((file) => `${file.status} ${file.from ? `${file.from} → ` : ""}${file.path}${TEST_PATH.test(file.path) ? " (test)" : ""}`))),
-    section("checks", `${bullets(rows) || "- (nothing derived)"}${suite.length ? `\n\nproject suite, full width only, when the rules call for it:\n${bullets(suite)}` : ""}`, { note: declared ? `declared in ${PROFILE_FILE}: the whole gate, each command as spelled, on the host` : "derived from the project's own scripts at the width of the change; the rules below decide the executor and what they add or forbid" }),
+    section("checks", `${bullets(rows) || "- (nothing derived)"}${suite.length ? `\n\nproject suite, full width only, when the rules call for it:\n${bullets(suite)}` : ""}`, { note: declared ? `declared in ${PROFILE_FILE}: the whole gate, each command as spelled (narrowed or skipped where it is bound to paths), on the host` : "derived from the project's own scripts at the width of the change; the rules below decide the executor and what they add or forbid" }),
     section("rules", rulesText),
     "</qa_plan>",
   ].join("\n\n");

@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, realpath, rm, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -138,5 +138,15 @@ test('the profile becomes the policy, rung by rung, with the tracker check and t
     assert.equal(invalid.profile.error.code, 'profile_invalid');
     assert.equal(invalid.profile.error.key, 'delivery');
     assert.deepEqual(invalid.profile.error.detail, ['dreamteam.json: delivery принимает merge_push или branch, получено "push"']);
+  });
+});
+
+test('the line is also written to run_dir/bootstrap.json, for a context that lost it', async () => {
+  await withDir(async (root) => {
+    const dir = await repo(root, { version: 1, checks: ['make check'] });
+    const report = probe({ runtime: 'claude', projectRoot: dir, repo: dir, key: 'DT-1' });
+    const saved = JSON.parse(await readFile(join(report.run_dir, 'bootstrap.json'), 'utf8'));
+    assert.deepEqual(saved, report);
+    await rm(report.run_dir, { recursive: true, force: true });
   });
 });

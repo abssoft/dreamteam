@@ -91,9 +91,16 @@ export function profileProblems(raw) {
       raw.checks.forEach((item, index) => {
         const label = `checks[${index}]`;
         if (isText(item)) return;
-        if (!isObject(item)) { problems.push(`${PROFILE_FILE}: ${label} — команда строкой или объект {run, baseline, diagnostic}`); return; }
-        problems.push(...unknownKeys(item, ["run", "baseline", "diagnostic"], `${label}.`));
+        if (!isObject(item)) { problems.push(`${PROFILE_FILE}: ${label} — команда строкой или объект {run, baseline, diagnostic, paths}`); return; }
+        problems.push(...unknownKeys(item, ["run", "baseline", "diagnostic", "paths"], `${label}.`));
         if (!isText(item.run)) problems.push(`${PROFILE_FILE}: ${label}.run — команда`);
+        if (item.paths !== undefined) {
+          if (!isText(item.paths)) problems.push(`${PROFILE_FILE}: ${label}.paths — регулярка путей изменения`);
+          else {
+            try { new RegExp(item.paths); } catch (error) { problems.push(`${PROFILE_FILE}: ${label}.paths — регулярка не компилируется (${error.message})`); }
+          }
+        }
+        if (isText(item.run) && item.run.includes("{paths}") && !isText(item.paths)) problems.push(`${PROFILE_FILE}: ${label}.run с {paths} требует paths`);
         if (item.baseline !== undefined && !BASELINE_MODES.includes(item.baseline)) problems.push(`${PROFILE_FILE}: ${label}.baseline принимает ${BASELINE_MODES.join(" или ")}`);
         if (item.baseline !== undefined && item.diagnostic === undefined) problems.push(`${PROFILE_FILE}: ${label}.baseline требует diagnostic`);
         if (item.diagnostic !== undefined) { const problem = diagnosticProblem(item.diagnostic, label); if (problem) problems.push(problem); }
@@ -145,12 +152,13 @@ export function profileProblems(raw) {
   return problems;
 }
 
-// The check items as the QA role runs them: {run, baseline, diagnostic}.
+// The check items as the QA role runs them: {run, baseline, diagnostic} and,
+// for an item bound to the paths of the change, `paths`.
 export function checkItems(raw) {
   if (!Array.isArray(raw?.checks)) return [];
   return raw.checks.map((item) => (isText(item)
     ? { run: item.trim(), baseline: null, diagnostic: null }
-    : { run: String(item.run ?? "").trim(), baseline: item.baseline ?? null, diagnostic: item.diagnostic ?? null }));
+    : { run: String(item.run ?? "").trim(), baseline: item.baseline ?? null, diagnostic: item.diagnostic ?? null, ...(item.paths !== undefined ? { paths: item.paths } : {}) }));
 }
 
 // The profile with every optional block filled in; only for a file that

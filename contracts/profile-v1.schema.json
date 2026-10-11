@@ -30,7 +30,7 @@
     "checks": {
       "type": "array",
       "minItems": 1,
-      "description": "The QA gate: every command of the project's full check set, as the repository rules spell it, run from the checkout root on the host. A string item is the command; an object item adds a baseline policy.",
+      "description": "The QA gate: the project's check commands, as the repository rules spell them, run from the checkout root on the host. A string item is the command and runs as spelled; an object item adds a baseline policy and/or binds the command to the paths of the change.",
       "items": {
         "oneOf": [
           { "type": "string", "minLength": 1 },
@@ -41,7 +41,8 @@
             "properties": {
               "run": { "type": "string", "minLength": 1 },
               "baseline": { "type": "string", "enum": ["files_outside_diff"], "description": "files_outside_diff: diagnostics of this check that all name files outside the full diff of the task do not affect the verdict; the QA role marks the item passed with attribution baseline. Requires `diagnostic`." },
-              "diagnostic": { "type": "string", "minLength": 1, "description": "A regular expression with a named group `file` that matches one diagnostic line of the tool's output and captures the file it names." }
+              "diagnostic": { "type": "string", "minLength": 1, "description": "A regular expression with a named group `file` that matches one diagnostic line of the tool's output and captures the file it names." },
+              "paths": { "type": "string", "minLength": 1, "description": "A regular expression over the repository-relative paths of the change (its non-deleted files). The check runs only when the change carries a matching path; otherwise it is not run. `{paths}` in `run` is replaced by the matching paths, so the command runs over the change alone — an item without `{paths}` runs as spelled, gated by the paths." }
             },
             "dependentRequired": { "baseline": ["diagnostic"] }
           }

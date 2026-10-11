@@ -37,12 +37,13 @@ test('the live profile shapes and the example pass the validator and the schema 
   assert.deepEqual(normalized.references, { terminology: null });
   assert.deepEqual(checkItems(example), [
     { run: 'npm test', baseline: null, diagnostic: null },
+    { run: 'npx eslint {paths}', baseline: null, diagnostic: null, paths: '^src/.+\\.(js|ts)$' },
     { run: 'vendor/bin/noverify check ./src', baseline: 'files_outside_diff', diagnostic: '^(?<file>\\S+\\.php):\\d+' },
   ]);
 });
 
 test('every violation is named with its key, in the words the role prints', () => {
-  const broken = { version: 1, foo: 1, delivery: 'push', returns: 99, base: 'bad branch', tracker: { kind: 'YouTrack', prefix: 'dev', token: 'x', nested: { api_key: 'y' } }, references: { terminology: '/abs/terms.md', other: 1 }, checks: [{ run: 'x', baseline: 'files_outside_diff' }, { run: 'y', baseline: 'files_outside_diff', diagnostic: '(' }, { run: 'z', diagnostic: 'no group' }, 42], worktree: { root: '../out' }, stage: { ports: ['app', 'app'], health: 'up' } };
+  const broken = { version: 1, foo: 1, delivery: 'push', returns: 99, base: 'bad branch', tracker: { kind: 'YouTrack', prefix: 'dev', token: 'x', nested: { api_key: 'y' } }, references: { terminology: '/abs/terms.md', other: 1 }, checks: [{ run: 'x', baseline: 'files_outside_diff' }, { run: 'y', baseline: 'files_outside_diff', diagnostic: '(' }, { run: 'z', diagnostic: 'no group' }, 42, { run: 'npx eslint {paths}' }, { run: 'q', paths: '(' }], worktree: { root: '../out' }, stage: { ports: ['app', 'app'], health: 'up' } };
   const problems = profileProblems(broken);
   for (const expected of [
     'dreamteam.json: неизвестный ключ foo',
@@ -57,13 +58,16 @@ test('every violation is named with its key, in the words the role prints', () =
     'dreamteam.json: references.terminology — относительный путь внутри репозитория',
     'dreamteam.json: checks[0].baseline требует diagnostic',
     'dreamteam.json: checks[2].diagnostic — нужна именованная группа (?<file>…)',
-    'dreamteam.json: checks[3] — команда строкой или объект {run, baseline, diagnostic}',
+    'dreamteam.json: checks[3] — команда строкой или объект {run, baseline, diagnostic, paths}',
+    'dreamteam.json: checks[4].run с {paths} требует paths',
+    'dreamteam.json: checks[3] — команда строкой или объект {run, baseline, diagnostic, paths}',
     'dreamteam.json: worktree.root — относительный путь внутри репозитория',
     'dreamteam.json: stage.ports — уникальные имена слотов',
     'dreamteam.json: stage.start или stage.up/down/status',
     'dreamteam.json: stage.health — путь, начинающийся с /',
   ]) assert.ok(problems.includes(expected), `${expected}\n${problems.join('\n')}`);
   assert.ok(problems.some((item) => item.startsWith('dreamteam.json: checks[1].diagnostic — регулярка не компилируется')));
+  assert.ok(problems.some((item) => item.startsWith('dreamteam.json: checks[5].paths — регулярка не компилируется')));
   assert.equal(validate(broken), false);
   assert.deepEqual(profileProblems({ version: 2 }), ['dreamteam.json: version должен быть 1']);
   assert.deepEqual(profileProblems({ version: 1, stage: { ports: ['app'], start: 'x', health: '/' } }), ['dreamteam.json: stage требует блок worktree']);
@@ -93,7 +97,7 @@ test('the CLI validates a file or stdin, resolves the policy and exits 1 on a ba
   assert.equal(ok.code, 0);
   assert.equal(ok.json.ok, true);
   assert.deepEqual(ok.json.policy, { base: 'main', delivery: 'merge_push', returns: 5, source: { base: 'profile', delivery: 'profile', returns: 'profile' } });
-  assert.equal(ok.json.checks.length, 2);
+  assert.equal(ok.json.checks.length, 3);
   assert.deepEqual(ok.json.tracker, { declared: true, kind: 'file', prefix: 'PRJ', problems: ['Профиль проекта объявляет трекер file с префиксом PRJ, а команда пришла из диспетчера plane. Запусти задачу через её диспетчер или поправь блок tracker'] });
   assert.deepEqual(ok.json.references, { terminology: 'docs/terms.md' });
   const bad = run(['--profile', '-'], JSON.stringify({ version: 1, delivery: 'push' }));
