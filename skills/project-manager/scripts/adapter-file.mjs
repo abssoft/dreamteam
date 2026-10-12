@@ -216,7 +216,8 @@ function createOp(root, input, prefix) {
   const usePrefix = parent ? parent.key.match(KEY)[1] : prefix;
   if (!isText(usePrefix)) refuse("bad_args", "--prefix is required for a standalone item");
   const last = listItems(root).filter((item) => item.key.startsWith(`${usePrefix}-`)).map((item) => keyNumber(item.key)).reduce((max, n) => Math.max(max, n), 0);
-  const item = { key: `${usePrefix}-${last + 1}`, title: input.title.trim(), headers: { Stage: "backlog", ...(parent ? { Parent: parent.key } : {}) }, description: isText(input.description) ? readText(input.description, "description").trim() : "", comments: [] };
+  if (input.size != null && !SIZES.includes(input.size)) refuse("invalid_size", String(input.size));
+  const item = { key: `${usePrefix}-${last + 1}`, title: input.title.trim(), headers: { Stage: "backlog", ...(parent ? { Parent: parent.key } : {}), ...(input.size != null ? { Size: input.size } : {}) }, description: isText(input.description) ? readText(input.description, "description").trim() : "", comments: [] };
   saveItem(root, item);
   return { ok: true, key: item.key, id: null, url: null };
 }
