@@ -4,7 +4,7 @@ Continuation of `project-manager` §4 for `PRD` (aliases `ПР`, `ТЗ`): the in
 
 ## Target and workspace
 
-- Target: the invoked key itself — resolved by the §3 call with `"self": true`, `"attachments": true`, `"parent": true`, `"mark": true`. A parent key stays the target even with unfinished children. An explicitly invoked child is a first-class target (an epic-style child is a full task): the document lands in the child, its parent is neutral context, and no stage moves anywhere. `PRD` without a key (and without a key-shaped current branch) targets a new item created after the interview (`routes/create.md`).
+- Target: the invoked key itself — resolved by the §3 call with `"self": true`, `"attachments": true`, `"parent": true`, no `mark` — a PRD never marks. A parent key stays the target even with unfinished children. An explicitly invoked child is a first-class target (an epic-style child is a full task): the document lands in the child, its parent is neutral context, and no stage moves anywhere. `PRD` without a key (and without a key-shaped current branch) targets a new item created after the interview (`routes/create.md`).
 - Workspace: the primary checkout as it stands — the interview and its research run in the project root the dispatcher's bootstrap found, on whatever branch it holds; the run's only persistence is the tracker document. Branch, worktree, and commit are development vocabulary (§5).
 
 ## Materials
