@@ -32,6 +32,8 @@ Keep the user's stated size until they approve a change. At a research boundary 
 
 Map the scoped change as a **design tree**: its root branches are the document's sections below, and its nodes are the material decisions within the working-size scope. Treat the brief, the issue material, and an existing document as settled nodes: interview only their gaps and whatever the user wants changed.
 
+**UI composition**: when the change adds or modifies interface elements, their placement, visibility, or visual priority, read and apply [UI design](references/ui-design.md) before presenting the proposed structure or a mockup. Recheck affected composition decisions during the closing Walkthrough.
+
 Work the tree in **rounds**. The **frontier** is the unresolved material decisions whose prerequisites are settled: the questions you can ask now without guessing. Ask them together within the working-size budget, number each, and give your recommended answer. Then wait for the user's answers before the next round. Open the first round with a brief restatement of the problem — the draft of «Проблематика». When the materials settle all material decisions, state the understood change and go straight to the closing passes. When the brief creates a new issue, collect the fields the wrapper names in the first round.
 
 Each question is in Russian and formatted like so:
