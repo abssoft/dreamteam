@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "dream-team",
-      "version": "7.5.2",
+      "version": "7.6.0",
       "source": {
         "source": "url",
         "url": "./"
