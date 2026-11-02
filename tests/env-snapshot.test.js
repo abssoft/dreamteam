@@ -1,11 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, realpath, symlink, writeFile } from 'node:fs/promises';
+import { accessSync, constants } from 'node:fs';
+import { chmod, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const scriptPath = join(process.cwd(), 'skills', 'env-snapshot', 'scripts', 'env-snapshot.mjs');
+
+// The host's own lsd must not start an index over every fixture repository.
+const hasLsd = (directory) => { try { accessSync(join(directory, 'lsd'), constants.X_OK); return true; } catch { return false; } };
+const PLAIN_PATH = process.env.PATH.split(':').filter((directory) => !hasLsd(directory)).join(':');
+const ENV = { ...process.env, PATH: PLAIN_PATH };
 
 const sh = (cwd, cmd, args) => execFileSync(cmd, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -18,7 +24,7 @@ async function repo(files = {}) {
   return dir;
 }
 
-const snapshot = (dir) => JSON.parse(execFileSync(process.execPath, [scriptPath, '--json', '--skip=rules,docs'], { cwd: dir, encoding: 'utf8' }));
+const snapshot = (dir) => JSON.parse(execFileSync(process.execPath, [scriptPath, '--json', '--skip=rules,docs'], { cwd: dir, encoding: 'utf8', env: ENV }));
 const byTool = (validation, tool) => validation.checks.find((check) => check.tool === tool);
 
 test('node scripts are classified by the binary they run, not by their name', async () => {
@@ -128,7 +134,7 @@ test('a repository without manifests derives nothing and says so', async () => {
 
 test('env files are reported by name and never read', async () => {
   const dir = await repo({ '.env': 'SECRET=do-not-print\n' });
-  const text = execFileSync(process.execPath, [scriptPath, '--skip=rules,docs'], { cwd: dir, encoding: 'utf8' });
+  const text = execFileSync(process.execPath, [scriptPath, '--skip=rules,docs'], { cwd: dir, encoding: 'utf8', env: ENV });
   assert.match(text, /env files \(names only, contents never read\): \.env/);
   assert.equal(text.includes('do-not-print'), false);
 });
@@ -178,7 +184,7 @@ test('--base names the parent branch of a subtask; an unknown base is reported, 
   sh(dir, 'git', ['checkout', '-q', '-b', 'SUB']);
   await writeFile(join(dir, 'sub.txt'), 'sub\n');
   commit(dir, 'sub');
-  const run = (...flags) => JSON.parse(execFileSync(process.execPath, [scriptPath, '--json', '--skip=rules,docs', ...flags], { cwd: dir, encoding: 'utf8' })).workspace;
+  const run = (...flags) => JSON.parse(execFileSync(process.execPath, [scriptPath, '--json', '--skip=rules,docs', ...flags], { cwd: dir, encoding: 'utf8', env: ENV })).workspace;
 
   assert.deepEqual(changed(run()), ['parent.txt', 'sub.txt']);
   assert.deepEqual(changed(run('--base=PARENT')), ['sub.txt']);
@@ -190,7 +196,7 @@ test('--base names the parent branch of a subtask; an unknown base is reported, 
 test('a run from a subdirectory reads the manifests and rules of the repository root', async () => {
   const dir = await repo({ 'package.json': { name: 'x', scripts: {} }, 'package-lock.json': '{}', 'AGENTS.md': '# rules\n' });
   await mkdir(join(dir, 'src'));
-  const out = JSON.parse(execFileSync(process.execPath, [scriptPath, '--json', '--skip=docs'], { cwd: join(dir, 'src'), encoding: 'utf8' }));
+  const out = JSON.parse(execFileSync(process.execPath, [scriptPath, '--json', '--skip=docs'], { cwd: join(dir, 'src'), encoding: 'utf8', env: ENV }));
   assert.deepEqual(out.project.lockfiles, ['package-lock.json']);
   assert.deepEqual(out.rules.map((doc) => doc.path), ['AGENTS.md']);
 });
@@ -205,11 +211,56 @@ test('dependency directories are reported as absent, present or a symlink with i
 
 test('validation rides in JSON only and can be skipped; the README is listed, never embedded', async () => {
   const dir = await repo({ 'package.json': { name: 'x', scripts: { lint: 'eslint .' } }, 'README.md': 'readme-body\n' });
-  const text = execFileSync(process.execPath, [scriptPath], { cwd: dir, encoding: 'utf8' });
+  const text = execFileSync(process.execPath, [scriptPath], { cwd: dir, encoding: 'utf8', env: ENV });
   assert.equal(/validation|eslint/.test(text), false);
   assert.match(text, /- README\.md \(12 bytes, content skipped\)/);
   assert.equal(text.includes('readme-body'), false);
-  const out = JSON.parse(execFileSync(process.execPath, [scriptPath, '--json', '--skip=validation'], { cwd: dir, encoding: 'utf8' }));
+  const out = JSON.parse(execFileSync(process.execPath, [scriptPath, '--json', '--skip=validation'], { cwd: dir, encoding: 'utf8', env: ENV }));
   assert.equal(out.validation, undefined);
   assert.equal(out.tooling, undefined);
+});
+
+test('rules are selected by the paths the change touches, imports ride as entries, links as routes', async () => {
+  const dir = await repo({ 'AGENTS.md': '# rules\n@docs/style.md\nArchitecture: see docs/arch.md for the layers.\n' });
+  await mkdir(join(dir, 'docs'));
+  await mkdir(join(dir, '.claude', 'rules'), { recursive: true });
+  await writeFile(join(dir, 'docs', 'style.md'), 'style-body\n');
+  await writeFile(join(dir, 'docs', 'arch.md'), 'arch-body\n');
+  await writeFile(join(dir, '.claude', 'rules', 'php.md'), '---\npaths: ["src/**/*.php"]\n---\nphp-body\n');
+  await writeFile(join(dir, '.claude', 'rules', 'all.md'), 'all-body\n');
+  const run = (...flags) => JSON.parse(execFileSync(process.execPath, [scriptPath, '--json', '--skip=docs,validation', ...flags], { cwd: dir, encoding: 'utf8', env: ENV }));
+
+  const js = run('--paths=src/a.js');
+  assert.deepEqual(js.rules.map((doc) => doc.path), ['AGENTS.md', 'docs/style.md', '.claude/rules/all.md']);
+  assert.deepEqual(js.rules_skipped, ['.claude/rules/php.md']);
+  assert.deepEqual(js.rules_routes, ['docs/arch.md — Architecture: see docs/arch.md for the layers.']);
+  assert.equal(js.rules.find((doc) => doc.path === 'docs/style.md').content, 'style-body\n');
+
+  const php = run('--paths=src/x.php');
+  assert.deepEqual(php.rules.map((doc) => doc.path), ['AGENTS.md', 'docs/style.md', '.claude/rules/all.md', '.claude/rules/php.md']);
+  assert.deepEqual(php.rules_skipped, []);
+  // Without paths every rule rides; with --skip=rules the same list, contents withheld.
+  assert.deepEqual(run().rules.map((doc) => doc.path), ['AGENTS.md', 'docs/style.md', '.claude/rules/all.md', '.claude/rules/php.md']);
+  const withheld = JSON.parse(execFileSync(process.execPath, [scriptPath, '--json', '--skip=docs,validation,rules', '--paths=src/a.js'], { cwd: dir, encoding: 'utf8', env: ENV }));
+  assert.deepEqual(withheld.rules.map((doc) => [doc.path, doc.content_skipped]), [['AGENTS.md', true], ['docs/style.md', true], ['.claude/rules/all.md', true]]);
+  const text = execFileSync(process.execPath, [scriptPath, '--skip=docs,validation', '--paths=src/a.js'], { cwd: dir, encoding: 'utf8', env: ENV });
+  assert.match(text, /## rules documents \(selected by paths: src\/a\.js\)/);
+  assert.match(text, /rules left out by their paths: \.claude\/rules\/php\.md/);
+  assert.equal(text.includes('php-body'), false);
+});
+
+test('navigation names lsd when the tool is on the PATH and starts its index; the ls of the same name is none', async () => {
+  const dir = await repo({ 'AGENTS.md': '# rules\n' });
+  const marker = join(dir, 'reindex.log');
+  const bin = await mkdtemp(join(tmpdir(), 'lsd-bin-'));
+  await writeFile(join(bin, 'lsd'), `#!/bin/sh\nif [ "$1" = "--help" ]; then echo "  def   Where a symbol is declared"; exit 0; fi\necho "$@" > '${marker}'\n`);
+  await chmod(join(bin, 'lsd'), 0o755);
+  const run = (path) => execFileSync(process.execPath, [scriptPath, '--skip=docs,validation,git,runtime'], { cwd: dir, encoding: 'utf8', env: { ...process.env, PATH: path } });
+
+  assert.match(run(`${bin}:${PLAIN_PATH}`), /navigation: lsd — its index was started/);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.match(await readFile(marker, 'utf8'), /reindex/);
+  assert.match(run(PLAIN_PATH), /navigation: none — lsd is not on the PATH/);
+  await writeFile(join(bin, 'lsd'), '#!/bin/sh\necho "An ls command with a lot of pretty colors"\n');
+  assert.match(run(`${bin}:${PLAIN_PATH}`), /navigation: none/);
 });

@@ -4,19 +4,24 @@
 //   --json            machine-readable JSON instead of Markdown
 //   --skip=a,b        skip sections: rules, docs, git, runtime, validation
 //   --base=<ref>      comparison base of the change (default: detected from origin)
-//   --max-bytes=N     per-document embed cap for rule documents (default 16384)
+//   --paths=a,b       the paths the change touches or will touch: a rule whose
+//                     `paths:` front matter matches none of them stays out
+//   --rules-budget=N  total characters of rule documents embedded (default 120000)
 // Never mutates anything. Never prints contents of .env* files.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, existsSync, statSync, lstatSync, readlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import os from "node:os";
+import { RULES_ROUTE_CAP, collectRules, lsdAvailable, warmLsd } from "./rules.mjs";
 
 const args = process.argv.slice(2);
 const asJson = args.includes("--json");
 const skip = new Set((args.find(a => a.startsWith("--skip=")) ?? "").replace("--skip=", "").split(",").filter(Boolean));
 const baseFlag = (args.find(a => a.startsWith("--base=")) ?? "").replace("--base=", "").trim();
-const maxBytes = Number((args.find(a => a.startsWith("--max-bytes=")) ?? "").replace("--max-bytes=", "")) || 16384;
+const pathsFlag = (args.find(a => a.startsWith("--paths=")) ?? "").replace("--paths=", "").split(",").map(s => s.trim()).filter(Boolean);
+const changedPaths = pathsFlag.length ? pathsFlag : null;
+const rulesBudget = Number((args.find(a => a.startsWith("--rules-budget=")) ?? "").replace("--rules-budget=", "")) || 120000;
 
 const cwd = process.cwd();
 
@@ -28,7 +33,7 @@ function run(cmd, argv, opts = {}) {
   }
 }
 const lines = (s, cap) => (s ?? "").split("\n").filter(Boolean).slice(0, cap);
-const readIf = (p, cap = maxBytes) => {
+const readIf = (p, cap) => {
   try {
     const st = statSync(p);
     if (!st.isFile()) return null;
@@ -303,29 +308,28 @@ if (!skip.has("docs")) {
 }
 
 // ---------- rules documents ----------
+// The same selection the reviewer's pack makes, so the rules a change is
+// judged by are the rules its author was handed: with --paths, a rule whose
+// `paths:` match none of them stays out; without, every rule rides.
 {
-  const found = [];
-  const queue = ["AGENTS.md", "CLAUDE.md"].filter(exists);
-  const seen = new Set(queue);
-  for (const f of queue) {
-    const doc = readIf(join(root, f));
-    if (!doc) continue;
-    found.push({ path: f, ...doc });
-    for (const m of doc.content.matchAll(/(?:^|[\s(`\["'])@([A-Za-z0-9._/-]+\.md)\b/gm)) {
-      const ref = m[1];
-      if (!seen.has(ref) && exists(ref)) { seen.add(ref); queue.push(ref); }
-    }
-  }
-  for (const extra of ["CONTRIBUTING.md"]) {
-    if (!seen.has(extra) && exists(extra)) { const d = readIf(join(root, extra)); if (d) found.push({ path: extra, ...d }); }
-  }
-  snapshot.rules = skip.has("rules")
-    ? found.map(({ path, bytes }) => ({ path, bytes, content_skipped: true }))
-    : found;
+  const rules = collectRules(root, cwd, skip.has("rules") ? Number.MAX_SAFE_INTEGER : rulesBudget, changedPaths);
+  const size = (text) => Buffer.byteLength(text, "utf8");
+  snapshot.rules = rules.items.map(({ path, text }) => (skip.has("rules") ? { path, bytes: size(text), content_skipped: true } : { path, bytes: size(text), content: text }));
+  snapshot.rules_routes = rules.routes;
+  snapshot.rules_routes_cut = rules.routes_cut;
+  snapshot.rules_dropped = rules.dropped;
+  snapshot.rules_skipped = rules.skipped;
+  if (rules.mode === "paths") snapshot.rules_paths = rules.paths;
   // The README is orientation, not a rule: listed for a later read, never embedded.
   const readme = readIf(join(root, "README.md"), 0);
-  if (readme && !seen.has("README.md")) snapshot.rules.push({ path: "README.md", bytes: readme.bytes, content_skipped: true });
+  if (readme && !rules.items.some((item) => item.path === "README.md")) snapshot.rules.push({ path: "README.md", bytes: readme.bytes, content_skipped: true });
 }
+
+// ---------- navigation ----------
+// Symbol questions go through lsd; its index starts now, detached, so it walks
+// while the role reads this snapshot.
+snapshot.navigation = lsdAvailable(root) ? "lsd" : "none";
+if (snapshot.navigation === "lsd") warmLsd(root);
 
 // ---------- output ----------
 if (asJson) {
@@ -336,6 +340,7 @@ if (asJson) {
 const out = [];
 out.push(`# env-snapshot — ${cwd} — ${snapshot.generated_at}`);
 out.push(`os: ${snapshot.os.platform} ${snapshot.os.release} ${snapshot.os.arch}`);
+out.push(`navigation: ${snapshot.navigation === "lsd" ? "lsd — its index was started with this snapshot; the first question may wait up to a minute" : "none — lsd is not on the PATH of this workspace"}`);
 if (snapshot.workspace) {
   const w = snapshot.workspace;
   out.push(`\n## workspace`);
@@ -376,13 +381,18 @@ if (snapshot.docs_index) {
   out.push(`\n## docs index (${snapshot.docs_index.length} files${snapshot.docs_index.length === 150 ? ", capped" : ""})`);
   out.push(...snapshot.docs_index.map(s => "  " + s));
 }
-if (snapshot.rules?.length) {
-  out.push(`\n## rules documents`);
+if (snapshot.rules?.length || snapshot.rules_paths) {
+  out.push(`\n## rules documents${changedPaths ? ` (selected by paths: ${changedPaths.join(", ")})` : ""}`);
   for (const d of snapshot.rules) {
     if (d.content_skipped) { out.push(`- ${d.path} (${d.bytes} bytes, content skipped)`); continue; }
-    out.push(`\n----- BEGIN ${d.path} (${d.bytes} bytes${d.truncated ? ", truncated" : ""}${d.note ? ", " + d.note : ""}) -----`);
+    out.push(`\n----- BEGIN ${d.path} (${d.bytes} bytes${d.note ? ", " + d.note : ""}) -----`);
     out.push(d.content.trimEnd());
     out.push(`----- END ${d.path} -----`);
   }
+  if (snapshot.rules_routes?.length) { out.push(`\nrouted by the entry files — open the one your doubt names:`); out.push(...snapshot.rules_routes.map(r => "- " + r)); }
+  if (snapshot.rules_routes_cut?.length) out.push(`rule routes past the cap of ${RULES_ROUTE_CAP}, follow the entry files for them: ${snapshot.rules_routes_cut.join(", ")}`);
+  if (snapshot.rules_dropped?.length) out.push(`rules omitted for budget, read them yourself: ${snapshot.rules_dropped.join(", ")}`);
+  if (snapshot.rules_skipped?.length) out.push(`rules left out by their paths: ${snapshot.rules_skipped.join(", ")}`);
+  if (snapshot.rules_paths) out.push(snapshot.rules_paths.length ? `no entry file; documentation paths to route reads:\n${snapshot.rules_paths.map(p => "- " + p).join("\n")}` : "no documentation in this repository");
 }
 process.stdout.write(out.join("\n") + "\n");

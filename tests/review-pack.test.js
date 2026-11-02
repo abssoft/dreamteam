@@ -371,7 +371,7 @@ test('without an entry file the rules section falls back to documentation paths'
 
   const { json } = run(dir, assignment(), ['--skip=rules']);
   const pack = await readFile(json.pack, 'utf8');
-  assert.match(pack, /<rules>\nNo AGENTS\.md, CLAUDE\.md, docs\/engineering\/README\.md; documentation paths to route reads:\n- docs\/engineering\/rules\/money\.md/);
+  assert.match(pack, /<rules>\nNo AGENTS\.md, CLAUDE\.md, CONTRIBUTING\.md, docs\/engineering\/README\.md; documentation paths to route reads:\n- docs\/engineering\/rules\/money\.md/);
 });
 
 test('the QA result rides in the pack whole, as a file or inline, between the review files and the method', async () => {

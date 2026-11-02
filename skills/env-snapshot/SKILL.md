@@ -25,7 +25,8 @@ Options:
 | `--base=<ref>` | comparison base of the change, tried as given and as `origin/<ref>` — pass the base the assignment names; a subtask is based on its parent branch |
 | `--skip=rules` | list rule documents with sizes but omit their contents — use when the hosting runtime already injected the instruction chain of this same workspace; a chain injected from the primary checkout is another branch's |
 | `--skip=git,runtime,validation,docs` | drop any other section, comma-separated |
-| `--max-bytes=N` | per-document embed cap for rule documents (default 16384) |
+| `--paths=a,b` | the paths the change touches or will touch — the Scope paths before the first edit, every changed path after the last: a rule whose `paths:` front matter matches none of them stays out; without the flag every rule rides |
+| `--rules-budget=N` | total characters of rule documents embedded (default 120000); a document past it is listed for the role to read itself |
 
 ## What it returns
 
@@ -36,11 +37,13 @@ Options:
 | project | detected kinds (node, php, mixed), manifest names, engines, full script lists, lockfiles, Makefile targets, dependency directories (`node_modules`, `vendor`): present, a symlink with its target, or absent |
 | validation | JSON only, read by the QA role's `qa-run.mjs`: per-tool checks derived from the binaries the project scripts actually run — how each one narrows to the paths a change touched, or why it cannot — plus the whole-project suite as the fallback |
 | docs index | tracked documentation file list for routing later reads |
-| rules | bounded embeds of repository instruction documents, following their `@` imports; `README.md` is listed with its size, never embedded |
+| rules | the repository instruction chain, selected exactly as the reviewer's pack selects it (`scripts/rules.mjs`): the entry files (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `docs/engineering/README.md`) with their `@` imports whole; `.claude/rules` and `docs/engineering/rules` whole minus the rules whose `paths:` match none of `--paths`; documents the entries link whole when their `paths:` match, as routes (path plus the naming line) otherwise; `README.md` is listed with its size, never embedded |
+| navigation | `lsd` or `none`; with `lsd` the tree's index rebuild starts with the snapshot, so the first symbol question may wait up to a minute |
 
 ## After the snapshot
 
 - Do not re-collect anything the snapshot already reports; cite it instead.
+- Symbol questions go through `lsd def` / `lsd ref` when `navigation` is `lsd`; the developer requires it, the reviewer's pack reports the same field.
 - Batch the remaining startup context — language-server or index status probes, task-specific file reads — into the next single call.
 - The gate is the QA role's: the developer runs only the tests of the behavior it changed, through the executor the repository rules declare; the reviewer runs nothing.
 - Without `--base` the base is the remote default branch (`origin/HEAD`, then `origin/main|master|develop`), a local branch name only when no remote ref exists: the local base is shared by every tree and lags its remote. When the assignment names a base, pass it.

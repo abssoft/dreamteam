@@ -53,7 +53,7 @@
 // at. The pack also warms the tree's `lsd` index in the background and seeds
 // the findings journal the harness (review-findings.mjs) records into.
 
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -61,6 +61,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { packetProblems } from "../../../contracts/validate-assignment.mjs";
 import { reviewProblems } from "./review-result.mjs";
 import { compactQa, compactResult, digest, parseResult, previousManifest } from "./review-state.mjs";
+import { RULES_ENTRIES, RULES_ROUTE_CAP, collectRules, lsdAvailable, warmLsd } from "../../env-snapshot/scripts/rules.mjs";
+
+export { collectRules, globRegExp, rulePaths } from "../../env-snapshot/scripts/rules.mjs";
 
 // The ceiling answers one question — does the change fit one reviewer? — so it
 // tracks the model window rather than an older, smaller pack.
@@ -69,18 +72,7 @@ const DIFF_WIDTHS = [10, 6, 3, 0];
 const RULES_RESERVE = 20000;
 const DIFF_FLOOR_SHARE = 0.4;
 const RISK_HIT_CAP = 40;
-const DOCS_LIST_CAP = 150;
 const SHORT_ISSUE_CHARS = 300;
-// The instruction chain a repository publishes: the agent entry files and the
-// rule directories go in whole, and the documents those entries name go in as
-// routes — path plus the line that names it. A rule that declares `paths:` in
-// its front matter (the Claude Code rules convention) is in only when a changed
-// file matches one of them, and then whole: the rules phase walks the diff for
-// it without a read of its own.
-const RULES_ENTRIES = ["AGENTS.md", "CLAUDE.md", "docs/engineering/README.md"];
-const RULES_DIRS = ["docs/engineering/rules", ".claude/rules"];
-const RULES_ROUTE_CAP = 40;
-const ROUTE_HINT_CHARS = 160;
 // Files whose change buys no behavior of its own: documentation, generated
 // code and tests (the gate ran them). A whitespace-only change is the same.
 export const DOC_PATH = /(?:^|\/)docs?\/|\.(?:md|mdx|rst|adoc|txt)$/i;
@@ -95,9 +87,6 @@ const RISK_CATEGORIES = [
   ["injection", /sql|unserialize|deserializ/i],
   ["upload", /upload|multipart/i],
 ];
-// A markdown link or bare path naming a document of this repository; a URL, an
-// absolute path or a traversal is not one.
-const DOC_LINK = /(?:^|[\s(<"'`[])([A-Za-z0-9._][A-Za-z0-9._/-]*\.md)\b/g;
 const METHOD_REFERENCE = ["..", "..", "..", "references", "engineering-evidence.md"];
 const GIT_MAX_BUFFER = 256 * 1024 * 1024;
 // Signals that raise the review depth and the security escalation:
@@ -304,120 +293,6 @@ function widestDiff(range, cwd, budget, narrow, paths) {
   return { text: narrow.slice(0, budget), context: 0, cut: true, hidden };
 }
 
-// Documents an entry file names, resolved inside the repository only, each with
-// the line that names it: that line is the condition for reading the document.
-function routes(text, root, seen, state) {
-  for (const line of text.split("\n")) {
-    for (const match of line.matchAll(DOC_LINK)) {
-      const relative = match[1];
-      if (seen.has(relative)) continue;
-      const target = resolve(root, relative);
-      if (target !== join(root, relative) || !existsSync(target)) continue;
-      seen.add(relative);
-      if (state.list.length >= RULES_ROUTE_CAP) { state.cut.push(relative); continue; }
-      const hint = line.replace(/^[\s>*+-]*/, "").trim().slice(0, ROUTE_HINT_CHARS);
-      state.list.push(hint && hint !== relative ? `${relative} — ${hint}` : relative);
-    }
-  }
-}
-
-// The front matter's `paths:` globs — an inline list, a YAML list or one scalar.
-export function rulePaths(text) {
-  const front = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
-  if (!front) return { paths: null, body: text };
-  const body = text.slice(front[0].length);
-  const lines = front[1].split(/\r?\n/);
-  const at = lines.findIndex((line) => /^paths:/.test(line));
-  if (at < 0) return { paths: null, body };
-  const unquote = (value) => value.trim().replace(/^["']|["']$/g, "").trim();
-  const inline = lines[at].slice("paths:".length).trim();
-  let paths;
-  if (inline.startsWith("[")) paths = inline.replace(/^\[|\]$/g, "").split(",").map(unquote);
-  else if (inline) paths = [unquote(inline)];
-  else {
-    paths = [];
-    for (const line of lines.slice(at + 1)) {
-      const item = /^\s+-\s+(.+)$/.exec(line);
-      if (!item) break;
-      paths.push(unquote(item[1]));
-    }
-  }
-  return { paths: paths.filter(Boolean), body };
-}
-
-export function globRegExp(glob) {
-  let source = "";
-  let braces = 0;
-  for (let i = 0; i < glob.length; i += 1) {
-    const char = glob[i];
-    if (char === "*" && glob[i + 1] === "*") {
-      i += 1;
-      if (glob[i + 1] === "/") { i += 1; source += "(?:.*/)?"; } else source += ".*";
-    } else if (char === "*") source += "[^/]*";
-    else if (char === "?") source += "[^/]";
-    else if (char === "{") { braces += 1; source += "(?:"; }
-    else if (char === "}" && braces > 0) { braces -= 1; source += ")"; }
-    else if (char === "," && braces > 0) source += "|";
-    else source += char.replace(/[.+^$(){}|[\]\\]/g, "\\$&");
-  }
-  return new RegExp(`^${source.replace(/^\/+/, "")}$`);
-}
-
-// null changed paths: no applicability filter (the policy hash enumerates every
-// candidate rule, applicable or not).
-const applies = (paths, changed) => changed === null || paths.map(globRegExp).some((glob) => changed.some((path) => glob.test(path)));
-
-export function collectRules(root, cwd, budget, changed = null) {
-  const seen = new Set();
-  const entries = [];
-  for (const entry of RULES_ENTRIES) {
-    if (seen.has(entry) || !existsSync(join(root, entry))) continue;
-    seen.add(entry);
-    entries.push({ path: entry, text: readFileSync(join(root, entry), "utf8") });
-  }
-  if (entries.length === 0) {
-    const paths = (git(["ls-files", "docs/*.md", "docs/**/*.md"], cwd) ?? "").split("\n").filter(Boolean).slice(0, DOCS_LIST_CAP);
-    return { mode: "paths", paths, routes: [], routes_cut: [], items: [], dropped: [], skipped: [] };
-  }
-  const items = [...entries];
-  const skipped = [];
-  for (const dirPath of RULES_DIRS) {
-    const dir = join(root, dirPath);
-    if (!existsSync(dir)) continue;
-    for (const name of readdirSync(dir, { recursive: true }).map(String).filter((entry) => entry.endsWith(".md")).sort()) {
-      const relative = `${dirPath}/${name}`;
-      if (seen.has(relative)) continue;
-      seen.add(relative);
-      const { paths, body } = rulePaths(readFileSync(join(dir, name), "utf8"));
-      if (paths && !applies(paths, changed)) { skipped.push(relative); continue; }
-      items.push({ path: relative, text: body });
-    }
-  }
-  // Routes are drawn from the entry files only, and never repeat a document the
-  // pack already carries whole. A routed document that declares its paths is no
-  // longer a route: applicable, it rides whole; otherwise it stays out.
-  const state = { list: [], cut: [] };
-  for (const entry of entries) routes(entry.text, root, seen, state);
-  const routed = [];
-  for (const route of state.list) {
-    const path = route.split(" — ")[0];
-    const { paths, body } = rulePaths(readFileSync(join(root, path), "utf8"));
-    if (!paths || changed === null) routed.push(route);
-    else if (applies(paths, changed)) items.push({ path, text: body });
-    else skipped.push(path);
-  }
-  const kept = [];
-  const dropped = [];
-  // Routes come first: when the budget is tight, knowing where a rule lives
-  // beats holding one rule and losing the map to the rest.
-  let used = routed.reduce((total, route) => total + route.length + 3, 0);
-  for (const item of items) {
-    const size = item.path.length + item.text.length + 8;
-    if (used + size <= budget) { kept.push(item); used += size; } else dropped.push(item.path);
-  }
-  return { mode: "content", paths: [], routes: routed, routes_cut: state.cut, items: kept, dropped, skipped };
-}
-
 // The depth the most expensive hunk buys; size never raises it. Only code
 // counts: a password in a fixture or a table named in a document is not a
 // change of that kind.
@@ -447,26 +322,6 @@ function inertPaths(files, range, cwd) {
   }
   for (const file of files) if (file.status === "M" && !touched.has(file.path)) inert.add(file.path);
   return inert;
-}
-
-// The `lsd` of this skill, not the ls replacement of the same name: its help
-// names the declaration lookup.
-function lsdAvailable(cwd) {
-  try {
-    return /Where a symbol is declared/.test(execFileSync("lsd", ["--help"], { cwd, encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "ignore"] }));
-  } catch {
-    return false;
-  }
-}
-
-// The first question in a tree waits for its index; the rebuild starts now,
-// detached, so it walks while the reviewer reads the pack.
-function warmLsd(root) {
-  try {
-    spawn("lsd", ["reindex", root], { cwd: root, detached: true, stdio: "ignore" }).unref();
-  } catch {
-    // A warm index is a saving, never a precondition.
-  }
 }
 
 // Declared cases of one test source, by name; a case the runner will not run as
