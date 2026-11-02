@@ -118,7 +118,11 @@ test('the profile becomes the policy, rung by rung, with the tracker check and t
     assert.equal(result.references.terminology, join(await realpath(dir), 'docs', 'terms.md'));
     assert.deepEqual(result.references_missing, []);
     assert.equal(result.repo.default_branch, 'main');
-    assert.ok(result.run_dir.includes(join('dream-team', 'PRJ-7')));
+    // The checkout ignores .dreamteam/ → the workflow directory lives there and survives the run.
+    const workflowDir = join(await realpath(dir), '.dreamteam', 'workflow', 'PRJ-7');
+    assert.deepEqual(result.workflow, { root: join(await realpath(dir), '.dreamteam', 'workflow'), placement: 'repository', dir: workflowDir, journal: join(workflowDir, 'journal.md') });
+    assert.ok(result.run_dir.startsWith(join(workflowDir, 'runs') + '/'));
+    assert.equal(git(dir, ['status', '--porcelain']), '', 'nothing of the workflow directory is visible to git');
     assert.equal(typeof result.scripts.validate_profile, 'string');
     assert.ok(result.roles.present.includes('code-reviewer'));
 
@@ -132,6 +136,23 @@ test('the profile becomes the policy, rung by rung, with the tracker check and t
     const none = probe({ runtime: 'claude', projectRoot: bare, key: 'PRJ-1' });
     assert.deepEqual(none.policy, { base: 'main', delivery: 'branch', returns: 2, source: { base: 'repository', delivery: 'dream-team', returns: 'dream-team' } });
     assert.deepEqual([none.profile.present, none.profile.checks, none.tracker.declared], [false, false, false]);
+    assert.equal(none.workflow.placement, 'repository', 'the ignore rule decides, not the profile');
+
+    // A checkout that does not ignore .dreamteam/ could stage the directory: the workflow falls back to the temp dir, same layout.
+    const open = await repo(join(root, 'four'), null);
+    await writeFile(join(open, '.gitignore'), '.worktrees/\n');
+    git(open, ['commit', '-q', '-am', 'open']);
+    const temp = probe({ runtime: 'claude', projectRoot: open, key: 'PRJ-9' });
+    assert.equal(temp.workflow.placement, 'temp');
+    assert.ok(!temp.run_dir.startsWith(await realpath(open)));
+    assert.equal(temp.workflow.journal, join(temp.workflow.root, 'PRJ-9', 'journal.md'));
+    assert.ok(temp.run_dir.startsWith(join(temp.workflow.root, 'PRJ-9', 'runs') + '/'));
+    await rm(join(temp.workflow.root, 'PRJ-9'), { recursive: true, force: true });
+    const keyless = probe({ runtime: 'claude', projectRoot: bare });
+    // No key, no item to keep a journal for: the run stays in the temp dir even in an ignoring checkout.
+    assert.deepEqual([keyless.workflow.placement, keyless.workflow.dir, keyless.workflow.journal], ['temp', null, null]);
+    assert.ok(keyless.run_dir.includes(join('dream-team', 'no-key', 'runs')));
+    await rm(keyless.run_dir, { recursive: true, force: true });
 
     const broken = await repo(join(root, 'three'), { version: 1, delivery: 'push' });
     const invalid = probe({ runtime: 'claude', projectRoot: broken, key: 'PRJ-1' });

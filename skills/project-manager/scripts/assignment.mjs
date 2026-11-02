@@ -12,9 +12,16 @@
 //    verification?: [text, …], excluded?: [text, …],
 //    declareGate?: true (develop, modifier `гейт`: the scope gains declaring
 //    the project's QA gate — `checks` in dreamteam.json; ignored on review),
+//    acceptedDecisions?: [text, …] (the human's decisions: the free text beside
+//    the command and the «решение человека» entries of the journal →
+//    `accepted_decisions`, frozen authority for both roles),
 //    feedbackPath? (develop: the resolution's `files.comments.path`, the
 //    absolute path of comments.md → material `feedback`,
 //    the tracker comments as evidence of what did not work; ignored on review),
+//    journalPath? (develop: the item's journal, bootstrap `workflow.journal` →
+//    material `journal`: what earlier runs did, left uncommitted, tried and
+//    failed), parentJournalPath? (develop, child runs: the parent item's
+//    journal → material `parent_journal`); ignored on review,
 //    reviewPath? (the reviewer's Result file: develop retry → material `review`,
 //    the retry note and top-level `required_fixes` taken from its own fixes;
 //    repeat review → material `previous_review`),
@@ -79,9 +86,15 @@ Arg: single JSON:
   verification?: [text, …], excluded?: [text, …],
   declareGate?: true (develop: the scope gains declaring \`checks\` in
   dreamteam.json; ignored on review),
+  acceptedDecisions?: [text, …] (the human's decisions — the free text beside
+  the command, the «решение человека» journal entries → accepted_decisions,
+  both modes),
   feedbackPath? (develop: the resolution's files.comments.path, an absolute
   path → material feedback, the tracker comments as evidence; ignored on
   review),
+  journalPath? (develop: the item's journal — bootstrap workflow.journal →
+  material journal), parentJournalPath? (develop, child runs: the parent's
+  journal → material parent_journal); both readable files, ignored on review,
   reviewPath? (reviewer's Result file: develop retry → material review + retry
   note + required_fixes from its fixes; repeat review → material previous_review),
   developmentResultPath? (review: developer's Result file → material
@@ -134,6 +147,12 @@ function compose(args, qa) {
   if (args.mode === "develop" && isText(args.feedbackPath)) {
     materials.push({ kind: "attachment_reference", name: "feedback", content: args.feedbackPath, provenance: "комментарии задачи из трекера" });
   }
+  if (args.mode === "develop" && isText(args.journalPath)) {
+    materials.push({ kind: "attachment_reference", name: "journal", content: args.journalPath, provenance: "журнал задачи: ход предыдущих прогонов" });
+  }
+  if (args.mode === "develop" && isText(args.parentJournalPath)) {
+    materials.push({ kind: "attachment_reference", name: "parent_journal", content: args.parentJournalPath, provenance: "журнал родительской задачи" });
+  }
   if (args.mode === "develop" && isText(args.reviewPath)) {
     materials.push({ kind: "attachment_reference", name: "review", content: args.reviewPath, provenance: "результат ревью" });
   }
@@ -177,6 +196,8 @@ function compose(args, qa) {
   };
   const verification = textList(args.verification);
   if (verification.length) packet.verification = [...new Set(verification)];
+  const decisions = textList(args.acceptedDecisions);
+  if (decisions.length) packet.accepted_decisions = [...new Set(decisions)];
   if (args.mode === "develop") {
     const fixes = [
       ...(isText(args.reviewPath) ? reviewFixes(args.reviewPath) : []),
@@ -256,8 +277,13 @@ async function main() {
   for (const field of ["key", "title", "baseRef"]) if (!isText(args[field])) problems.push(`${field} missing`);
   if (!args.files || typeof args.files !== "object" || !isText(args.files.issue) || !isAbsolute(args.files.issue)) problems.push("files.issue must be an absolute path");
   if (!isText(args.validator)) problems.push("validator missing");
-  for (const field of ["feedbackPath", "reviewPath", "developmentResultPath", "qaResultPath", "migrationErrorPath"]) {
+  for (const field of ["feedbackPath", "journalPath", "parentJournalPath", "reviewPath", "developmentResultPath", "qaResultPath", "migrationErrorPath"]) {
     if (args[field] !== undefined && !(isText(args[field]) && isAbsolute(args[field]))) problems.push(`${field} must be an absolute path`);
+  }
+  for (const field of ["journalPath", "parentJournalPath"]) {
+    if (isText(args[field]) && isAbsolute(args[field])) {
+      try { readFileSync(args[field]); } catch { problems.push(`${field} is not a readable file`); }
+    }
   }
   if (args.mode === "develop" && isText(args.reviewPath) && isAbsolute(args.reviewPath)) {
     try { JSON.parse(readFileSync(args.reviewPath, "utf8")); } catch { problems.push("reviewPath is not a readable JSON file"); }
