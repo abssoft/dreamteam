@@ -1,6 +1,6 @@
 # Delivery — `сливай`, `пуш` and Recovery
 
-Continuation of `project-manager` §11, read on an explicit `сливай` or `пуш`, or from the explicit `Ревью` entry when `route_hint: "completion_recovery"`. The bare-key summary only recommends these commands and never loads delivery. §11 rails hold in full: never an MR/PR; every Git sequence through `deliver.mjs`, one call per attempt, `base` passed on every commit, subtask and push call. Which procedure runs is `policy.delivery`.
+Continuation of `project-manager` §11, read on an explicit `сливай` or `пуш`, or from the explicit `Ревью` entry when `route_hint: "completion_recovery"`. The bare-key summary only recommends these commands and never loads delivery. §11 rails hold in full: never an MR/PR; every Git sequence through `deliver.mjs`, one call per attempt, `base` passed on every commit, subtask and push call. Which procedure runs is `policy.delivery`. The journal (§13) opens with the entry `старт` before the first call, and every outcome below — delivered, pushed, «нечего коммитить», a blocker — is the entry `доставка: <outcome>`.
 
 ## `merge_push`
 

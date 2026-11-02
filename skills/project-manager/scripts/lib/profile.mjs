@@ -97,7 +97,7 @@ export function loadMachine(primary, profile) {
   return { present: true, config: { host: raw.host.trim(), range: { lo, hi }, limit: raw.limit, cleanup }, error: null };
 }
 
-function ignored(primary, path) {
+export function ignored(primary, path) {
   return git(primary, ["check-ignore", "-q", "--no-index", path]).ok;
 }
 

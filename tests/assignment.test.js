@@ -160,6 +160,38 @@ test("feedbackPath rides the task's comments file into a develop packet as the f
     }
 });
 
+test("the journals ride into a develop packet as files, the human's decisions as accepted_decisions for both roles", async () => {
+    const f = await fixture();
+    try {
+        const journal = join(f.root, "journal.md");
+        const parentJournal = join(f.root, "parent-journal.md");
+        await writeFile(journal, "## 2026-11-02 10:00 · разработка · старт\n");
+        await writeFile(parentJournal, "");
+        await writeFile(join(f.root, "qa-result.json"), JSON.stringify(qaResult()));
+        const base = { runDir: f.root, key: "PRJ-7", title: "Title", baseRef: "master", validator: f.validator, files: { issue: f.issue }, acceptedDecisions: ["LSD недоступен: идти через fallback-поиск", "", "LSD недоступен: идти через fallback-поиск"] };
+        const develop = run({ ...base, mode: "develop", journalPath: journal, parentJournalPath: parentJournal });
+        assert.equal(develop.code, 0, JSON.stringify(develop.json));
+        const packet = JSON.parse(await readFile(develop.json.path, "utf8"));
+        assert.deepEqual(packet.source_materials.map((m) => m.name), ["issue", "journal", "parent_journal"]);
+        assert.deepEqual(packet.source_materials[1], { kind: "attachment_reference", name: "journal", content: journal, provenance: "журнал задачи: ход предыдущих прогонов" });
+        assert.equal(packet.source_materials[2].content, parentJournal, "an empty parent journal still rides: the contract does not require it non-empty");
+        assert.deepEqual(packet.accepted_decisions, ["LSD недоступен: идти через fallback-поиск"], "blank and repeated decisions are dropped");
+
+        const review = run({ ...base, mode: "review", journalPath: journal, qaResultPath: join(f.root, "qa-result.json") });
+        assert.equal(review.code, 0, JSON.stringify(review.json));
+        const reviewPacket = JSON.parse(await readFile(review.json.path, "utf8"));
+        assert.ok(!reviewPacket.source_materials.some((m) => m.name === "journal"), "the reviewer gets no journal material");
+        assert.deepEqual(reviewPacket.accepted_decisions, ["LSD недоступен: идти через fallback-поиск"], "the reviewer judges against the same decisions");
+
+        const plain = run({ ...base, mode: "develop", acceptedDecisions: [] });
+        assert.equal(JSON.parse(await readFile(plain.json.path, "utf8")).accepted_decisions, undefined, "no decisions, no member");
+        assert.deepEqual(run({ ...base, mode: "develop", journalPath: "journal.md" }).json, { ok: false, code: "bad_args", detail: ["journalPath must be an absolute path"] });
+        assert.deepEqual(run({ ...base, mode: "develop", parentJournalPath: join(f.root, "absent.md") }).json, { ok: false, code: "bad_args", detail: ["parentJournalPath is not a readable file"] });
+    } finally {
+        await rm(f.root, { recursive: true, force: true });
+    }
+});
+
 test("the route is checked against the QA file: a red gate never reaches review, a QA return needs a red gate", async () => {
     const f = await fixture();
     try {

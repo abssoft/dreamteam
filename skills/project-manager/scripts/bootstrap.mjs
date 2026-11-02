@@ -33,6 +33,9 @@
 // "override_not_in_models_cache"; an unreadable cache keeps constants as-is.
 // Model and effort are launcher parameters — a request, never a launch gate.
 //
+// `run_dir`, `workflow` — the item's workflow directory and this run's
+// directory inside it (see `workflow()` below).
+//
 // `profile` — the project profile gate (contracts/validate-profile.mjs through
 // lib/profile.mjs): presence, blocks, machine settings, git-ignore checks, the
 // first blocker; `profile.checks` — the QA gate is declared in the primary
@@ -49,7 +52,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkItems, profileProblems, resolvePolicy, trackerProblems } from "../../../contracts/validate-profile.mjs";
-import { loadEnvironment } from "./lib/profile.mjs";
+import { LOCAL_DIR, ignored, loadEnvironment } from "./lib/profile.mjs";
 
 const ROLES = ["product-technologist", "software-developer", "qa-engineer", "code-reviewer", "project-manager"];
 
@@ -280,14 +283,27 @@ function profileReport(toplevel, key) {
   };
 }
 
-// One directory per run under the OS temp dir: the resolution's files, the
-// packet and the role packs land there, and it stays after the run for
-// inspection. The key segment keeps runs of different items apart.
-function createRunDir(key) {
+// The item's workflow directory — `journal.md` plus one `runs/<stamp>`
+// directory per run holding the resolution's files, the packets and the role
+// Results. It lives in the primary checkout under `.dreamteam/workflow/<KEY>`
+// when that checkout git-ignores `.dreamteam/`: the one place that survives
+// worktree removal, reboots and temp cleanup, so the journal and the Results
+// of earlier runs are there for the next chat. Otherwise (no repository, or
+// `.dreamteam/` not ignored — the directory could be staged) it falls back to
+// the OS temp dir with the same layout. Only `run_dir` is created here; the
+// role appends the journal.
+function workflow(primary, key) {
+  const item = typeof key === "string" && key !== "" ? key : null;
+  const repository = primary !== null && item !== null && ignored(primary, `${LOCAL_DIR}/`);
+  const root = repository ? join(primary, LOCAL_DIR, "workflow") : join(tmpdir(), "dream-team");
+  const dir = join(root, item ?? "no-key");
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
-  const dir = join(tmpdir(), "dream-team", typeof key === "string" && key !== "" ? key : "no-key", stamp);
-  mkdirSync(dir, { recursive: true });
-  return dir;
+  const runDir = join(dir, "runs", stamp);
+  mkdirSync(runDir, { recursive: true });
+  return {
+    run_dir: runDir,
+    workflow: { root, placement: repository ? "repository" : "temp", dir: item ? dir : null, journal: item ? join(dir, "journal.md") : null },
+  };
 }
 
 const optional = (path) => (existsSync(path) ? path : null);
@@ -301,7 +317,11 @@ the adapter's policy defaults; tracker — the dispatcher's kind and label.
 Output: one JSON line {ok, version, plugin_root, roles{present, missing},
 scripts{prepare_worktree, stage, deliver, assignment, adapter_file, validate_profile,
 validate_adapter, validate_assignment, review_pack, mockup_render, agent_usage},
-run_dir, repo{toplevel, current_branch, default_branch}, profile{present, worktree,
+run_dir (<workflow.dir>/runs/<stamp>), workflow{root, placement: "repository" (the
+primary checkout's .dreamteam/workflow, when it git-ignores .dreamteam/) | "temp"
+(the OS temp dir), dir (<root>/<KEY>), journal (<dir>/journal.md — the item's
+append-only journal across runs; null without a key)},
+repo{toplevel, current_branch, default_branch}, profile{present, worktree,
 stage, checks, local_config, ignored, error{code, key, detail}|null, tracker, references},
 policy{base, delivery, returns, source}, tracker{declared, kind, prefix, problems[]},
 references{terminology}, references_missing[], models (launch table {model, effort}
@@ -350,7 +370,7 @@ function main() {
   const terminologyPath = terminology && toplevel ? join(toplevel, terminology) : null;
   const models = resolveModels(runtime, modelOverride, cachePathOverride);
 
-  const runDir = createRunDir(key);
+  const { run_dir: runDir, workflow: workflowDirs } = workflow(gate?.primary ?? null, key);
   const line = {
     ok: true,
     version,
@@ -370,6 +390,7 @@ function main() {
       agent_usage: optional(join(pluginRoot, "skills", "agent-usage", "scripts", "agent-usage.mjs")),
     },
     run_dir: runDir,
+    workflow: workflowDirs,
     repo: {
       toplevel,
       current_branch: toplevel ? git(toplevel, ["rev-parse", "--abbrev-ref", "HEAD"]) : null,
