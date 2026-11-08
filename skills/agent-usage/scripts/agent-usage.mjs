@@ -183,6 +183,7 @@ const PRICING_CATALOG = Object.freeze({
     basis: "official_api_model_token_rates",
     sources: Object.freeze([
         "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+        "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
         "https://developers.openai.com/api/docs/models/gpt-6-astra",
         "https://developers.openai.com/api/docs/models/gpt-6-sol",
         "https://developers.openai.com/api/docs/models/gpt-6-luna",
@@ -204,6 +205,13 @@ const PRICING_CATALOG = Object.freeze({
             key: "gpt-6.1-sol", provider: "openai", ids: Object.freeze(["gpt-6.1-sol"]),
             snapshot: /^gpt-6\.1-sol-\d{4}-\d{2}-\d{2}$/,
             standard: Object.freeze({ uncached_input: 2_000, cache_read_input: 100, cache_write_input: 2_500, output: 10_000 }),
+            fast_multiplier: 2,
+            long_context: Object.freeze({ threshold: 272_000, input_multiplier: 2, output_multiplier: 1.5 })
+        },
+        {
+            key: "gpt-6.1-terra", provider: "openai", ids: Object.freeze(["gpt-6.1-terra"]),
+            snapshot: /^gpt-6\.1-terra-\d{4}-\d{2}-\d{2}$/,
+            standard: Object.freeze({ uncached_input: 1_000, cache_read_input: 50, cache_write_input: 1_250, output: 5_000 }),
             fast_multiplier: 2,
             long_context: Object.freeze({ threshold: 272_000, input_multiplier: 2, output_multiplier: 1.5 })
         },
