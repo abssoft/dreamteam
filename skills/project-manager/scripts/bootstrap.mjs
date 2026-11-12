@@ -315,7 +315,7 @@ Arg: single JSON:
 model — the per-run override from the "модель <значение>" token; defaults —
 the adapter's policy defaults; tracker — the dispatcher's kind and label.
 Output: one JSON line {ok, version, plugin_root, roles{present, missing},
-scripts{prepare_worktree, stage, deliver, assignment, adapter_file, validate_profile,
+scripts{prepare_worktree, stage, tidy, deliver, assignment, adapter_file, validate_profile,
 validate_adapter, validate_assignment, review_pack, mockup_render, agent_usage},
 run_dir (<workflow.dir>/runs/<stamp>), workflow{root, placement: "repository" (the
 primary checkout's .dreamteam/workflow, when it git-ignores .dreamteam/) | "temp"
@@ -379,6 +379,7 @@ function main() {
     scripts: {
       prepare_worktree: join(scriptsDir, "prepare-worktree.mjs"),
       stage: join(scriptsDir, "stage.mjs"),
+      tidy: join(scriptsDir, "tidy.mjs"),
       deliver: join(scriptsDir, "deliver.mjs"),
       assignment: join(scriptsDir, "assignment.mjs"),
       adapter_file: join(scriptsDir, "adapter-file.mjs"),

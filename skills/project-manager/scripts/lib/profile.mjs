@@ -40,6 +40,21 @@ export function listCheckouts(repo) {
   });
 }
 
+// The task branch's own commits: those above its fork point — the newest
+// commit of the base's first-parent history the branch contains. Counted from
+// there, a branch already delivered by a --no-ff merge keeps its work, and a
+// branch that never left the base counts 0. null when git cannot tell
+// (no base ref, unrelated histories).
+export function priorCommits(cwd, keyRef, baseRef) {
+  if (!baseRef) return null;
+  const number = (res) => (res.ok && /^\d+$/.test(res.stdout) ? Number(res.stdout) : null);
+  const behind = number(git(cwd, ["rev-list", "--count", "--first-parent", `${keyRef}..${baseRef}`]));
+  if (behind === null) return null;
+  const fork = git(cwd, ["rev-parse", "--verify", "--quiet", `${baseRef}~${behind}^{commit}`]);
+  if (!fork.ok || fork.stdout === "") return null;
+  return number(git(cwd, ["rev-list", "--count", `${fork.stdout}..${keyRef}`]));
+}
+
 const isCommand = (value) => typeof value === "string" && value.trim() !== "";
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 

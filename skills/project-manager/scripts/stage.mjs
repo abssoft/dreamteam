@@ -20,7 +20,7 @@ import {
 } from "./lib/profile.mjs";
 
 const USAGE = `stage.mjs — stage lifecycle (SKILL §6, routes/develop.md, deliver.md, stage.md).
-Arg: single JSON {op, repo, workspace?, name?, base?="main", key?}
+Arg: single JSON {op, repo, workspace?, name?, base?="main", key?, primary?=true}
  repo — any checkout of the project; the profile and the machine settings are
  read from the primary checkout. The target is \`workspace\` (a checkout path
  from prepare-worktree) or \`name\` (KEY | main): the tree whose stage block
@@ -41,7 +41,9 @@ ops:
  cleanup  — after \`сливай\` (key): stop the task stage, drop its tailnet
             entries, stage.cleanup + machine cleanup, remove the tree when owned,
             clean and stopped; then worktree.setup and the main stage in the
-            primary. Every primary-side failure is a warning.
+            primary — skipped with primary:false (tidy.mjs removes several
+            trees and the base did not move). Every primary-side failure is a
+            warning.
 Output: one JSON line {ok, op, stage{name, kind, checkout, ports, url, running,
 log}|null, migrations{applied, error, branch_migrations, base_migrations,
 error_path, error_tail}?, environment_text?, qa_brief?, stages?, pruned?,
@@ -407,7 +409,7 @@ function ownedTree(gate, key) {
   return { tree, owned };
 }
 
-async function cleanup(gate, key) {
+async function cleanup(gate, key, primarySide) {
   const actions = [];
   const warnings = [];
   const stage = gate.profile?.stage ?? null;
@@ -454,6 +456,7 @@ async function cleanup(gate, key) {
   }
 
   // The primary checkout: dependencies of the new main, then the main stage.
+  if (!primarySide) return result;
   if (gate.profile?.worktree) {
     for (const command of gate.profile.worktree.setup) {
       if (runCommand(command, { cwd: gate.primary, log: join(gate.primary, SETUP_LOG) }).code !== 0) {
@@ -482,14 +485,14 @@ async function main() {
   } catch {
     out({ ok: false, code: "bad_args" });
   }
-  const { op, repo, workspace, name, base = "main", key } = args ?? {};
+  const { op, repo, workspace, name, base = "main", key, primary = true } = args ?? {};
   const ops = ["prepare", "ensure", "state", "stop", "list", "cleanup"];
   if (!ops.includes(op) || typeof repo !== "string" || repo === "") out({ ok: false, code: "bad_args" });
   if (op === "cleanup" && (typeof key !== "string" || key === "")) out({ ok: false, code: "bad_args" });
 
   const gate = loadEnvironment(repo);
   if (gate.error) out({ ok: false, op, code: gate.error.code, key: gate.error.key ?? null, path: gate.error.path ?? null, ...(gate.error.template ? { template: gate.error.template } : {}) });
-  if (op === "cleanup") out(await cleanup(gate, key));
+  if (op === "cleanup") out(await cleanup(gate, key, primary !== false));
   if (!gate.profile?.stage) out({ ok: true, op, stage: null, message: NO_STAGES, warnings: [] });
   if (op === "list") out(list(gate));
 

@@ -60,7 +60,7 @@ import { appendFileSync, cpSync, existsSync, lstatSync, readFileSync, symlinkSyn
 import { dirname, join } from "node:path";
 import {
   LOCAL_DIR, LOCAL_FILE, MAIN_STAGE, SETUP_LOG, STAGE_LOG,
-  allocatePorts, listCheckouts, loadEnvironment, mainPorts, readTreeLocal, runCommand,
+  allocatePorts, listCheckouts, loadEnvironment, mainPorts, priorCommits, readTreeLocal, runCommand,
   stageEnv, stageRunning, stageUrl, stageVars, substitute, writeTreeLocal,
 } from "./lib/profile.mjs";
 
@@ -198,21 +198,6 @@ function creationBase(cwd, remote, base, syncResults, remoteConfigured) {
   }
   if (branchSha(cwd, base)) return `refs/heads/${base}`;
   return null;
-}
-
-// The task branch's own commits: those above its fork point — the newest
-// commit of the base's first-parent history the branch contains. Counted from
-// there, a branch already delivered by a --no-ff merge keeps its work, and a
-// branch that never left the base counts 0. null when git cannot tell
-// (no base ref, unrelated histories).
-function priorCommits(cwd, keyRef, baseRef) {
-  if (!baseRef) return null;
-  const number = (res) => (res.ok && /^\d+$/.test(res.stdout) ? Number(res.stdout) : null);
-  const behind = number(git(cwd, ["rev-list", "--count", "--first-parent", `${keyRef}..${baseRef}`], { allowFail: true }));
-  if (behind === null) return null;
-  const fork = git(cwd, ["rev-parse", "--verify", "--quiet", `${baseRef}~${behind}^{commit}`], { allowFail: true });
-  if (!fork.ok || fork.stdout === "") return null;
-  return number(git(cwd, ["rev-list", "--count", `${fork.stdout}..${keyRef}`], { allowFail: true }));
 }
 
 function ensureBranch(toplevel, branch, baseRef, actions) {
