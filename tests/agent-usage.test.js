@@ -573,6 +573,28 @@ test('Codex whole-session scope without the session rollout fails with logs_not_
   );
 });
 
+test('Claude prices Fable 5.2 and Haiku 5.5 (5x above 100k prompt tokens) at the official rates', async () => {
+  const projectsRoot = await makeLogs({
+    'proj/sess-tariff.jsonl': [
+      claudeAssistant({
+        requestId: 'f52', model: 'claude-fable-5-2', at: '2026-01-01T10:00:00.000Z',
+        usage: { input_tokens: 1000, cache_creation_input_tokens: 0, cache_read_input_tokens: 200, output_tokens: 100 }
+      }),
+      claudeAssistant({
+        requestId: 'h55', model: 'claude-haiku-5-5', at: '2026-01-01T10:01:00.000Z',
+        usage: { input_tokens: 150000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1000 }
+      })
+    ]
+  });
+  const result = await runCollector({ runtime: 'claude', sessionId: 'sess-tariff', full: true, claudeProjectsRoot: projectsRoot });
+  assert.equal(result.ok, true);
+  assert.equal(result.pricing.status, 'priced');
+  // fable 5.2: 1000*8 + 200*0.2 + 100*40 = 12040 µ$; haiku long: 150000*0.5 + 1000*2.5 = 77500 µ$.
+  const byModel = Object.fromEntries(result.by_model.map((row) => [row.model, row.token_cost_usd]));
+  assert.equal(byModel['claude-fable-5-2'], 0.01204);
+  assert.equal(byModel['claude-haiku-5-5'], 0.0775);
+});
+
 test('Claude whole-session scope sums the transcript plus every subagent file per model', async () => {
   const projectsRoot = await makeLogs({
     'proj/sess-uuid.jsonl': [

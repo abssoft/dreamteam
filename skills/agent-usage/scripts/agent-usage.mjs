@@ -178,8 +178,8 @@ const LIMITS = Object.freeze({
 // Tool-call fees and ChatGPT/Codex subscription billing are deliberately out
 // of scope; the rendered column is therefore named "$ токены".
 const PRICING_CATALOG = Object.freeze({
-    version: "2026-10-01",
-    checked_at: "2026-10-01",
+    version: "2026-11-12",
+    checked_at: "2026-11-12",
     basis: "official_api_model_token_rates",
     sources: Object.freeze([
         "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
@@ -222,6 +222,12 @@ const PRICING_CATALOG = Object.freeze({
             long_context: Object.freeze({ threshold: 272_000, input_multiplier: 2, output_multiplier: 1.5 })
         },
         {
+            key: "gpt-6.1-terra", provider: "openai", ids: Object.freeze(["gpt-6.1-terra"]),
+            snapshot: /^gpt-6\.1-terra-\d{4}-\d{2}-\d{2}$/,
+            standard: Object.freeze({ uncached_input: 1_000, cache_read_input: 50, cache_write_input: 1_250, output: 5_000 }),
+            long_context: Object.freeze({ threshold: 272_000, input_multiplier: 2, output_multiplier: 1.5 })
+        },
+        {
             key: "gpt-6-luna", provider: "openai", ids: Object.freeze(["gpt-6-luna"]),
             snapshot: /^gpt-6-luna-\d{4}-\d{2}-\d{2}$/,
             standard: Object.freeze({ uncached_input: 100, cache_read_input: 10, cache_write_input: 125, output: 500 }),
@@ -245,6 +251,11 @@ const PRICING_CATALOG = Object.freeze({
             snapshot: /^gpt-5\.6-luna-\d{4}-\d{2}-\d{2}$/,
             standard: Object.freeze({ uncached_input: 200, cache_read_input: 20, cache_write_input: 250, output: 1_200 }),
             long_context: Object.freeze({ threshold: 272_000, input_multiplier: 2, output_multiplier: 1.5 })
+        },
+        {
+            key: "claude-fable-5-2", provider: "claude", ids: Object.freeze(["claude-fable-5-2"]),
+            snapshot: /^claude-fable-5-2-\d{8}$/,
+            standard: Object.freeze({ uncached_input: 8_000, cache_read_input: 200, cache_write_5m: 10_000, cache_write_1h: 16_000, output: 40_000 })
         },
         {
             key: "claude-fable-5-1", provider: "claude", ids: Object.freeze(["claude-fable-5-1"]),
@@ -275,6 +286,12 @@ const PRICING_CATALOG = Object.freeze({
             key: "claude-sonnet-5", provider: "claude", ids: Object.freeze(["claude-sonnet-5"]),
             snapshot: /^claude-sonnet-5-\d{8}$/,
             standard: Object.freeze({ uncached_input: 2_000, cache_read_input: 200, cache_write_5m: 2_500, cache_write_1h: 4_000, output: 10_000 })
+        },
+        {
+            key: "claude-haiku-5-5", provider: "claude", ids: Object.freeze(["claude-haiku-5-5"]),
+            snapshot: /^claude-haiku-5-5-\d{8}$/,
+            standard: Object.freeze({ uncached_input: 100, cache_read_input: 10, cache_write_5m: 125, cache_write_1h: 200, output: 500 }),
+            long_context: Object.freeze({ threshold: 100_000, input_multiplier: 5, output_multiplier: 5 })
         }
     ])
 });
