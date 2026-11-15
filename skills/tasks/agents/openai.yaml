@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tasks"
+  short_description: "Run the DreamTeam process on the project's file tracker"
+  default_prompt: "Use $tasks with an item key and a command, or $tasks бэклог to list the items."

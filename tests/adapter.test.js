@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,7 +10,7 @@ import { manifestProblems, resolutionProblems, callAdapter } from '../contracts/
 
 const root = process.cwd();
 const validatorPath = join(root, 'contracts', 'validate-adapter.mjs');
-const adapterPath = join(root, 'skills', 'project-manager', 'scripts', 'adapter-file.mjs');
+const adapterPath = join(root, 'skills', 'tasks', 'scripts', 'adapter.mjs');
 const schema = JSON.parse(fs.readFileSync(join(root, 'contracts', 'adapter-v1.schema.json'), 'utf8'));
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 const validateManifest = ajv.compile(schema);
@@ -79,7 +79,7 @@ test('the file adapter creates, resolves, publishes, writes a PRD, attaches and 
   assert.equal(marked.target.marker, 'review_done');
   assert.equal(marked.route_hint, 'completion_recovery');
   assert.match(fs.readFileSync(marked.files.comments, 'utf8'), /Разработка: готово[\s\S]*Ревью: готово/);
-  assert.deepEqual(call('close', { key: 'PRJ-2' }).fields, [{ name: 'Stage', value: 'done', done: true, changed: true }]);
+  assert.deepEqual(call('close', { key: 'PRJ-2' }).fields, [{ name: 'stage', value: 'done', done: true, changed: true }]);
   assert.equal(call('resolve', { key: 'PRJ-1', dir: join(dir, 'run3'), child: 'PRJ-2' }).code, 'terminal_child');
   assert.equal(call('resolve', { key: 'PRJ-1', dir: join(dir, 'run3'), child: 'PRJ-2', terminal: true }).target.stage, 'done');
   assert.equal(call('resolve', { key: 'PRJ-1', dir: join(dir, 'run4') }).target.key, 'PRJ-3', 'the next unfinished child follows');
@@ -92,7 +92,7 @@ test('the file adapter creates, resolves, publishes, writes a PRD, attaches and 
   assert.equal(written.sections.inserted.length, 7);
   assert.deepEqual([written.title, written.size], ['replaced', 'replaced']);
   const item = fs.readFileSync(join(dir, 'tracker', 'PRJ-1.md'), 'utf8');
-  assert.match(item, /^# PRJ-1 Сделать штуку как надо\nStage: done\nSize: L\n/);
+  assert.match(item, /^---\ntitle: Сделать штуку как надо\nstage: done\nsize: L\ncreated: \d{4}-\d{2}-\d{2}\n---\n\n# Проблематика/);
   assert.match(item, /# Проблематика[\s\S]*____________\n\nИдея в двух словах/, 'the original text moves below the separator');
   const again = call('prd', { key: 'PRJ-1', document: join(dir, 'prd.md'), size: 'L' });
   assert.deepEqual([again.sections.inserted, again.title, again.size], [[], 'unchanged', 'unchanged']);
@@ -130,4 +130,46 @@ test('--check calls resolve through the manifest and judges the answer by the re
   assert.deepEqual(resolutionProblems({ ok: true }), ['target missing', 'parent must be null or {key, title, stage}', 'children must carry list, unfinished and position', 'document must carry managed, scope, legacy, subsections', 'files missing', 'media must be a list of {path, name}', 'route_hint must be text or null', 'mark.applied must be a boolean']);
   const dead = cli(validatorPath, ['--manifest', manifest, '--check', '--key', 'PRJ-1', '--dir', join(dir, 'check2')].concat([]));
   assert.equal(dead.json.ok, true);
+});
+
+test('a hand-edited item keeps its own keys and quoting; a malformed file is refused by name and still holds its number', async () => {
+  const { dir, call } = await tracker();
+  const store = join(dir, 'tracker');
+  fs.mkdirSync(store, { recursive: true });
+  fs.writeFileSync(join(store, 'PRJ-3.md'), '---\n# заметка человека\ntitle: "Отчёт: фильтр # по дате"\nstage: dev\nowner: artem\nai: false\n---\n\nТекст задачи\n');
+  const resolved = call('resolve', { key: 'PRJ-3', dir: join(dir, 'run'), mark: true });
+  assert.equal(resolved.target.title, 'Отчёт: фильтр # по дате');
+  assert.equal(resolved.target.stage, 'dev');
+  await writeFile(join(dir, 'c.md'), 'Разработка: готово\n');
+  assert.equal(call('publish', { key: 'PRJ-3', event: 'development_done', comment: join(dir, 'c.md') }).stage.to, 'review');
+  const text = fs.readFileSync(join(store, 'PRJ-3.md'), 'utf8');
+  assert.match(text, /^---\ntitle: "Отчёт: фильтр # по дате"\nstage: review\nai: true\nowner: artem\n---\n\nТекст задачи\n\n## Комментарии\n\n### \S+\nРазработка: готово\n$/);
+
+  fs.writeFileSync(join(store, 'PRJ-7.md'), '---\ntitle: x\ntags:\n  - a\n---\n');
+  fs.writeFileSync(join(store, 'PRJ-8.md'), 'без front matter\n');
+  assert.deepEqual(call('resolve', { key: 'PRJ-7', dir: join(dir, 'run2') }), { ok: false, code: 'item_malformed', detail: 'PRJ-7.md: line 4: only flat `name: value` lines are supported' });
+  const listed = call('list', {});
+  assert.deepEqual(listed.items.map((item) => [item.key, item.stage]), [['PRJ-3', 'review']]);
+  assert.deepEqual(listed.malformed, ['PRJ-7.md: line 4: only flat `name: value` lines are supported', 'PRJ-8.md: no front matter: the file must start with ---']);
+  assert.equal(call('create', { title: 'Следующая' }).key, 'PRJ-9');
+});
+
+test('parallel creates get distinct keys under the directory lock; a stale lock is taken over', async () => {
+  const { dir } = await tracker();
+  const store = join(dir, 'tracker');
+  const runs = Array.from({ length: 8 }, (_, index) => new Promise((done) => {
+    const child = spawn(process.execPath, [adapterPath, '--root', store, '--prefix', 'PRJ', 'create', JSON.stringify({ title: `Задача ${index}` })]);
+    let output = '';
+    child.stdout.on('data', (chunk) => { output += chunk; });
+    child.on('close', () => done(JSON.parse(output.trim()).key));
+  }));
+  const keys = await Promise.all(runs);
+  assert.equal(new Set(keys).size, 8, keys.join(' '));
+  assert.equal(fs.readdirSync(store).filter((name) => name.endsWith('.md')).length, 8);
+  assert.deepEqual(fs.readdirSync(store).filter((name) => name.startsWith('.')), [], 'no lock or temp file stays behind');
+
+  fs.mkdirSync(join(store, '.lock'));
+  const old = new Date(Date.now() - 120_000);
+  fs.utimesSync(join(store, '.lock'), old, old);
+  assert.equal(cli(adapterPath, ['--root', store, '--prefix', 'PRJ', 'create', JSON.stringify({ title: 'После сбоя' })]).json.key, 'PRJ-9');
 });

@@ -2,7 +2,7 @@
   "contract_version": 1,
   "kind": "file",
   "label": "file-adapter",
-  "command": "node adapter-file.mjs --root tracker --prefix PRJ",
+  "command": "node skills/tasks/scripts/adapter.mjs --root tracker --prefix PRJ",
   "operations": ["resolve", "publish", "prd", "create", "attach", "comment", "close"],
   "defaults": { "base": "main", "delivery": "branch", "returns": 2 },
   "modes": [{ "token": "документируй", "aliases": [], "summary": "страница документации в трекере" }],
