@@ -26,7 +26,7 @@ One item is `.dreamteam/tasks/<KEY>.md`; the file name is the key, `<PREFIX>-<N>
 ---
 title: Фильтр по дате в отчёте
 stage: backlog
-parent: DT-10
+parent: <KEY родителя>
 size: M
 ai: true
 created: 2026-11-15
