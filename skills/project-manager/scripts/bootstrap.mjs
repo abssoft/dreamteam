@@ -18,8 +18,9 @@
 // developer_xl, developer_ultra, reviewer_depth_1 … reviewer_depth_5,
 // reviewer_ultra). Default models per row (ROW_MODELS: Claude — sonnet up to
 // size M, opus above and for `ультра`, opus for research, sonnet then opus up
-// the review depth; Codex — gpt-6.1-sol for every developer and research row,
-// gpt-6-sol for review but depth 5, gpt-6-astra; the `*_ultra` rows are the
+// the review depth; Codex — gpt-6.2-sol for developer XS/S, gpt-6.2-astra above
+// and for `ультра`, gpt-6.1-sol for research, gpt-6.1-terra for review but
+// depth 5, gpt-6.2-astra; the `*_ultra` rows are the
 // only ones at the top effort, chosen by the `ультра` token alone); an
 // override fills every row verbatim. `spawn_args` — the ready launcher
 // parameters per launch row (every row but research, which the PRD skill
@@ -57,12 +58,12 @@ import { LOCAL_DIR, ignored, loadEnvironment } from "./lib/profile.mjs";
 const ROLES = ["product-technologist", "software-developer", "qa-engineer", "code-reviewer", "project-manager"];
 
 // Role-model policy: one default model per launch row. Development runs at the
-// task size: Codex always the same model, Claude sonnet then opus, the thinking
+// task size: Codex gpt-6.2-sol then gpt-6.2-astra, Claude sonnet then opus, the thinking
 // level rising with the size; the top effort is reserved for the `*_ultra`
 // rows. The PRD research children (rows `research` for an unsettled size —
 // medium — and `research_<size>`) run on that coding model — a weaker rung
 // fabricated paths in practice. Review runs at the depth review-pack --check
-// reports: 1 buys the cheapest pair, 5 the priciest; Codex reaches gpt-6-astra
+// reports: 1 buys the cheapest pair, 5 the priciest; Codex reaches gpt-6.2-astra
 // only at 5. Fable stays off the Claude table deliberately: an unproven
 // upgrade over opus for this work.
 const ROW_MODELS = Object.freeze({
@@ -95,18 +96,18 @@ const ROW_MODELS = Object.freeze({
     research_l: "gpt-6.1-sol",
     research_xl: "gpt-6.1-sol",
     research_ultra: "gpt-6.1-sol",
-    developer_xs: "gpt-6.1-sol",
-    developer_s: "gpt-6.1-sol",
-    developer_m: "gpt-6.1-sol",
-    developer_l: "gpt-6.1-sol",
-    developer_xl: "gpt-6.1-sol",
-    developer_ultra: "gpt-6.1-sol",
-    reviewer_depth_1: "gpt-6-sol",
-    reviewer_depth_2: "gpt-6-sol",
-    reviewer_depth_3: "gpt-6-sol",
-    reviewer_depth_4: "gpt-6-sol",
-    reviewer_depth_5: "gpt-6-astra",
-    reviewer_ultra: "gpt-6-astra",
+    developer_xs: "gpt-6.2-sol",
+    developer_s: "gpt-6.2-sol",
+    developer_m: "gpt-6.2-astra",
+    developer_l: "gpt-6.2-astra",
+    developer_xl: "gpt-6.2-astra",
+    developer_ultra: "gpt-6.2-astra",
+    reviewer_depth_1: "gpt-6.1-terra",
+    reviewer_depth_2: "gpt-6.1-terra",
+    reviewer_depth_3: "gpt-6.1-terra",
+    reviewer_depth_4: "gpt-6.1-terra",
+    reviewer_depth_5: "gpt-6.2-astra",
+    reviewer_ultra: "gpt-6.2-astra",
   }),
 });
 
@@ -143,9 +144,9 @@ const EFFORTS = Object.freeze({
     research_xl: "xhigh",
     research_ultra: "ultra",
     developer_xs: "medium",
-    developer_s: "medium",
-    developer_m: "high",
-    developer_l: "xhigh",
+    developer_s: "high",
+    developer_m: "medium",
+    developer_l: "high",
     developer_xl: "xhigh",
     developer_ultra: "ultra",
     reviewer_depth_1: "medium",
