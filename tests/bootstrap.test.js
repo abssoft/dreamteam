@@ -42,9 +42,10 @@ async function repo(root, profile) {
 const levels = (...efforts) => efforts.map((effort) => ({ effort }));
 const CACHE_MODELS = [
   { slug: 'gpt-6.1-sol', supported_reasoning_levels: levels('low', 'medium', 'high', 'xhigh', 'max', 'ultra') },
-  { slug: 'gpt-6-sol', supported_reasoning_levels: levels('low', 'medium', 'high', 'xhigh', 'max', 'ultra') },
-  { slug: 'gpt-6-astra', supported_reasoning_levels: levels('low', 'medium', 'high', 'xhigh', 'max', 'ultra') },
+  { slug: 'gpt-6.1-terra', supported_reasoning_levels: levels('low', 'medium', 'high', 'xhigh', 'max', 'ultra') },
+  { slug: 'gpt-6.2-astra', supported_reasoning_levels: levels('low', 'medium', 'high', 'xhigh', 'max', 'ultra') },
   { slug: 'gpt-5.5', supported_reasoning_levels: levels('low', 'medium', 'high', 'xhigh') },
+  { slug: 'gpt-6.2-sol', supported_reasoning_levels: levels('low', 'medium', 'high', 'xhigh', 'max', 'ultra') },
 ];
 async function writeCache(root, models) {
   const path = join(root, 'models_cache.json');
@@ -81,28 +82,30 @@ test('claude default resolves development and research by size on sonnet then op
   });
 });
 
-test('codex default runs developer and research rows on gpt-6.1-sol by size, review on gpt-6-sol, astra at depth 5 and ultra', async () => {
+test('codex default runs developer rows on gpt-6.2-sol then astra by size, research on gpt-6.1-sol, review on gpt-6.1-terra, astra at depth 5 and ultra', async () => {
   await withDir(async (root) => {
     const cache = await writeCache(root, CACHE_MODELS);
     const result = probe({ runtime: 'codex', projectRoot: root, modelsCachePath: cache });
     assert.equal(result.models.warning_reason, null);
     const ladder = ['medium', 'medium', 'high', 'xhigh', 'xhigh'];
-    assert.deepEqual(DEVELOPER_ROWS.map((row) => result.models[row]), ladder.map((effort) => ({ model: 'gpt-6.1-sol', effort })));
+    assert.deepEqual(DEVELOPER_ROWS.map((row) => result.models[row]), [
+      { model: 'gpt-6.2-sol', effort: 'medium' }, { model: 'gpt-6.2-sol', effort: 'high' }, { model: 'gpt-6.2-astra', effort: 'medium' }, { model: 'gpt-6.2-astra', effort: 'high' }, { model: 'gpt-6.2-astra', effort: 'xhigh' },
+    ]);
     assert.deepEqual(RESEARCH_ROWS.map((row) => result.models[row]), ladder.map((effort) => ({ model: 'gpt-6.1-sol', effort })));
     assert.deepEqual(REVIEWER_ROWS.map((row) => result.models[row]), [
-      { model: 'gpt-6-sol', effort: 'medium' }, { model: 'gpt-6-sol', effort: 'high' }, { model: 'gpt-6-sol', effort: 'xhigh' }, { model: 'gpt-6-sol', effort: 'xhigh' }, { model: 'gpt-6-astra', effort: 'xhigh' },
+      { model: 'gpt-6.1-terra', effort: 'medium' }, { model: 'gpt-6.1-terra', effort: 'high' }, { model: 'gpt-6.1-terra', effort: 'xhigh' }, { model: 'gpt-6.1-terra', effort: 'xhigh' }, { model: 'gpt-6.2-astra', effort: 'xhigh' },
     ]);
-    assert.deepEqual(result.models.reviewer_ultra, { model: 'gpt-6-astra', effort: 'ultra' });
-    assert.deepEqual(result.spawn_args.developer_ultra, { fork_turns: 'none', model: 'gpt-6.1-sol', reasoning_effort: 'ultra' });
+    assert.deepEqual(result.models.reviewer_ultra, { model: 'gpt-6.2-astra', effort: 'ultra' });
+    assert.deepEqual(result.spawn_args.developer_ultra, { fork_turns: 'none', model: 'gpt-6.2-astra', reasoning_effort: 'ultra' });
     // An override clamps to the model's levels; a default missing from the cache inherits the session model.
     const clamped = probe({ runtime: 'codex', projectRoot: root, model: 'gpt-5.5', modelsCachePath: cache });
-    assert.deepEqual([clamped.models.developer_ultra.effort, clamped.models.developer_m.effort], ['xhigh', 'high']);
+    assert.deepEqual([clamped.models.developer_ultra.effort, clamped.models.developer_m.effort], ['xhigh', 'medium']);
     const inherited = probe({ runtime: 'codex', projectRoot: root, modelsCachePath: await writeCache(root, [CACHE_MODELS[3]]) });
     assert.equal(inherited.models.warning_reason, 'ceiling_not_in_models_cache');
     assert.deepEqual(inherited.spawn_args.developer_ultra, { fork_turns: 'none', reasoning_effort: 'ultra' });
     const unknown = probe({ runtime: 'codex', projectRoot: root, model: 'gpt-9-future', modelsCachePath: cache });
     assert.equal(unknown.models.warning_reason, 'override_not_in_models_cache');
-    assert.equal(probe({ runtime: 'codex', projectRoot: root, modelsCachePath: join(root, 'absent.json') }).models.reviewer_depth_5.model, 'gpt-6-astra');
+    assert.equal(probe({ runtime: 'codex', projectRoot: root, modelsCachePath: join(root, 'absent.json') }).models.reviewer_depth_5.model, 'gpt-6.2-astra');
   });
 });
 
