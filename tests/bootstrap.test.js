@@ -82,7 +82,7 @@ test('claude default resolves development and research by size on sonnet then op
   });
 });
 
-test('codex default runs developer rows on gpt-6.2-sol then astra by size, research on gpt-6.1-sol, review on gpt-6.1-terra, astra at depth 5 and ultra', async () => {
+test('codex default runs developer rows on gpt-6.2-sol then astra by size, research on gpt-6.2-sol, review on gpt-6.1-terra, astra at depth 5 and ultra', async () => {
   await withDir(async (root) => {
     const cache = await writeCache(root, CACHE_MODELS);
     const result = probe({ runtime: 'codex', projectRoot: root, modelsCachePath: cache });
@@ -91,7 +91,7 @@ test('codex default runs developer rows on gpt-6.2-sol then astra by size, resea
     assert.deepEqual(DEVELOPER_ROWS.map((row) => result.models[row]), [
       { model: 'gpt-6.2-sol', effort: 'medium' }, { model: 'gpt-6.2-sol', effort: 'high' }, { model: 'gpt-6.2-astra', effort: 'medium' }, { model: 'gpt-6.2-astra', effort: 'high' }, { model: 'gpt-6.2-astra', effort: 'xhigh' },
     ]);
-    assert.deepEqual(RESEARCH_ROWS.map((row) => result.models[row]), ladder.map((effort) => ({ model: 'gpt-6.1-sol', effort })));
+    assert.deepEqual(RESEARCH_ROWS.map((row) => result.models[row]), ladder.map((effort) => ({ model: 'gpt-6.2-sol', effort })));
     assert.deepEqual(REVIEWER_ROWS.map((row) => result.models[row]), [
       { model: 'gpt-6.1-terra', effort: 'medium' }, { model: 'gpt-6.1-terra', effort: 'high' }, { model: 'gpt-6.1-terra', effort: 'xhigh' }, { model: 'gpt-6.1-terra', effort: 'xhigh' }, { model: 'gpt-6.2-astra', effort: 'xhigh' },
     ]);
