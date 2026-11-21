@@ -10,7 +10,7 @@ import { manifestProblems, resolutionProblems, callAdapter } from '../contracts/
 
 const root = process.cwd();
 const validatorPath = join(root, 'contracts', 'validate-adapter.mjs');
-const adapterPath = join(root, 'skills', 'tasks', 'scripts', 'adapter.mjs');
+const adapterPath = join(root, 'skills', 'tracker', 'scripts', 'adapter.mjs');
 const schema = JSON.parse(fs.readFileSync(join(root, 'contracts', 'adapter-v1.schema.json'), 'utf8'));
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 const validateManifest = ajv.compile(schema);

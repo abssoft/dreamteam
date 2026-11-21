@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tracker"
+  short_description: "Run the DreamTeam process on the project's file tracker"
+  default_prompt: "Use $tracker with an item key and a command, or $tracker бэклог to list the items."
