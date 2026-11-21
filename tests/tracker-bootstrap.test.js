@@ -1,4 +1,4 @@
-// The tasks dispatcher's startup probe: the setup gates (a repository, an
+// The tracker dispatcher's startup probe: the setup gates (a repository, an
 // ignored .dreamteam/, the key prefix in .env), the key against the prefix,
 // and a manifest the project-manager role can run — always against the
 // primary checkout, whichever worktree the command came from.
@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const scriptPath = join(process.cwd(), 'skills', 'tasks', 'scripts', 'bootstrap.mjs');
+const scriptPath = join(process.cwd(), 'skills', 'tracker', 'scripts', 'bootstrap.mjs');
 const validatorPath = join(process.cwd(), 'contracts', 'validate-adapter.mjs');
 const probe = (args) => JSON.parse(execFileSync(process.execPath, [scriptPath, JSON.stringify(args)], { encoding: 'utf8' }));
 const git = (cwd, args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -65,12 +65,12 @@ test('a ready project gets a runnable manifest over the primary checkout, from a
     assert.deepEqual(line.problems, []);
     assert.deepEqual(line.store, { root: join(dir, '.dreamteam', 'tasks'), ignored: true });
     assert.equal(line.env.prefix, 'DT');
-    assert.equal(line.invoke, '$tasks');
+    assert.equal(line.invoke, '$tracker');
     assert.equal(line.workflow.placement, 'repository');
     assert.ok(line.run_dir.startsWith(join(dir, '.dreamteam', 'workflow', 'DT-1', 'runs')));
     assert.ok(line.dream_team.roles.missing.length === 0, JSON.stringify(line.dream_team.roles));
     const manifest = JSON.parse(fs.readFileSync(line.manifest, 'utf8'));
-    assert.deepEqual([manifest.kind, manifest.label, manifest.modes[0].token], ['file', 'tasks', 'бэклог']);
+    assert.deepEqual([manifest.kind, manifest.label, manifest.modes[0].token], ['file', 'tracker', 'бэклог']);
 
     const created = JSON.parse(execFileSync('sh', ['-c', `${manifest.command} create '{"title":"Первая"}'`], { encoding: 'utf8' }));
     assert.equal(created.key, 'DT-1');

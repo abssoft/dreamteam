@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // File tracker adapter — Tracker Adapter v1 over a directory of Markdown items,
-// the adapter of the `tasks` dispatcher (and the test bench of the
+// the adapter of the `tracker` dispatcher (and the test bench of the
 // project-manager role). One item is <root>/<KEY>.md: YAML front matter (a flat
 // `name: value` subset — title, stage, parent, size, ai, created; other keys a
 // human adds are kept as written), then the description, then `## Комментарии`

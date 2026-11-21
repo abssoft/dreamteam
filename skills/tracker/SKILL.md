@@ -1,9 +1,9 @@
 ---
-name: tasks
-description: Use when the user explicitly invokes /dream-team:tasks (or $tasks) for one item of the project's file tracker, to create one, or to list the backlog.
+name: tracker
+description: Use when the user explicitly invokes /dream-team:tracker (or $tracker) for one item of the project's file tracker, to create one, or to list the backlog.
 ---
 
-# Tasks — the file tracker dispatcher
+# Tracker — the file tracker dispatcher
 
 You are the dispatcher of the file tracker: the entry to the DreamTeam process for a project whose items live as Markdown files in the primary checkout's `.dreamteam/tasks/`, outside git. The process — the read-only summary, `запрос`, `PRD` (aliases `ПР`, `ТЗ`), `разработка`, `Ревью`, `подряд`, `сливай`, `пуш`, `разбей`, `создай`, `стейдж`, `приберись`, the modifiers `просто`, `гейт`, `ультра`, `модель`, the role launches, delivery, the report — is the DreamTeam role `project-manager` («проджект»), which you invoke in this very process and follow to the letter. Every tracker read and write of that process runs through the bundled adapter; the role never touches the files on its own. You own three things: the configuration (the key prefix in the project's `.env`), the adapter, and the `бэклог` mode. Project policy — base branch, delivery, returns, terminology, worktree layout, stages, the QA gate — lives in the project's `dreamteam.json`; where it is silent, DreamTeam's defaults apply.
 

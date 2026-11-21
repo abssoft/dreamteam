@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// One-call startup probe of the `tasks` dispatcher — the file tracker that
+// One-call startup probe of the `tracker` dispatcher — the file tracker that
 // keeps the items in the primary checkout's `.dreamteam/tasks/`, outside git:
 // the tracker half (the key prefix from the project's `.env`, the git-ignore
 // gate of `.dreamteam/`, the adapter manifest) merged with DreamTeam's half
@@ -16,14 +16,14 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LOCAL_DIR, ignored, listCheckouts } from "../../project-manager/scripts/lib/profile.mjs";
 
-const LABEL = "tasks";
+const LABEL = "tracker";
 const KIND = "file";
 const PREFIX_VAR = "DREAMTEAM_TASKS_PREFIX";
 const PREFIX = /^[A-Z][A-Z0-9]*$/;
 const KEY = /^([A-Za-z][A-Za-z0-9]*)-\d+$/;
-const INVOKE = { claude: "/dream-team:tasks", codex: "$tasks" };
+const INVOKE = { claude: "/dream-team:tracker", codex: "$tracker" };
 const MODES = [{ token: "бэклог", aliases: ["backlog", "список"], summary: "все задачи файлового трекера по стадиям" }];
-const HELP = ["$tasks бэклог — все задачи по стадиям"];
+const HELP = ["$tracker бэклог — все задачи по стадиям"];
 
 function out(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -51,7 +51,7 @@ function dreamTeamProbe({ runtime, projectRoot, repo, key, model, modelsCachePat
   }
 }
 
-const USAGE = `bootstrap.mjs — one-call startup probe of the tasks dispatcher (SKILL.md Pipeline). Read-only.
+const USAGE = `bootstrap.mjs — one-call startup probe of the tracker dispatcher (SKILL.md Pipeline). Read-only.
 Arg: single JSON {runtime:"codex"|"claude", projectRoot, repo?, key?, model?, modelsCachePath?}
 Output: one JSON line {ok, setup (null, or {code: no_repository | store_not_ignored |
 prefix_missing | prefix_invalid, path, add, explanation} — the dispatcher stops and
